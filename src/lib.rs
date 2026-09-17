@@ -17,6 +17,9 @@ pub use auth::{
 #[cfg(feature = "postgres")]
 pub use auth::UserRepo;
 
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub use auth::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};
+
 pub use connection::{
     Connection, ConnectionData, ConnectionExt, ConnectionView, FullConnection, OAuth2Tokens,
     UpsertConnectionInput,
@@ -32,3 +35,21 @@ pub use session::{
 };
 #[cfg(feature = "postgres")]
 pub use session::SessionRepo;
+
+#[cfg(feature = "postgres")]
+/// Executes all embedded database migrations for Megh foundation tables.
+pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::raw_sql(include_str!("../migrations/0001_create_org.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0002_create_users.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0003_create_connections.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0004_create_sessions.sql"))
+        .execute(pool)
+        .await?;
+    Ok(())
+}

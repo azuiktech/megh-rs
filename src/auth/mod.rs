@@ -14,3 +14,9 @@ pub use user::{UpsertUserInput, User, UserProfile};
 
 #[cfg(feature = "postgres")]
 pub use user::UserRepo;
+
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod http;
+
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub use http::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};

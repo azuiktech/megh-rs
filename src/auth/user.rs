@@ -39,32 +39,26 @@ impl<'a> UserRepo<'a> {
 
     /// Fetches a user by UUID.
     pub async fn get_by_id(&self, id: Uuid) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>(
-            "SELECT id, subject, email, display_name, photo_url, created_at FROM users WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(self.pool)
-        .await
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(self.pool)
+            .await
     }
 
     /// Finds a user by email.
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>(
-            "SELECT id, subject, email, display_name, photo_url, created_at FROM users WHERE email = $1",
-        )
-        .bind(email)
-        .fetch_optional(self.pool)
-        .await
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_optional(self.pool)
+            .await
     }
 
     /// Finds a user by OAuth provider subject.
     pub async fn find_by_subject(&self, subject: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>(
-            "SELECT id, subject, email, display_name, photo_url, created_at FROM users WHERE subject = $1",
-        )
-        .bind(subject)
-        .fetch_optional(self.pool)
-        .await
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE subject = $1")
+            .bind(subject)
+            .fetch_optional(self.pool)
+            .await
     }
 
     /// Upserts user by email: updates subject and non-empty display name/photo; inserts if not existing.
@@ -80,7 +74,7 @@ impl<'a> UserRepo<'a> {
                 subject = EXCLUDED.subject,
                 display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE users.display_name END,
                 photo_url = CASE WHEN EXCLUDED.photo_url <> '' THEN EXCLUDED.photo_url ELSE users.photo_url END
-            RETURNING id, subject, email, display_name, photo_url, created_at
+            RETURNING *
             "#,
         )
         .bind(&input.subject)
@@ -103,7 +97,7 @@ impl<'a> UserRepo<'a> {
             UPDATE users
             SET display_name = $2, photo_url = $3
             WHERE id = $1
-            RETURNING id, subject, email, display_name, photo_url, created_at
+            RETURNING *
             "#,
         )
         .bind(id)

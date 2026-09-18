@@ -4,6 +4,12 @@ use std::ops::{Deref, DerefMut};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Trait for types that map to a database table with an explicit column list.
+pub trait Table {
+    const TABLE_NAME: &'static str;
+    const COLUMNS: &'static [&'static str];
+}
+
 /// Generic persistent entity wrapper providing ID and audit timestamps.
 ///
 /// Implements `Deref` and `DerefMut` to provide struct-embedding ergonomics,
@@ -63,6 +69,98 @@ impl<ID, T> Entity<ID, T> {
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
+    }
+
+    /// Merges an RFC 7396 JSON merge patch into this entity's data.
+    pub fn patch(&self, patch: &serde_json::Value) -> Result<Self, serde_json::Error>
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+        ID: Clone,
+    {
+        let mut target = serde_json::to_value(&self.data)?;
+        json_patch::merge(&mut target, patch);
+        let updated_data: T = serde_json::from_value(target)?;
+
+        Ok(Entity {
+            id: self.id.clone(),
+            data: updated_data,
+            created_at: self.created_at,
+            updated_at: Utc::now(),
+        })
+    }
+
+    #[cfg(feature = "postgres")]
+    /// Inserts this entity into its table using json_populate_record.
+    pub async fn insert(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error>
+    where
+        Self: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Serialize + Send + Unpin,
+        T: Table,
+    {
+        self.insert_into(pool, T::TABLE_NAME).await
+    }
+
+    #[cfg(feature = "postgres")]
+    /// Inserts this entity into the specified table using json_populate_record.
+    pub async fn insert_into(&self, pool: &sqlx::PgPool, table: &str) -> Result<Self, sqlx::Error>
+    where
+        Self: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Serialize + Send + Unpin,
+    {
+        let query = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1) RETURNING *");
+        sqlx::query_as::<_, Self>(&query)
+            .bind(sqlx::types::Json(self))
+            .fetch_one(pool)
+            .await
+    }
+
+    #[cfg(feature = "postgres")]
+    /// Updates this entity in the specified table by ID using json_populate_record.
+    pub async fn save(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error>
+    where
+        Self: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Serialize + Send + Unpin,
+        T: Table,
+        ID: sqlx::Type<sqlx::Postgres> + for<'q> sqlx::Encode<'q, sqlx::Postgres> + Send + Sync + Clone,
+    {
+        let table = T::TABLE_NAME;
+        let cols = T::COLUMNS.join(", ");
+        let p_cols = T::COLUMNS.iter().map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ");
+        let query = format!(
+            "UPDATE {table} SET ({cols}) = ({p_cols}) FROM json_populate_record(NULL::{table}, $1) p WHERE {table}.id = $2 RETURNING {table}.*"
+        );
+        sqlx::query_as::<_, Self>(&query)
+            .bind(sqlx::types::Json(self))
+            .bind(self.id.clone())
+            .fetch_one(pool)
+            .await
+    }
+
+    #[cfg(feature = "postgres")]
+    /// Finds an entity by ID using its associated Table::TABLE_NAME.
+    pub async fn find_by_id(pool: &sqlx::PgPool, id: ID) -> Result<Option<Self>, sqlx::Error>
+    where
+        Self: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+        T: Table,
+        ID: sqlx::Type<sqlx::Postgres> + for<'q> sqlx::Encode<'q, sqlx::Postgres> + Send + Sync,
+    {
+        let query = format!("SELECT * FROM {} WHERE id = $1", T::TABLE_NAME);
+        sqlx::query_as::<_, Self>(&query)
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+    }
+
+    #[cfg(feature = "postgres")]
+    /// Deletes an entity by ID using its associated Table::TABLE_NAME.
+    pub async fn delete_by_id(pool: &sqlx::PgPool, id: ID) -> Result<bool, sqlx::Error>
+    where
+        T: Table,
+        ID: sqlx::Type<sqlx::Postgres> + for<'q> sqlx::Encode<'q, sqlx::Postgres> + Send + Sync,
+    {
+        let query = format!("DELETE FROM {} WHERE id = $1", T::TABLE_NAME);
+        let result = sqlx::query(&query)
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 }
 

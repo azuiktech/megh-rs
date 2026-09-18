@@ -64,6 +64,7 @@ pub struct OAuthProviderConfig {
     pub token_url: String,
     pub userinfo_url: Option<String>,
     pub default_scopes: Vec<String>,
+    pub redirect_url: Option<String>,
 }
 
 impl OAuthProviderConfig {
@@ -81,7 +82,13 @@ impl OAuthProviderConfig {
                 "https://www.googleapis.com/auth/userinfo.email".to_string(),
                 "https://www.googleapis.com/auth/userinfo.profile".to_string(),
             ],
+            redirect_url: None,
         }
+    }
+
+    pub fn with_redirect_url(mut self, redirect_url: impl Into<String>) -> Self {
+        self.redirect_url = Some(redirect_url.into());
+        self
     }
 
     /// Builds a standard `oauth2::basic::BasicClient` from this configuration.

@@ -1,0 +1,28 @@
+{
+  "name": "@megh/auth",
+  "version": "0.18.0",
+  "type": "module",
+  "main": "./dist/megh-auth.cjs.js",
+  "module": "./dist/megh-auth.es.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/megh-auth.es.js",
+      "require": "./dist/megh-auth.cjs.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.11.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.0",
+    "vite-plugin-dts": "^4.0.0"
+  }
+}

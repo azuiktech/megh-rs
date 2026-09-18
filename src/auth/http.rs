@@ -7,7 +7,7 @@ use axum::{
     async_trait,
     extract::{FromRequestParts, Path, Query, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -15,7 +15,10 @@ use chrono::Duration;
 use oauth2::TokenResponse;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::oauth::{build_authorization_url, fetch_user_info, AuthUrlOptions, CsrfToken, OAuthProviderConfig};
+use crate::auth::oauth::{
+    build_authorization_url, fetch_user_info, AuthUrlOptions, CsrfToken, OAuthProviderConfig,
+    RedirectUrl,
+};
 use crate::auth::user::{UpsertUserInput, User, UserRepo};
 use crate::connection::{ConnectionData, ConnectionRepo, FullConnection, OAuth2Tokens};
 use crate::session::{Session, SessionExt, SessionRepo, SessionView};
@@ -27,6 +30,7 @@ pub struct MeghAuthState {
     pub cookie_name: String,
     pub session_duration: Duration,
     pub redirect_after_login: String,
+    pub app_origin: String,
     pub providers: Arc<HashMap<String, OAuthProviderConfig>>,
     pub http_client: reqwest::Client,
 }
@@ -38,6 +42,7 @@ impl MeghAuthState {
             cookie_name: "kyrios_session".to_string(),
             session_duration: Duration::days(30),
             redirect_after_login: "/".to_string(),
+            app_origin: "http://localhost:8080".to_string(),
             providers: Arc::new(HashMap::new()),
             http_client: reqwest::Client::new(),
         }
@@ -50,6 +55,11 @@ impl MeghAuthState {
 
     pub fn with_redirect_after_login(mut self, redirect: impl Into<String>) -> Self {
         self.redirect_after_login = redirect.into();
+        self
+    }
+
+    pub fn with_app_origin(mut self, app_origin: impl Into<String>) -> Self {
+        self.app_origin = app_origin.into();
         self
     }
 
@@ -146,7 +156,9 @@ pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 pub fn auth_router(state: MeghAuthState) -> Router {
     Router::new()
         .route("/auth/:provider", get(oauth_login))
+        .route("/auth/:provider/login", get(oauth_login))
         .route("/auth/:provider/callback", get(oauth_callback))
+        .route("/auth/:provider/token", get(oauth_callback))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(auth_logout))
         .with_state(state)
@@ -162,8 +174,14 @@ pub async fn oauth_login(
         .get(&provider_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Provider '{provider_id}' not configured")))?;
 
+    let callback_url = provider.redirect_url.clone().unwrap_or_else(|| {
+        format!("{}/auth/{provider_id}/token", state.app_origin.trim_end_matches('/'))
+    });
+    let redirect_url = RedirectUrl::new(callback_url)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid callback URL: {e}")))?;
+
     let client = provider
-        .build_client(None)
+        .build_client(Some(redirect_url))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let csrf = CsrfToken::new_random();
@@ -203,8 +221,14 @@ pub async fn oauth_callback(
         .get(&provider_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Provider '{provider_id}' not configured")))?;
 
+    let callback_url = provider.redirect_url.clone().unwrap_or_else(|| {
+        format!("{}/auth/{provider_id}/token", state.app_origin.trim_end_matches('/'))
+    });
+    let redirect_url = RedirectUrl::new(callback_url)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid callback URL: {e}")))?;
+
     let client = provider
-        .build_client(None)
+        .build_client(Some(redirect_url))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Exchange authorization code for tokens
@@ -274,7 +298,7 @@ pub async fn oauth_callback(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Session creation failed: {e}")))?;
 
-    // Build Cookie header and Redirect response
+    // Build Cookie header and Popup / Redirect response
     let cookie_val = format!(
         "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
         state.cookie_name,
@@ -282,12 +306,30 @@ pub async fn oauth_callback(
         state.session_duration.num_seconds()
     );
 
+    let payload = serde_json::json!({
+        "type": "oauth_success",
+        "user": user,
+    });
+    let payload_str = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    let fallback_str = serde_json::to_string(&state.redirect_after_login).unwrap_or_else(|_| "\"/\"".to_string());
+
+    let html = format!(
+        r#"<!doctype html><meta charset="utf-8"><script>
+(function(){{
+var d={payload_str},f={fallback_str};
+if(window.opener){{window.opener.postMessage(d,"*");window.close();}}
+else if(f){{window.location.href=f;}}
+}})();
+</script>"#
+    );
+
     let response = (
-        StatusCode::FOUND,
+        StatusCode::OK,
         [
             (header::SET_COOKIE, cookie_val),
-            (header::LOCATION, state.redirect_after_login.clone()),
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
         ],
+        Html(html),
     )
         .into_response();
 

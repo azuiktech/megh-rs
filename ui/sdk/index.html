@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>@megh/auth SDK test</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 24px; }
+    h1 { font-size: 1.1rem; font-weight: 600; margin-bottom: 4px; }
+    p.subtitle { color: #666; font-size: 0.85rem; margin-top: 0; }
+    #status-box {
+      padding: 12px 16px; border-radius: 8px; margin: 20px 0;
+      background: #f0f0f0; font-size: 0.9rem;
+    }
+    #status-box.logged-in { background: #d1fadf; }
+    #status-box.error { background: #ffe0e0; }
+    pre {
+      background: #f5f5f5; border-radius: 6px; padding: 12px;
+      font-size: 0.8rem; overflow-x: auto; max-height: 200px;
+    }
+    section { margin: 24px 0; }
+    section h2 { font-size: 0.85rem; font-weight: 600; text-transform: uppercase;
+                 letter-spacing: 0.06em; color: #888; margin-bottom: 10px; }
+    button {
+      padding: 8px 16px; border-radius: 6px; border: 1px solid #ccc;
+      background: white; cursor: pointer; font-size: 0.9rem; margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    button:hover { background: #f5f5f5; }
+    button.primary { background: #1a73e8; color: white; border-color: #1a73e8; }
+    button.primary:hover { background: #1558b0; }
+    button.danger { background: #d93025; color: white; border-color: #d93025; }
+    button.danger:hover { background: #a0231b; }
+    .form-row { display: flex; flex-direction: column; gap: 8px; max-width: 280px; }
+    input { padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc;
+            font-size: 0.9rem; }
+    #log { margin-top: 12px; font-size: 0.8rem; color: #555; }
+    #log p { margin: 2px 0; }
+    #log p.err { color: #c00; }
+  </style>
+</head>
+<body>
+  <h1>@megh/auth SDK test</h1>
+  <p class="subtitle">Connected to <code id="backend-url"></code></p>
+
+  <div id="status-box">Restoring session…</div>
+
+  <section>
+    <h2>Google OAuth</h2>
+    <button class="primary" id="btn-google-popup">Sign in with Google (popup / auto)</button>
+    <button id="btn-google-redirect">Sign in with Google (redirect)</button>
+  </section>
+
+  <section>
+    <h2>Password (basic auth)</h2>
+    <form id="form-password">
+      <div class="form-row">
+        <input type="email"    id="email"    placeholder="Email" autocomplete="username">
+        <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+        <button type="submit" class="primary">Sign in with password</button>
+      </div>
+    </form>
+  </section>
+
+  <section>
+    <button class="danger" id="btn-signout">Sign out</button>
+  </section>
+
+  <section>
+    <h2>Current user</h2>
+    <pre id="user-json">null</pre>
+    <div id="log"></div>
+  </section>
+
+  <script type="module">
+    import { Auth } from './dist/megh-auth.es.js'
+
+    const BACKEND = window.location.port === '8080' ? window.location.origin : 'http://localhost:8080'
+    document.getElementById('backend-url').textContent = BACKEND
+
+    const auth = new Auth({
+      base: BACKEND,
+      paths: {
+        me:          '/auth/me',
+        login:       '/auth/login',
+        logout:      '/auth/logout',
+        googleLogin: '/auth/google/login',
+      },
+      transform: (raw) => raw.user ?? raw,
+    })
+
+    // ── Handle redirect-flow return (agentivity lands on /queue) ──────────────
+    // After a redirect OAuth flow, agentivity redirects to localhost:5173/queue.
+    // Our test server returns 404 there, so we detect any non-root path and
+    // redirect back to / — restore() will then pick up the session cookie.
+    if (location.pathname !== '/') {
+      log(`Redirect flow return (path: ${location.pathname}) → restoring session`)
+      history.replaceState(null, '', '/')
+    }
+
+    // ── Restore ───────────────────────────────────────────────────────────────
+    await auth.restore()
+    log('restore() called')
+
+    // ── Reactive UI ──────────────────────────────────────────────────────────
+    auth.onChange((user) => {
+      const box = document.getElementById('status-box')
+      if (user) {
+        box.className = 'logged-in'
+        box.textContent = `Logged in as: ${user.email ?? user.name ?? JSON.stringify(user)}`
+      } else {
+        box.className = ''
+        box.textContent = 'Not logged in'
+      }
+      document.getElementById('user-json').textContent = JSON.stringify(user, null, 2)
+    })
+
+    // ── Buttons ───────────────────────────────────────────────────────────────
+    document.getElementById('btn-google-popup').onclick = async () => {
+      try {
+        log('signInWithGoogle(auto) …')
+        await auth.signInWithGoogle('auto')
+        log('Google sign-in complete')
+      } catch (e) {
+        log(e.message, true)
+      }
+    }
+
+    document.getElementById('btn-google-redirect').onclick = () => {
+      log('signInWithGoogle(redirect) → navigating …')
+      auth.signInWithGoogle('redirect')
+    }
+
+    document.getElementById('form-password').onsubmit = async (e) => {
+      e.preventDefault()
+      const email    = document.getElementById('email').value.trim()
+      const password = document.getElementById('password').value
+      if (!email || !password) return
+      try {
+        log(`signInWithPassword(${email}) …`)
+        await auth.signInWithPassword(email, password)
+        log('Password sign-in complete')
+      } catch (e) {
+        log(e.message, true)
+      }
+    }
+
+    document.getElementById('btn-signout').onclick = async () => {
+      await auth.signOut()
+      log('Signed out')
+    }
+
+    function log(msg, err = false) {
+      const el = document.getElementById('log')
+      const p = document.createElement('p')
+      p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`
+      if (err) p.className = 'err'
+      el.prepend(p)
+    }
+  </script>
+</body>
+</html>

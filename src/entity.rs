@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub trait Table {
     const TABLE_NAME: &'static str;
     const COLUMNS: &'static [&'static str];
+    const CONFLICT_COLUMNS: &'static [&'static str] = &["id"];
 }
 
 /// Generic persistent entity wrapper providing ID and audit timestamps.
@@ -105,7 +106,48 @@ impl<ID, T> Entity<ID, T> {
     where
         Self: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Serialize + Send + Unpin,
     {
-        let query = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1) RETURNING *");
+        let query = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1::json) RETURNING *");
+        sqlx::query_as::<_, Self>(&query)
+            .bind(sqlx::types::Json(self))
+            .fetch_one(pool)
+            .await
+    }
+
+    #[cfg(feature = "postgres")]
+    /// Upserts this entity into its table using Table::CONFLICT_COLUMNS and json_populate_record.
+    pub async fn upsert(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error>
+    where
+        Self: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Serialize + Send + Unpin,
+        T: Table,
+    {
+        self.upsert_on(pool, T::CONFLICT_COLUMNS).await
+    }
+
+    #[cfg(feature = "postgres")]
+    /// Upserts this entity into its table on the specified conflict columns using json_populate_record.
+    pub async fn upsert_on(&self, pool: &sqlx::PgPool, conflict_cols: &[&str]) -> Result<Self, sqlx::Error>
+    where
+        Self: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Serialize + Send + Unpin,
+        T: Table,
+    {
+        let table = T::TABLE_NAME;
+        let conflict = conflict_cols.join(", ");
+        let update_cols: Vec<&str> = T::COLUMNS
+            .iter()
+            .copied()
+            .filter(|c| *c != "id" && *c != "created_at" && !conflict_cols.contains(c))
+            .collect();
+        let update_list = update_cols.join(", ");
+        let excluded_list = update_cols
+            .iter()
+            .map(|c| format!("EXCLUDED.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query = format!(
+            "INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1::json) \
+             ON CONFLICT ({conflict}) DO UPDATE SET ({update_list}) = ({excluded_list}) RETURNING *"
+        );
         sqlx::query_as::<_, Self>(&query)
             .bind(sqlx::types::Json(self))
             .fetch_one(pool)
@@ -124,7 +166,7 @@ impl<ID, T> Entity<ID, T> {
         let cols = T::COLUMNS.join(", ");
         let p_cols = T::COLUMNS.iter().map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ");
         let query = format!(
-            "UPDATE {table} SET ({cols}) = ({p_cols}) FROM json_populate_record(NULL::{table}, $1) p WHERE {table}.id = $2 RETURNING {table}.*"
+            "UPDATE {table} SET ({cols}) = ({p_cols}) FROM json_populate_record(NULL::{table}, $1::json) p WHERE {table}.id = $2 RETURNING {table}.*"
         );
         sqlx::query_as::<_, Self>(&query)
             .bind(sqlx::types::Json(self))
@@ -199,5 +241,24 @@ mod tests {
 
         let deserialized: Entity<Uuid, SampleData> = serde_json::from_str(&json).unwrap();
         assert_eq!(entity, deserialized);
+    }
+
+    #[test]
+    fn test_table_conflict_columns_default_and_override() {
+        struct DefaultTable;
+        impl Table for DefaultTable {
+            const TABLE_NAME: &'static str = "defaults";
+            const COLUMNS: &'static [&'static str] = &["id", "name"];
+        }
+
+        struct CustomTable;
+        impl Table for CustomTable {
+            const TABLE_NAME: &'static str = "customs";
+            const COLUMNS: &'static [&'static str] = &["id", "tenant_id", "external_id", "value"];
+            const CONFLICT_COLUMNS: &'static [&'static str] = &["tenant_id", "external_id"];
+        }
+
+        assert_eq!(DefaultTable::CONFLICT_COLUMNS, &["id"]);
+        assert_eq!(CustomTable::CONFLICT_COLUMNS, &["tenant_id", "external_id"]);
     }
 }

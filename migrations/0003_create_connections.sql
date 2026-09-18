@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS connections (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    org_id UUID REFERENCES orgs(id) ON DELETE SET NULL,
+    org_id UUID REFERENCES org(id) ON DELETE SET NULL,
     provider VARCHAR(64) NOT NULL,
     provider_account_id VARCHAR(255) NOT NULL,
     access_token TEXT NOT NULL,

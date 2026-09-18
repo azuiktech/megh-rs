@@ -19,8 +19,8 @@ use crate::auth::oauth::{
     build_authorization_url, fetch_user_info, AuthUrlOptions, CsrfToken, OAuthProviderConfig,
     RedirectUrl,
 };
+use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
 use crate::auth::user::{UpsertUserInput, User, UserRepo};
-use crate::connection::{ConnectionData, ConnectionRepo, FullConnection, OAuth2Tokens};
 use crate::session::{Session, SessionExt, SessionRepo, SessionView};
 
 /// Shared state required by the Megh authentication HTTP router.
@@ -264,20 +264,21 @@ pub async fn oauth_callback(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("User upsert failed: {e}")))?;
 
-    // Save Connection credentials
+    // Save ConnectedAccount credentials
     let oauth_tokens = OAuth2Tokens::from(&token_response);
-    let connection_repo = ConnectionRepo::new(&state.pool);
-    let _ = connection_repo
-        .upsert(&FullConnection {
-            data: ConnectionData {
-                user_id: user.id,
-                org_id: None,
-                provider: provider_id,
-                provider_account_id: user_info.subject,
-                scopes: provider.default_scopes.clone(),
-                metadata: serde_json::json!({ "email": user_info.email }),
-            },
-            tokens: oauth_tokens,
+    let account_repo = ConnectedAccountRepo::new(&state.pool);
+    let _ = account_repo
+        .save(&ConnectedAccount {
+            account_id: user_info.subject,
+            provider: provider_id,
+            email: Some(user_info.email),
+            access_token: oauth_tokens.access_token,
+            refresh_token: oauth_tokens.refresh_token,
+            token_type: Some("Bearer".to_string()),
+            expiry: oauth_tokens.token_expires_at,
+            created_at: None,
+            updated_at: None,
+            disconnected_at: None,
         })
         .await;
 

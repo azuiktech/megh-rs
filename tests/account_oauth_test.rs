@@ -3,116 +3,48 @@ use megh::auth::{
     build_authorization_url, AuthUrlOptions, BasicTokenResponse, CsrfToken, OAuthFlowMode,
     OAuthProviderConfig, OAuthUserInfo, PkceCodeChallenge, TokenResponse,
 };
-use megh::connection::{
-    Connection, ConnectionData, ConnectionExt, FullConnection, OAuth2Tokens,
-};
-use megh::Entity;
-use uuid::Uuid;
+use megh::account::{ConnectedAccount, OAuth2Tokens};
+use megh::Table;
 
 #[test]
-fn test_connection_scope_checks_and_deref() {
-    let id = Uuid::new_v4();
-    let user_id = Uuid::new_v4();
-    let conn: Connection = Entity::new(
-        id,
-        FullConnection {
-            data: ConnectionData {
-                user_id,
-                org_id: None,
-                provider: "google".to_string(),
-                provider_account_id: "google-uid-123".to_string(),
-                scopes: vec![
-                    "openid".to_string(),
-                    "https://www.googleapis.com/auth/userinfo.email".to_string(),
-                    "https://www.googleapis.com/auth/calendar.events".to_string(),
-                ],
-                metadata: serde_json::json!({ "email": "user@example.com" }),
-            },
-            tokens: OAuth2Tokens {
-                access_token: "secret-access-token".to_string(),
-                refresh_token: Some("secret-refresh-token".to_string()),
-                token_expires_at: Some(Utc::now() + Duration::hours(1)),
-            },
-        },
-    );
-
-    // Deref gives direct field access
-    assert_eq!(conn.provider, "google");
-    assert_eq!(conn.provider_account_id, "google-uid-123");
-    assert_eq!(conn.user_id, user_id);
-
-    // Scope checking via Deref
-    assert!(conn.has_scope("openid"));
-    assert!(conn.has_scope("https://www.googleapis.com/auth/calendar.events"));
-    assert!(!conn.has_scope("https://www.googleapis.com/auth/gmail.readonly"));
-
-    assert!(conn.has_all_scopes(&[
-        "openid",
-        "https://www.googleapis.com/auth/calendar.events",
-    ]));
-    assert!(!conn.has_all_scopes(&[
-        "openid",
-        "https://www.googleapis.com/auth/gmail.readonly",
-    ]));
+fn test_connected_account_table_metadata() {
+    assert_eq!(ConnectedAccount::TABLE_NAME, "connected_accounts");
+    assert_eq!(ConnectedAccount::CONFLICT_COLUMNS, &["account_id", "provider"]);
+    assert!(ConnectedAccount::COLUMNS.contains(&"account_id"));
+    assert!(ConnectedAccount::COLUMNS.contains(&"provider"));
+    assert!(ConnectedAccount::COLUMNS.contains(&"access_token"));
 }
 
 #[test]
-fn test_oauth2_tokens_expiration() {
+fn test_connected_account_helpers() {
     let now = Utc::now();
-    let expired_tokens = OAuth2Tokens {
-        access_token: "token".to_string(),
-        refresh_token: None,
-        token_expires_at: Some(now - Duration::seconds(10)),
+    let acc = ConnectedAccount {
+        account_id: "google-uid-123".to_string(),
+        provider: "google".to_string(),
+        email: Some("user@example.com".to_string()),
+        access_token: "test-token".to_string(),
+        refresh_token: Some("refresh-token".to_string()),
+        token_type: Some("Bearer".to_string()),
+        expiry: Some(now + Duration::hours(1)),
+        created_at: Some(now),
+        updated_at: Some(now),
+        disconnected_at: None,
     };
-    assert!(expired_tokens.is_expired(0));
 
-    let valid_tokens = OAuth2Tokens {
-        access_token: "token".to_string(),
-        refresh_token: None,
-        token_expires_at: Some(now + Duration::seconds(300)),
+    assert!(acc.is_connected());
+    assert!(!acc.is_expired(0));
+
+    let disconnected = ConnectedAccount {
+        disconnected_at: Some(now),
+        ..acc.clone()
     };
-    assert!(!valid_tokens.is_expired(0));
-    assert!(valid_tokens.is_expired(600));
+    assert!(!disconnected.is_connected());
 
-    let no_expiry_tokens = OAuth2Tokens {
-        access_token: "token".to_string(),
-        refresh_token: None,
-        token_expires_at: None,
+    let expired = ConnectedAccount {
+        expiry: Some(now - Duration::seconds(10)),
+        ..acc
     };
-    assert!(!no_expiry_tokens.is_expired(0));
-}
-
-#[test]
-fn test_connection_view_strips_secrets() {
-    let id = Uuid::new_v4();
-    let user_id = Uuid::new_v4();
-    let conn: Connection = Entity::new(
-        id,
-        FullConnection {
-            data: ConnectionData {
-                user_id,
-                org_id: None,
-                provider: "google".to_string(),
-                provider_account_id: "google-uid-123".to_string(),
-                scopes: vec!["https://www.googleapis.com/auth/calendar".to_string()],
-                metadata: serde_json::json!({ "email": "user@example.com" }),
-            },
-            tokens: OAuth2Tokens {
-                access_token: "super-secret-access-token".to_string(),
-                refresh_token: Some("super-secret-refresh-token".to_string()),
-                token_expires_at: Some(Utc::now() + Duration::hours(1)),
-            },
-        },
-    );
-
-    let view = conn.to_view();
-    let json = serde_json::to_string(&view).unwrap();
-
-    assert!(!json.contains("super-secret-access-token"));
-    assert!(!json.contains("super-secret-refresh-token"));
-    assert!(json.contains("https://www.googleapis.com/auth/calendar"));
-    assert!(json.contains("user@example.com"));
-    assert_eq!(view.provider, "google");
+    assert!(expired.is_expired(0));
 }
 
 #[test]
@@ -271,4 +203,57 @@ fn test_oauth_user_info_deserialization() {
     assert_eq!(user_info.email, "abirbasak@example.com");
     assert_eq!(user_info.email_verified, Some(true));
     assert_eq!(user_info.name.as_deref(), Some("Abir Basak"));
+}
+
+#[tokio::test]
+async fn test_connected_account_repo_persistence() {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://kyrios:kyrios@localhost:5432/kyrios".to_string());
+
+    let Ok(pool) = sqlx::PgPool::connect(&database_url).await else {
+        eprintln!("Database not reachable, skipping repo persistence test");
+        return;
+    };
+
+    let repo = megh::ConnectedAccountRepo::new(&pool);
+    let account_id = format!("test_acc_{}", uuid::Uuid::new_v4());
+    let email = format!("{}@example.com", account_id);
+
+    let acc = ConnectedAccount {
+        account_id: account_id.clone(),
+        provider: "google".to_string(),
+        email: Some(email.clone()),
+        access_token: "token-123".to_string(),
+        refresh_token: Some("refresh-123".to_string()),
+        token_type: Some("Bearer".to_string()),
+        expiry: Some(Utc::now() + Duration::hours(1)),
+        created_at: None,
+        updated_at: None,
+        disconnected_at: None,
+    };
+
+    let saved = repo.save(&acc).await.expect("saving connected account");
+    assert_eq!(saved.account_id, account_id);
+    assert_eq!(saved.access_token, "token-123");
+
+    // Lookup by PK
+    let fetched = repo.get(&account_id, "google").await.expect("get account").expect("account exists");
+    assert_eq!(fetched.email.as_deref(), Some(email.as_str()));
+
+    // Lookup by email
+    let by_email = repo.find_by_email_or_account(&email, "google").await.expect("find by email").expect("found");
+    assert_eq!(by_email.account_id, account_id);
+
+    // Disconnect
+    let disconnected = repo.disconnect(&account_id, "google").await.expect("disconnect");
+    assert!(disconnected);
+
+    let after_disconnect = repo.find_by_email_or_account(&email, "google").await.expect("find after disconnect");
+    assert!(after_disconnect.is_none());
+
+    // Cleanup
+    let _ = sqlx::query("DELETE FROM connected_accounts WHERE account_id = $1")
+        .bind(&account_id)
+        .execute(&pool)
+        .await;
 }

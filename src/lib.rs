@@ -3,8 +3,16 @@
 pub mod account;
 pub mod auth;
 pub mod entity;
+pub mod event;
 pub mod org;
 pub mod session;
+
+pub use event::{
+    Broker, Event, EventSource, HistoryError, HistoryFuture, HistoryOptions, HistoryProvider,
+    NoopHistoryProvider, RingBuffer, Topic,
+};
+#[cfg(feature = "axum")]
+pub use event::events_router;
 
 pub use entity::{ColumnMeta, Entity, Table};
 #[cfg(feature = "postgres")]

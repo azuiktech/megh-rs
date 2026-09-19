@@ -1,12 +1,15 @@
 //! Megh: Micro Event-driven Gateway Hub in Rust.
 
+pub mod account;
 pub mod auth;
-pub mod connection;
 pub mod entity;
 pub mod org;
 pub mod session;
 
-pub use entity::{Entity, Table};
+pub use entity::{ColumnMeta, Entity, Table};
+#[cfg(feature = "postgres")]
+pub use entity::TableEntity;
+pub use megh_derive::Table;
 
 pub use auth::{
     build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType,
@@ -20,12 +23,9 @@ pub use auth::UserRepo;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use auth::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};
 
-pub use connection::{
-    Connection, ConnectionData, ConnectionExt, ConnectionView, FullConnection, OAuth2Tokens,
-    UpsertConnectionInput,
-};
+pub use account::{ConnectedAccount, OAuth2Tokens};
 #[cfg(feature = "postgres")]
-pub use connection::ConnectionRepo;
+pub use account::ConnectedAccountRepo;
 
 pub use org::{Org, OrgMember};
 
@@ -45,7 +45,7 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(include_str!("../migrations/0002_create_users.sql"))
         .execute(pool)
         .await?;
-    sqlx::raw_sql(include_str!("../migrations/0003_create_connections.sql"))
+    sqlx::raw_sql(include_str!("../migrations/0003_create_connected_accounts.sql"))
         .execute(pool)
         .await?;
     sqlx::raw_sql(include_str!("../migrations/0004_create_sessions.sql"))

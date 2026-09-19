@@ -5,11 +5,12 @@ use oauth2::basic::BasicTokenResponse;
 use oauth2::TokenResponse;
 use serde::{Deserialize, Serialize};
 
-use crate::entity::Table;
+use crate::Table;
 
 /// Third-party OAuth connected account stored in `connected_accounts`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Table)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
+#[table(name = "connected_accounts", keys = ["account_id", "provider"])]
 pub struct ConnectedAccount {
     pub account_id: String,
     pub provider: String,
@@ -21,16 +22,6 @@ pub struct ConnectedAccount {
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub disconnected_at: Option<DateTime<Utc>>,
-}
-
-impl Table for ConnectedAccount {
-    const TABLE_NAME: &'static str = "connected_accounts";
-    const COLUMNS: &'static [&'static str] = &[
-        "account_id", "provider", "email", "access_token",
-        "refresh_token", "token_type", "expiry",
-        "created_at", "updated_at", "disconnected_at",
-    ];
-    const CONFLICT_COLUMNS: &'static [&'static str] = &["account_id", "provider"];
 }
 
 impl ConnectedAccount {

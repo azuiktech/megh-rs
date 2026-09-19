@@ -6,7 +6,10 @@ pub mod entity;
 pub mod org;
 pub mod session;
 
-pub use entity::{Entity, Table};
+pub use entity::{ColumnMeta, Entity, Table};
+#[cfg(feature = "postgres")]
+pub use entity::TableEntity;
+pub use megh_derive::Table;
 
 pub use auth::{
     build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType,

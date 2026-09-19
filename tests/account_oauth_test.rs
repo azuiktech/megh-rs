@@ -9,10 +9,11 @@ use megh::Table;
 #[test]
 fn test_connected_account_table_metadata() {
     assert_eq!(ConnectedAccount::TABLE_NAME, "connected_accounts");
+    assert_eq!(ConnectedAccount::PRIMARY_KEY, &["account_id", "provider"]);
     assert_eq!(ConnectedAccount::CONFLICT_COLUMNS, &["account_id", "provider"]);
-    assert!(ConnectedAccount::COLUMNS.contains(&"account_id"));
-    assert!(ConnectedAccount::COLUMNS.contains(&"provider"));
-    assert!(ConnectedAccount::COLUMNS.contains(&"access_token"));
+    assert!(ConnectedAccount::COLUMNS.iter().any(|c| c.name == "account_id"));
+    assert!(ConnectedAccount::COLUMNS.iter().any(|c| c.name == "provider"));
+    assert!(ConnectedAccount::COLUMNS.iter().any(|c| c.name == "access_token"));
 }
 
 #[test]

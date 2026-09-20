@@ -13,19 +13,42 @@ impl Grant {
         Self(permission.into().trim().to_lowercase())
     }
 
+    /// Creates a Grant from resource, action, and optional instance.
+    pub fn from_parts(resource: &str, action: &str, instance: Option<&str>) -> Self {
+        match instance {
+            Some(inst) => Self::new(format!("{}:{}:{}", resource, action, inst)),
+            None => Self::new(format!("{}:{}", resource, action)),
+        }
+    }
+
     /// Returns the raw permission string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// Returns the resource segment if present.
+    pub fn resource(&self) -> &str {
+        self.0.split(':').next().unwrap_or("")
+    }
+
+    /// Returns the action segment if present.
+    pub fn action(&self) -> Option<&str> {
+        self.0.split(':').nth(1)
+    }
+
+    /// Returns the instance segment if present.
+    pub fn instance(&self) -> Option<&str> {
+        self.0.split(':').nth(2)
+    }
+
     /// Evaluates if this grant implies the required target grant.
     ///
-    /// Rules:
+    /// Rules (Apache Shiro format):
     /// - Global wildcard `"*"` implies all permissions.
-    /// - An empty grant never implies any target (unless target is also empty).
-    /// - Matching is done segment-by-segment separated by `':'`.
-    /// - A wildcard segment `"*"` implies any target segment at that position.
-    /// - Comma-separated subparts (e.g. `"read,write"`) match if any subpart matches the target.
+    /// - Empty grant never implies any target (unless target is also empty).
+    /// - If granted has more parts than target, it cannot imply target unless trailing parts are `*`.
+    /// - For each part in granted: `*` matches anything, comma-separated subparts match any subpart.
+    /// - If granted runs out of parts, remaining target parts are implicitly satisfied.
     pub fn implies(&self, target: &Grant) -> bool {
         if self.0 == "*" {
             return true;
@@ -37,19 +60,20 @@ impl Grant {
         let self_parts: Vec<&str> = self.0.split(':').collect();
         let target_parts: Vec<&str> = target.0.split(':').collect();
 
-        // If self has more parts than target, it cannot imply target unless trailing parts are wildcards
-        if self_parts.len() > target_parts.len() {
+        if self_parts.len() > target_parts.len()
+            && !self_parts[target_parts.len()..].iter().all(|&p| p == "*")
+        {
             return false;
         }
 
         self_parts
             .iter()
+            .take(target_parts.len())
             .enumerate()
             .all(|(idx, &self_part)| {
                 let target_part = target_parts[idx];
                 self_part == "*" || self_part.split(',').any(|sp| sp == "*" || sp == target_part)
             })
-            && (self_parts.len() == target_parts.len() || self_parts.last() == Some(&"*"))
     }
 }
 

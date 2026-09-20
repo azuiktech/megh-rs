@@ -23,8 +23,10 @@ pub use auth::{
     build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType,
     CsrfToken, Grant, OAuthError, OAuthFlowMode, OAuthProviderConfig, OAuthUserInfo,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, UpsertUserInput, User,
-    UserProfile,
+    UserProfile, request_action, request_grant,
 };
+#[cfg(feature = "axum")]
+pub use auth::authorizer;
 #[cfg(feature = "postgres")]
 pub use auth::UserRepo;
 

@@ -111,6 +111,8 @@ fn parse_field(field: &Field, rename_all: Option<&str>) -> Result<Option<ParsedC
                     is_json = true;
                 } else if meta.path.is_ident("default") {
                     has_default = true;
+                } else if meta.input.peek(syn::Token![=]) {
+                    let _ = meta.value()?.parse::<syn::Expr>();
                 }
                 Ok(())
             })?;

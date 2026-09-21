@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7, F9, F10, F11, F13, F15, F16 and F17 shipped. F12 and F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F11, F13, F15, F16 and F17 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -17,7 +17,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F5 | Axum auth router, session cookie, `AuthUser` extractor | `[x]` | #10 / #9 |
 | F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | `[x]` | #11 |
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
-| F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
+| F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | `[x]` | #53 / #22 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
@@ -36,7 +36,7 @@ Terms follow pac4j (https://www.pac4j.org/docs/).
 |---|---|---|
 | Authenticator / client | turns a request into a verified user | OAuth login and callback (F3, F5) |
 | Matcher | does security apply to this request? | Axum routing and `route_layer`. No `Matcher` trait. |
-| Authorizer | given a request (and profile), allow or deny; deny is 403 | `authorizer` middleware over `Grant`s (F7). F8 adds a callback-level `Authorizer` trait. |
+| Authorizer | given a request (and profile), allow or deny; deny is 403 | `authorizer` middleware over `Grant`s (F7). |
 
 pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clients keep `state` and PKCE inside the client.
 
@@ -294,155 +294,40 @@ Revocation is the token lifetime, as in megh-go: there is no `jti` or denylist, 
 
 `tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16); `jwt_session_test.rs` (F17); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
 
-## 7. F8 — OAuth callback hardening (in scope, pending)
+## 7. F8 — OAuth callback hardening (`auth::http`; #53 / #22)
 
-> Written before F16: where this section sets or reads the session cookie, the cookie is now the app's `SessionManagerLayer` and the `user_id` lives in the `tower-sessions` session; `Secure` becomes that layer's setting. Revisit before implementing.
+The checks come from `oauth2` (state and PKCE types, constant-time comparison) and `tower-sessions` (where the values wait); megh wires them.
 
-**Issue:** azuiktech/megh-rs#22
-**Touches:** `src/auth/http.rs` (edit), `src/auth/flow.rs` (new), `src/auth/mod.rs` and `src/lib.rs` (`mod` + re-export lines), `tests/auth_router_test.rs` (extend). 5 files.
+| Threat | Control |
+|---|---|
+| Login CSRF: an attacker completes their own OAuth flow in the victim's browser | `oauth_login` generates `CsrfToken::new_random()`, sends it as `state` and keeps it in the session; the callback compares the returned `state` with `CsrfToken ==`, which is constant time under `oauth2`'s `timing-resistant-secret-traits` feature |
+| Authorization-code interception | PKCE: `PkceCodeChallenge::new_random_sha256()` (S256) at login, the verifier kept in the session and sent with `set_pkce_verifier` at the code exchange |
+| Guessing or replaying `state` | The stored attempt is per provider and is consumed by the first callback, right or wrong: a wrong guess ends that login. No stored attempt is 400, a mismatch is 403, and the provider is not called in either case |
+| Session fixation | `cycle_id()` at login (F16) |
+| Linking an account through an unverified email | The userinfo `email_verified` must be `true`; `false` or absent is 403 and no user is created |
+| The result page leaking the profile to any window | `postMessage` targets `web_origin` (`MeghAuthState::with_web_origin`, default `app_origin`), never `*` |
+| Script injection through a provider-supplied name | The result page carries its data in HTML attributes escaped by `html-escape`; its script is static |
+| Provider, SQL or session errors reaching the client | Fixed messages (`sign-in failed`, `could not save the user`, ...); the cause is logged with `tracing`. A failed `connected_accounts` save is now an error, not ignored |
 
-### 7.1 Problem
+`web_origin` is the origin of the page that opened the popup: the backend cannot read it, and `app_origin` is the backend's own, so a web app on another origin must set it.
 
-`oauth_login` builds a `CsrfToken` and drops it; `oauth_callback` never checks `state`, sends no PKCE verifier, sets the session cookie without `Secure`, links accounts by email without checking `email_verified`, and posts the user object with `targetOrigin "*"`.
+The session cookie must be `SameSite=Lax`: `tower-sessions` defaults to `Strict`, and a Strict cookie is not sent on the cross-site redirect back from the provider, so the login attempt would never be found. `examples/server.rs` sets it (`SessionManagerLayer::new(store).with_same_site(SameSite::Lax)`).
 
-### 7.2 Design
+Responses: 400 provider `error`, missing `code`, or no login in progress; 403 `state` mismatch or unverified email; 404 unknown provider; 502 exchange or userinfo failure; 500 database or session failure.
 
-Standard OAuth 2.0 authorization-code + PKCE with the `oauth2` crate's `CsrfToken` and `PkceCodeChallenge::new_random_sha256()`. No hand-rolled crypto, no signing key. In pac4j terms, the OAuth `state` check is an authorizer on the callback and PKCE stays in the authenticator, because it is part of the token exchange.
-
-```
-GET /auth/{provider}/login
-  csrf = CsrfToken::new_random();  (challenge, verifier) = PkceCodeChallenge::new_random_sha256()
-  Set-Cookie: _oauth_state_<provider>=<csrf>       HttpOnly; SameSite=Lax; Path=/; Max-Age=600; [Secure]
-  Set-Cookie: _oauth_pkce_<provider>=<verifier>    (same attributes)
-  303 → provider auth URL with state=<csrf>, code_challenge=<challenge>, code_challenge_method=S256
-
-GET /auth/{provider}/callback?code&state
-  run every configured Authorizer          any Err → 403
-  verifier = cookie _oauth_pkce_<provider>              else 400
-  Clear both cookies (Max-Age=0), success or failure
-  exchange_code(code).set_pkce_verifier(verifier)
-  userinfo.email_verified == Some(true)                 else 403
-  upsert user → create session → Set-Cookie session [Secure when app_origin is https]
-  HTML: postMessage(payload, <web origin>)
-```
-
-Why a plain cookie compare and not a signed state: the state cookie is HttpOnly and `SameSite=Lax`, so a cross-site attacker cannot set or read it in the victim's browser; comparing it with the query `state` is the standard double-submit check and needs no secret. (megh-go signs it with an HMAC keyed off the client secret; that adds nothing here.)
-
-Decisions:
-
-| Point | Choice | Reason |
-|---|---|---|
-| CSRF is configurable, default on | The callback's authorizer list defaults to `[OAuthState]`. Opt out with `with_authorizers([])`. | Composition instead of a flag: no `bool`, no enum, and any other filter (IP allow-list, custom) plugs in the same way. |
-| Deny status | 403 for every authorizer denial | pac4j: authorization failure = 403. Missing PKCE verifier is a malformed request, 400. |
-| `Secure` flag | Derived: `app_origin` starts with `https://`. | Local `http://127.0.0.1` dev must keep working. |
-| `email_verified` | Require `Some(true)` | `upsert` links by email; `None` is not proof. |
-| `postMessage` target | Origin of `redirect_after_login` resolved against `app_origin` (`Url::join(..).origin()`) | `app_origin` is the API origin; the opener is the web app. |
-| Cookie names | `_oauth_state_<provider>`, `_oauth_pkce_<provider>` | Same as megh-go. |
-
-Login always sets the state cookie, even with no `OAuthState` authorizer: it is harmless and keeps `login` free of a conditional.
-
-Not changed: session cookie `SameSite=Lax`, userinfo-endpoint identity, `include_granted_scopes`/`prompt=select_account`. The existing grant `authorizer` (F7) is a profile-based authorizer in pac4j terms and is not touched.
-
-### 7.3 Interfaces (for approval)
-
-Public additions (in `src/auth/flow.rs`, `pub mod flow`, re-exported from `megh::auth` and `megh::`). No existing signature changes.
-
-```rust
-/// What an authorizer sees of an OAuth callback.
-pub struct CallbackRequest<'a> {
-    pub provider: &'a str,
-    pub headers: &'a HeaderMap,
-    pub query: &'a OAuthCallbackQuery,   // existing type, already public
-}
-
-/// Why an authorizer refused the request.
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct Denied(pub &'static str);
-
-/// A request filter: `Ok` lets the callback proceed, `Err` denies it.
-pub trait Authorizer: Send + Sync {
-    fn authorize(&self, request: &CallbackRequest) -> Result<(), Denied>;
-}
-
-/// Denies unless the `state` query equals the state cookie set at login.
-pub struct OAuthState;
-impl Authorizer for OAuthState { /* constant-time compare */ }
-
-impl MeghAuthState {
-    // new field: authorizers: Arc<[Arc<dyn Authorizer>]>, default [OAuthState]
-    pub fn with_authorizers(
-        self,
-        authorizers: impl IntoIterator<Item = Arc<dyn Authorizer>>,
-    ) -> Self;
-}
-```
-
-Crate-private helpers in `flow.rs` (`pub(super)`):
-
-```rust
-struct Attempt { csrf: CsrfToken, challenge: PkceCodeChallenge, cookies: [String; 2] }
-fn begin(provider: &str, secure: bool) -> Attempt;
-fn pkce_verifier(headers: &HeaderMap, provider: &str) -> Option<PkceCodeVerifier>;
-fn clear_cookies(provider: &str) -> [String; 2];
-fn require_verified_email(info: &OAuthUserInfo) -> Result<(), Denied>;
-```
-
-Changes to `src/auth/http.rs` (inside existing functions, no signature changes):
-
-- `oauth_login`: `flow::begin`, `pkce: Some(&challenge)` in `AuthUrlOptions`, cookies on the redirect.
-- `oauth_callback`: run the authorizers first (`state.authorizers.iter().try_for_each(..)`, no raw loop), then `pkce_verifier`, `.set_pkce_verifier(..)` on the exchange, `require_verified_email` after userinfo, append `clear_cookies`; `Denied` → 403 via one `impl From<Denied> for (StatusCode, String)`.
-- Session cookie gains `; Secure` from one helper `fn secure(state) -> bool`.
-- Popup HTML: `postMessage(d, <origin JSON>)`.
-
-`extract_cookie` (existing, public) reads the attempt cookies.
-
-### 7.4 Tests (written before implementation, then immutable)
-
-In `tests/auth_router_test.rs`; existing tests unchanged.
-
-Router-level (`tower::oneshot`, lazy pool; rejection happens before any DB access):
-
-1. `/auth/google/login` → 303; `Location` has `state=`, `code_challenge=`, `code_challenge_method=S256`; `_oauth_state_google` and `_oauth_pkce_google` cookies with `HttpOnly`, `SameSite=Lax`, `Max-Age=600`; state cookie value equals the `state` in `Location`.
-2. `https` `app_origin` → attempt cookies carry `Secure`; `http` → they don't.
-3. Callback, no cookies → 403.
-4. Callback, `state` ≠ cookie → 403; no session cookie set.
-5. Callback, matching state, no PKCE cookie → 400.
-6. Denials clear both attempt cookies.
-7. `MeghAuthState::new(..)` default authorizers = exactly `[OAuthState]` (asserted by behaviour: test 3 passes without configuring anything).
-8. `with_authorizers([])` → callback with no state cookie is not denied by a filter (fails later at the exchange, not with 403); missing PKCE is still 400.
-9. A custom `Authorizer` that always denies, passed to `with_authorizers`, → 403 even with a valid state.
-
-Unit (`flow.rs`): `OAuthState` accepts equal, rejects a one-byte difference, rejects missing cookie/query; `require_verified_email` accepts only `Some(true)`.
-
-End-to-end (real HTTP, real Postgres, stub provider). A tokio test starts a local stub OAuth server (token endpoint checks `code_verifier` against the challenge it saw at login; userinfo returns a configurable profile), points `OAuthProviderConfig` `auth_url`/`token_url`/`userinfo_url` at it, and drives `auth_router` over a TCP listener with `reqwest` and a cookie jar:
-
-10. Happy path: login → stub → callback → session cookie, `Secure` per origin, `/auth/me` returns the user, user row in Postgres.
-11. `email_verified=false` → 403, no user row, no session.
-12. Wrong PKCE verifier → 502, no session.
-13. Popup HTML has the web origin as `targetOrigin`, not `"*"`.
-14. `/auth/logout` → `/auth/me` is 401 afterwards.
-
-Tests 10–14 need `DATABASE_URL` (local Postgres.app). They fail loudly with a clear message when it is unset; they never pass silently. Live-Google verification happens in `agentivity-rs`.
-
-### 7.5 Delivery
-
-One PR, one concern. Mark F8 `[x]` when merged and add its `CHANGELOG.md` entry that turn.
+Not covered: `nonce` and `id_token` validation (identity still comes from the userinfo endpoint; `openidconnect` would add it), and encryption of stored tokens.
 
 ## 8. Known gaps (identified 2026-09-21; not scheduled, not approved)
 
-Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secure` flag, the `postMessage` origin and the `email_verified` check; everything below is unscheduled. "Candidate" names a library worth evaluating, not a decision.
+Found while auditing the shipped stack. F8 has closed the OAuth `state`, PKCE, `email_verified`, `postMessage` and error-handling gaps; everything below is unscheduled. "Candidate" names a library worth evaluating, not a decision.
 
 | Gap | Note | Candidate |
 |---|---|---|
-| Accounts are linked by email without checking `email_verified` | A provider that reports an unverified email can take over an existing account (F10 stops the identity being overwritten; F8 adds the check) | — |
 | `AuthUser` is not linked to `Member`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
-| Callback page embeds `serde_json` output in an inline `<script>` | `</script>` in a provider-supplied name is not escaped | — |
 | `events_router` `POST /sub` has no CSRF check | F16 covers `auth_router` only; `events_router` has no session layer, so protecting it changes its signature | F16's `CsrfMiddleware` |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |
 | No rate limiting on `/auth/*` | | `tower_governor` (axum compatibility unverified) |
-| Error strings (SQL, provider bodies) returned to clients | `http.rs` callback error mapping | — |
-| `connected_accounts.save` error is ignored; tokens stored in plaintext; no `user_id` link | Per-user disconnect cannot be authorized | — |
+| Tokens stored in plaintext; `connected_accounts` has no `user_id` link | Per-user disconnect cannot be authorized | — |
 | Sessions: fixed expiry (`touch` unused), no purge of expired rows, `ip_address` always `""`, token is two UUIDv4s | | — |
 | Identity comes from the userinfo endpoint; no `nonce` or `id_token` validation | | `openidconnect` 3.5 (matches `oauth2` 4.4) |
 | `StandardUserInfo.id` is `Option<String>` | GitHub returns a numeric `id`; parsing is likely to fail | — |
@@ -451,8 +336,6 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 
 ## 9. Open questions
 
-- **F8, pending approval:** the `Authorizer` trait surface in §7.3, and whether a `Matcher` trait is wanted now (proposed: no).
-- **F8 `Authorizer` trait:** should it stay, given that F9 shows Tower layers already serve as authorizers?
 - **`events_router` CSRF:** the SDK posts `/sub` cross-origin with credentials and would have to fetch and send the token; protecting it also needs a session layer around `events_router`.
-- **Gaps in §8:** which become issues, and which fold into F8 (#22).
+- **Gaps in §8:** which become issues.
 - Resolved: `email_verified` `None` → reject; session cookie stays `SameSite=Lax`; axum upgraded to 0.8 with the duplicate `FromRef` removed; request CSRF uses the stateless `tower-http` layer, on by default in `auth_router`.

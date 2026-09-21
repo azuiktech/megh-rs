@@ -20,7 +20,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
 | F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
-| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup | `[ ]` | #28 |
+| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[~]` branch `feature/org-schema-align` | #28 |
 | F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token) | `[ ]` | #31 |
 | F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[ ]` | #29 |
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
@@ -42,14 +42,14 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 - **Stack:** axum 0.8, `tower-http` 0.7 (`csrf`), sqlx 0.8 (Postgres), `oauth2` 4.4 (reqwest, rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
 - **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
 - **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `sessions` insert → session cookie. Later requests: cookie → `SessionRepo::find_valid_by_token` → `UserRepo::get_by_id` → `AuthUser`.
-- **Authorization path:** the application puts an `OrgMember` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
+- **Authorization path:** the application puts a `Member` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
 
 ## 4. Data model
 
 | Table | Columns | Constraints |
 |---|---|---|
-| `org` | `id`, `name`, `description`, `timezone`, `created_at` | PK `id` |
-| `org_members` | `id`, `organization_id`, `user_id`, `joined_at`, `grants TEXT[]` | FK `organization_id` → `org` (cascade); unique `(organization_id, user_id)`; `user_id` has no FK |
+| `organizations` | `id`, `name`, `description`, `timezone`, `sub_status`, `trial_ends_at`, `plan_id`, `created_by`, `created_at`, `updated_at` | PK `id` (was `org`, see `TPD-organizations.md`) |
+| `organization_members` | `id`, `organization_id`, `user_id`, `role`, `grants` (text, JSON array), `joined_at`, `invited_by` | unique `(organization_id, user_id)`; keeps a foreign key to `organizations` (cascade) where the table was renamed from `org_members`; `user_id` has no FK (was `org_members`) |
 | `users` | `id`, `account_id`, `provider`, `email`, `password_hash`, `display_name`, `photo_url`, `created_at`, `updated_at` | unique `(account_id, provider)`, unique `email` (F10; before F10: `subject` instead of `account_id`/`provider`, unique) |
 | `connected_accounts` | `account_id`, `provider`, `email`, `access_token`, `refresh_token`, `token_type`, `expiry`, `created_at`, `updated_at`, `disconnected_at` | PK `(account_id, provider)`; no `user_id` |
 | `sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `ip_address`, `metadata JSONB`, `created_at`, `updated_at` | FK `user_id` → `users` (cascade); unique `token_hash` |
@@ -74,9 +74,10 @@ megh-go has no SQL migrations; its schema is what GORM `AutoMigrate` creates fro
 ### F1 — Org tenancy and grants (`org`, `auth::grant`)
 
 ```rust
-pub struct Org { id: Uuid, name: String, description: String, timezone: String, created_at: DateTime<Utc> }
-pub struct OrgMember { id, organization_id, user_id: Uuid, joined_at: DateTime<Utc>, grants: Vec<String> }
-impl OrgMember { pub fn has_grant(&self, required: &Grant) -> bool }
+pub struct Org { id: Uuid, name: Option<String>, description: Option<String>, timezone: String, sub_status: String,
+                 trial_ends_at: Option<DateTime<Utc>>, plan_id: Option<Uuid>, created_by: Option<Uuid>, created_at: DateTime<Utc>, updated_at: Option<DateTime<Utc>> }
+pub struct Member { id, organization_id, user_id: Uuid, role: String, grants: Vec<String>, joined_at: DateTime<Utc>, invited_by: Option<Uuid> }
+impl Member { pub fn has_grant(&self, required: &Grant) -> bool }
 
 pub struct Grant(pub String);                 // "resource:action:instance"
 impl Grant {
@@ -235,9 +236,9 @@ pub fn request_grant(method: &str, matched_template: Option<&str>, uri_path: &st
 pub async fn authorizer(req: Request, next: Next) -> Result<Response, (StatusCode, &'static str)>;
 ```
 
-`authorizer` is an Axum `from_fn` middleware. It reads an `OrgMember` (else a `Vec<Grant>`) from request extensions and requires a `MatchedPath`. The requested grant is `resource:action[:instance]`: `resource` is the last static path segment, or the segment before the last path parameter; `instance` is the last path parameter's value.
+`authorizer` is an Axum `from_fn` middleware. It reads a `Member` (else a `Vec<Grant>`) from request extensions and requires a `MatchedPath`. The requested grant is `resource:action[:instance]`: `resource` is the last static path segment, or the segment before the last path parameter; `instance` is the last path parameter's value.
 
-Responses: 401 `not authenticated` (no `OrgMember` or grants in extensions), 403 `not permitted`, 404 `route not found` (no matched path). Verified by `tests/authorizer_test.rs` and `tests/course_authorizer_test.rs` with a fake injector.
+Responses: 401 `not authenticated` (no `Member` or grants in extensions), 403 `not permitted`, 404 `route not found` (no matched path). Verified by `tests/authorizer_test.rs` and `tests/course_authorizer_test.rs` with a fake injector.
 
 ### F9 — CSRF protection (re-exported from `megh::auth`, feature `axum`; #26 / #25)
 
@@ -405,7 +406,7 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 | Gap | Note | Candidate |
 |---|---|---|
 | Accounts are linked by email without checking `email_verified` | A provider that reports an unverified email can take over an existing account (F10 stops the identity being overwritten; F8 adds the check) | — |
-| `AuthUser` is not linked to `OrgMember`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
+| `AuthUser` is not linked to `Member`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
 | Callback page embeds `serde_json` output in an inline `<script>` | `</script>` in a provider-supplied name is not escaped | — |
 | `events_router` `POST /sub` has no CSRF check | F9 covers `auth_router` only; `events_router` takes no config, so protecting it changes its signature | F9's `CsrfLayer` |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |

@@ -37,7 +37,9 @@ pub use account::{ConnectedAccount, OAuth2Tokens};
 #[cfg(feature = "postgres")]
 pub use account::ConnectedAccountRepo;
 
-pub use org::{Org, OrgMember};
+pub use org::{Member, Org};
+#[cfg(feature = "postgres")]
+pub use org::{OrgError, Orgs};
 
 pub use session::{
     generate_session_token, hash_session_token, CreatedSession, FullSession, Session, SessionData,
@@ -62,6 +64,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     sqlx::raw_sql(include_str!("../migrations/0005_align_users.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0006_align_org.sql"))
         .execute(pool)
         .await?;
     Ok(())

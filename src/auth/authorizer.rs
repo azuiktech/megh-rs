@@ -56,16 +56,16 @@ mod axum_middleware {
     use axum::response::Response;
 
     use crate::auth::grant::Grant;
-    use crate::org::OrgMember;
+    use crate::org::Member;
     use super::request_action;
 
-    /// Zero-declaration Axum middleware that inspects the authenticated OrgMember in request extensions,
+    /// Zero-declaration Axum middleware that inspects the authenticated Member in request extensions,
     /// derives the requested Grant automatically from Axum's RawPathParams and std::path::Path, and verifies permissions.
     pub async fn authorizer(
         req: Request,
         next: Next,
     ) -> Result<Response, (StatusCode, &'static str)> {
-        let member = req.extensions().get::<OrgMember>().cloned();
+        let member = req.extensions().get::<Member>().cloned();
         let grants = req.extensions().get::<Vec<Grant>>().cloned();
 
         let (mut parts, body) = req.into_parts();

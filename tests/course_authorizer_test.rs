@@ -10,24 +10,28 @@ use chrono::Utc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use megh::{authorizer, OrgMember};
+use megh::{authorizer, Member};
 
-fn create_educator_member() -> OrgMember {
-    OrgMember {
+fn create_educator_member() -> Member {
+    Member {
         id: Uuid::new_v4(),
         organization_id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
+        role: "member".to_string(),
         joined_at: Utc::now(),
+        invited_by: None,
         grants: vec!["courses:*".to_string()],
     }
 }
 
-fn create_student_member() -> OrgMember {
-    OrgMember {
+fn create_student_member() -> Member {
+    Member {
         id: Uuid::new_v4(),
         organization_id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
+        role: "member".to_string(),
         joined_at: Utc::now(),
+        invited_by: None,
         grants: vec!["courses:read".to_string()],
     }
 }

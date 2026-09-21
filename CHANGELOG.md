@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-09-22
+- Billing entities and money: `megh::billing` row types for the megh-go billing tables (`Plan`, `PlanPrice`, `AddOn`, `PlanAddOn`, `Subscription`, `SubscriptionItem`, the status, interval and add-on type enums, `Money` accessors) and `megh::money` (`rusty-money`, `from_micros`, `to_micros`; prices stay `BIGINT` micros); `JsonText<T>` reads the JSON that megh-go keeps in text columns, NULL as empty (PR #47, issue #45)
 - Password storage: `UserRepo::set_password` (bcrypt, portable with megh-go) and `verify_password`, which returns the `User` or a `PasswordError` saying why not (`UserNotFound`, `NoPassword`, `WrongPassword`, `Hash`, `Database`); megh-go's empty `password_hash` counts as no password, and a missing user or password still costs one bcrypt verification (PR #44, issue #29)
 
 ## 2026-09-21

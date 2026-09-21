@@ -2,8 +2,10 @@
 
 pub mod account;
 pub mod auth;
+pub mod billing;
 pub mod entity;
 pub mod event;
+pub mod money;
 pub mod org;
 
 pub use event::{
@@ -13,7 +15,7 @@ pub use event::{
 #[cfg(feature = "axum")]
 pub use event::events_router;
 
-pub use entity::{ColumnMeta, Entity, Table};
+pub use entity::{ColumnMeta, Entity, JsonText, Table};
 #[cfg(feature = "postgres")]
 pub use entity::TableEntity;
 pub use megh_derive::Table;

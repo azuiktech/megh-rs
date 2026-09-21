@@ -2,7 +2,7 @@
 
 **Status:** O1 (schema, `Member`, `Orgs::memberships`) is shipped; before it only the data types, the two tables and the grant check existed. Everything else in megh-go's organization domain is pending (§4) and will be ported (all of it, including login onboarding). The design in §6 is proposed and awaiting approval. megh-go is the reference (`/Users/abir/Documents/GitHub/megh-go`: `organizations.go`, `members.go`, `org.go`, `sessions.go`); the schema comparison below was made by running its real GORM `AutoMigrate` on Postgres.
 **Modules:** `src/org`, `src/auth/authorizer.rs`, `migrations/0001_create_org.sql`.
-**Related:** `TPD-authentication-authorization.md` (grants, authorizer, login). Billing (plans, subscriptions) is a separate feature area with no TPD yet.
+**Related:** `TPD-authentication-authorization.md` (grants, authorizer, login). Billing (plans, subscriptions) is a separate feature area: `TPD-billing.md`.
 
 ## 1. Delivery
 

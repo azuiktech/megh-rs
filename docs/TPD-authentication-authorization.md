@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7, F9, F10, F11 and F15 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F7, F9, F10, F11, F13 and F15 shipped. F12 and F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
 
@@ -22,7 +22,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
 | F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token) | `[ ]` | #31 |
-| F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[ ]` | #29 |
+| F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[x]` | #44 / #29 |
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
 | F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token | `[x]` | #39 / #36 |
 
@@ -112,6 +112,18 @@ impl UserRepo<'_> {                            // feature "postgres"
 ```
 
 `upsert` keeps one user per email across providers: the first provider's `(provider, account_id)` is kept and never overwritten by later logins (it only fills them in when unset), and existing `display_name`/`photo_url` are kept when the new value is empty. Each provider's tokens live in their own `connected_accounts` row, keyed by `(account_id, provider)` and linked by email. Linking by email is only safe for verified emails (F8).
+
+### F13 — Password storage (`auth::user`, feature `postgres`)
+
+```rust
+impl UserRepo<'_> {
+    pub async fn set_password(&self, user_id: Uuid, password: &str) -> Result<(), PasswordError>;      // bcrypt hash into users.password_hash
+    pub async fn verify_password(&self, email: &str, password: &str) -> Result<User, PasswordError>;
+}
+pub enum PasswordError { UserNotFound, NoPassword, WrongPassword, Hash(bcrypt::BcryptError), Database(sqlx::Error) }   // #[non_exhaustive]
+```
+
+`bcrypt` 0.19; hashes verify in both directions with megh-go's `bcrypt.GenerateFromPassword` (tested against a hash it produced). `verify_password` reports why it failed and leaves the policy to the caller. megh-go stores an unset password as `''`, which counts as `NoPassword`. When the user or password is missing it still runs one bcrypt verification against a dummy hash, so response time does not tell which emails exist. Hashing runs on the calling task (about 0.25 s at cost 12); a caller on an async runtime can wrap the call in `spawn_blocking`. No lockout or rate limiting (F14 and hardening).
 
 ### F3 — OAuth 2.0 client and connected accounts (`auth::oauth`, `account`)
 

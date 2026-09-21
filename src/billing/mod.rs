@@ -10,6 +10,11 @@ use uuid::Uuid;
 use crate::money::{from_micros, iso, Money, MoneyError};
 use crate::{JsonText, Table};
 
+#[cfg(feature = "postgres")]
+mod subscriptions;
+#[cfg(feature = "postgres")]
+pub use subscriptions::{BillingError, CancelWhen, Subscriptions};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]

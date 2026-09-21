@@ -46,7 +46,11 @@ impl MeghAuthState {
             redirect_after_login: "/".to_string(),
             app_origin: "http://localhost:8080".to_string(),
             providers: Arc::new(HashMap::new()),
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("static HTTP client configuration"),
             csrf: CsrfLayer::new(),
         }
     }
@@ -232,7 +236,7 @@ pub async fn oauth_callback(
     // Exchange authorization code for tokens
     let token_response = client
         .exchange_code(oauth2::AuthorizationCode::new(code))
-        .request_async(oauth2::reqwest::async_http_client)
+        .request_async(&state.http_client)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Token exchange failed: {e}")))?;
 

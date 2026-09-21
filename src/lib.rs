@@ -20,7 +20,7 @@ pub use entity::TableEntity;
 pub use megh_derive::Table;
 
 pub use auth::{
-    build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType,
+    build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType, ProviderClient,
     CsrfToken, Grant, OAuthError, OAuthFlowMode, OAuthProviderConfig, OAuthUserInfo,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, UpsertUserInput, User,
     UserProfile, request_action, request_grant,

@@ -12,7 +12,7 @@ pub use authorizer::authorizer;
 pub use tower_http::csrf::{ConfigError, CsrfLayer, ProtectionError};
 pub use grant::Grant;
 pub use oauth::{
-    build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType,
+    build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType, ProviderClient,
     CsrfToken, OAuthError, OAuthFlowMode, OAuthProviderConfig, OAuthUserInfo, PkceCodeChallenge,
     PkceCodeVerifier, RedirectUrl, Scope, TokenResponse,
 };

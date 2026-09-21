@@ -17,12 +17,12 @@ json-patch = "4.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 megh-derive = { path = "./megh-derive" }
-oauth2 = { version = "4.4", default-features = false, features = ["reqwest", "rustls-tls"] }
+oauth2 = { version = "5", default-features = false, features = ["reqwest", "rustls-tls"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"], optional = true }
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"], optional = true }
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.7", features = ["csrf"], optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }

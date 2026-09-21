@@ -5,7 +5,6 @@ pub mod auth;
 pub mod entity;
 pub mod event;
 pub mod org;
-pub mod session;
 
 pub use event::{
     Broker, Event, EventSource, HistoryError, HistoryFuture, HistoryOptions, HistoryProvider,
@@ -44,13 +43,6 @@ pub use account::{AccountAuth, AccountError, Accounts};
 pub use org::{Member, Org};
 #[cfg(feature = "postgres")]
 pub use org::{OrgError, Orgs};
-
-pub use session::{
-    generate_session_token, hash_session_token, CreatedSession, FullSession, Session, SessionData,
-    SessionExt, SessionSecrets, SessionView,
-};
-#[cfg(feature = "postgres")]
-pub use session::SessionRepo;
 
 #[cfg(feature = "postgres")]
 /// Executes all embedded database migrations for Megh foundation tables.

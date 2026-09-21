@@ -1,6 +1,8 @@
 //! Megh: Micro Event-driven Gateway Hub in Rust.
 
 pub mod account;
+#[cfg(feature = "postgres")]
+pub mod audit;
 pub mod auth;
 pub mod billing;
 pub mod entity;
@@ -65,6 +67,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     sqlx::raw_sql(include_str!("../migrations/0006_align_org.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0007_audit.sql"))
         .execute(pool)
         .await?;
     Ok(())

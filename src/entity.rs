@@ -2,9 +2,25 @@
 
 use std::ops::{Deref, DerefMut};
 use chrono::{DateTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// Detailed column metadata extracted at compile time by #[derive(Table)].
+/// A JSON document kept in a text column, as megh-go writes them. NULL and `null` read as the default.
+/// Read it with `#[sqlx(try_from = "Option<String>")]`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct JsonText<T>(pub T);
+
+impl<T: DeserializeOwned + Default> TryFrom<Option<String>> for JsonText<T> {
+    type Error = serde_json::Error;
+
+    fn try_from(text: Option<String>) -> Result<Self, Self::Error> {
+        let json = text.map_or(Ok(None), |text| serde_json::from_str::<Option<T>>(&text))?;
+        Ok(Self(json.unwrap_or_default()))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColumnMeta {
     pub name: &'static str,

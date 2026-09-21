@@ -21,6 +21,7 @@ use crate::auth::oauth::{
 };
 use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
 use crate::auth::user::{UpsertUserInput, User, UserRepo};
+use crate::auth::CsrfLayer;
 use crate::session::{Session, SessionExt, SessionRepo, SessionView};
 
 /// Shared state required by the Megh authentication HTTP router.
@@ -33,6 +34,7 @@ pub struct MeghAuthState {
     pub app_origin: String,
     pub providers: Arc<HashMap<String, OAuthProviderConfig>>,
     pub http_client: reqwest::Client,
+    pub csrf: CsrfLayer,
 }
 
 impl MeghAuthState {
@@ -45,7 +47,13 @@ impl MeghAuthState {
             app_origin: "http://localhost:8080".to_string(),
             providers: Arc::new(HashMap::new()),
             http_client: reqwest::Client::new(),
+            csrf: CsrfLayer::new(),
         }
+    }
+
+    pub fn with_csrf(mut self, csrf: CsrfLayer) -> Self {
+        self.csrf = csrf;
+        self
     }
 
     pub fn with_cookie_name(mut self, cookie_name: impl Into<String>) -> Self {
@@ -142,6 +150,7 @@ pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 
 /// Builds an Axum router with all authentication and session endpoints.
 pub fn auth_router(state: MeghAuthState) -> Router {
+    let csrf = state.csrf.clone();
     Router::new()
         .route("/auth/{provider}", get(oauth_login))
         .route("/auth/{provider}/login", get(oauth_login))
@@ -150,6 +159,7 @@ pub fn auth_router(state: MeghAuthState) -> Router {
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(auth_logout))
         .with_state(state)
+        .layer(csrf)
 }
 
 /// Initiates OAuth login redirection for a given provider (e.g. `/auth/google`).

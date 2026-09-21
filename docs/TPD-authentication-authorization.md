@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7 shipped. F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3.
+**Status:** F1–F7 and F9 shipped. F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
 
@@ -18,6 +18,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | `[x]` | #11 |
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
 | F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
+| F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[x]` | #26 / #25 |
 
 ## 2. Design vocabulary (pac4j)
 
@@ -33,7 +34,7 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 
 ## 3. Architecture
 
-- **Stack:** axum 0.8, sqlx 0.8 (Postgres), `oauth2` 4.4 (reqwest, rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
+- **Stack:** axum 0.8, `tower-http` 0.7 (`csrf`), sqlx 0.8 (Postgres), `oauth2` 4.4 (reqwest, rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
 - **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
 - **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `sessions` insert → session cookie. Later requests: cookie → `SessionRepo::find_valid_by_token` → `UserRepo::get_by_id` → `AuthUser`.
 - **Authorization path:** the application puts an `OrgMember` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
@@ -220,9 +221,31 @@ pub async fn authorizer(req: Request, next: Next) -> Result<Response, (StatusCod
 
 Responses: 401 `not authenticated` (no `OrgMember` or grants in extensions), 403 `not permitted`, 404 `route not found` (no matched path). Verified by `tests/authorizer_test.rs` and `tests/course_authorizer_test.rs` with a fake injector.
 
+### F9 — CSRF protection (re-exported from `megh::auth`, feature `axum`; #26 / #25)
+
+```rust
+pub use tower_http::csrf::{ConfigError, CsrfLayer, ProtectionError};   // no wrapper: attach to any router, route or Tower service
+
+impl MeghAuthState {
+    pub csrf: CsrfLayer,                                // default CsrfLayer::new(): no trusted origins
+    pub fn with_csrf(self, csrf: CsrfLayer) -> Self;
+}
+// auth_router applies `state.csrf` to every route it serves.
+```
+
+The check is stateless (`tower-http` 0.7.1; behaviour verified against its source and a probe on axum 0.8). A request passes if any of these hold: the method is `GET`, `HEAD` or `OPTIONS`; its `Origin` is in the trusted list; `Sec-Fetch-Site` is `same-origin` or `none`; neither `Sec-Fetch-Site` nor `Origin` is present; or the `Origin` authority equals `Host`. Otherwise the response is 403 with a `ProtectionError` in its extensions.
+
+Configure with the layer's own builder: `add_trusted_origin("https://app.example.com")?` (exact browser form: no trailing slash, default port omitted) and `with_insecure_bypass(|method, uri| ..)` for routes with their own protection. There is no on/off flag; exempt routes with the bypass predicate. `with_rejection_response(..)` changes the layer's type, so it works only when you attach a layer yourself, not through `with_csrf`.
+
+Consequences:
+- A web app served from a different origin than the API must be a trusted origin, including a different port or subdomain (browsers report those as same-site, not same-origin). Otherwise its `POST /auth/logout` gets 403.
+- Non-browser clients send neither header and pass.
+- Reverse proxies must forward `Host` and `Origin` unchanged, or the fallback check weakens.
+- `events_router` (`POST /sub`) is not covered: it takes no configuration, so protecting it needs a signature change (§9).
+
 ## 6. Test coverage (shipped)
 
-`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `session_user_test.rs` (F2, F4); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); unit tests in `auth/grant.rs`, `auth/user.rs`, `session/*`, `org/member.rs`. Repo and router tests use a lazy pool and never query. The exception is `test_connected_account_repo_persistence`, which uses `DATABASE_URL` if reachable and otherwise returns early and passes without asserting anything. No shipped test covers `UserRepo`, `SessionRepo` or the callback against a live database.
+`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `session_user_test.rs` (F2, F4); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9); unit tests in `auth/grant.rs`, `auth/user.rs`, `session/*`, `org/member.rs`. Repo and router tests use a lazy pool and never query. The exception is `test_connected_account_repo_persistence`, which uses `DATABASE_URL` if reachable and otherwise returns early and passes without asserting anything. No shipped test covers `UserRepo`, `SessionRepo` or the callback against a live database.
 
 ## 7. F8 — OAuth callback hardening (in scope, pending)
 
@@ -366,7 +389,7 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 | `upsert` conflicts on email and overwrites `subject` | A second provider with the same email takes over the account; F8 only adds `email_verified` | — |
 | `AuthUser` is not linked to `OrgMember`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
 | Callback page embeds `serde_json` output in an inline `<script>` | `</script>` in a provider-supplied name is not escaped | — |
-| No request-CSRF layer on state-changing routes (`POST /auth/logout`, future POSTs) | Relies on `SameSite=Lax` alone | `tower-http` `csrf` feature (Fetch Metadata + Origin, stateless); API unverified |
+| `events_router` `POST /sub` has no CSRF check | F9 covers `auth_router` only; `events_router` takes no config, so protecting it changes its signature | F9's `CsrfLayer` |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |
 | No rate limiting on `/auth/*` | | `tower_governor` (axum compatibility unverified) |
 | Error strings (SQL, provider bodies) returned to clients | `http.rs` callback error mapping | — |
@@ -380,6 +403,7 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 ## 9. Open questions
 
 - **F8, pending approval:** the `Authorizer` trait surface in §7.3, and whether a `Matcher` trait is wanted now (proposed: no).
-- **Request CSRF:** stateless (`tower-http` `csrf`) or pac4j-style token; and whether F8's callback-only `Authorizer` trait should stay, given that Tower layers already serve as authorizers elsewhere.
+- **F8 `Authorizer` trait:** should it stay, given that F9 shows Tower layers already serve as authorizers?
+- **`events_router` CSRF:** take a `CsrfLayer` parameter (breaking) or add a second constructor; the SDK posts `/sub` cross-origin with credentials, so a default with no trusted origins would break it.
 - **Gaps in §8:** which become issues, and which fold into F8 (#22).
-- Resolved: `email_verified` `None` → reject; session cookie stays `SameSite=Lax`; axum upgraded to 0.8 with the duplicate `FromRef` removed.
+- Resolved: `email_verified` `None` → reject; session cookie stays `SameSite=Lax`; axum upgraded to 0.8 with the duplicate `FromRef` removed; request CSRF uses the stateless `tower-http` layer, on by default in `auth_router`.

@@ -254,7 +254,8 @@ pub async fn oauth_callback(
     let user_repo = UserRepo::new(&state.pool);
     let user = user_repo
         .upsert(&UpsertUserInput {
-            subject: format!("{provider_id}:{}", user_info.subject),
+            provider: provider_id.clone(),
+            account_id: user_info.subject.clone(),
             email: user_info.email.clone(),
             display_name: user_info.name,
             photo_url: user_info.picture,

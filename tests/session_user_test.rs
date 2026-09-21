@@ -13,7 +13,8 @@ fn test_user_entity_deref_and_flat_json() {
     let user: User = Entity::new(
         id,
         UserProfile {
-            subject: "google:abir@example.com".to_string(),
+            account_id: Some("1234".to_string()),
+            provider: Some("google".to_string()),
             email: "abir@example.com".to_string(),
             display_name: "Abir Basak".to_string(),
             photo_url: "https://example.com/photo.png".to_string(),
@@ -22,7 +23,7 @@ fn test_user_entity_deref_and_flat_json() {
 
     // Direct field access via Deref
     assert_eq!(user.id, id);
-    assert_eq!(user.subject, "google:abir@example.com");
+    assert_eq!(user.provider.as_deref(), Some("google"));
     assert_eq!(user.email, "abir@example.com");
     assert_eq!(user.display_name, "Abir Basak");
     assert_eq!(user.photo_url, "https://example.com/photo.png");

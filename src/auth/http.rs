@@ -1,4 +1,5 @@
-//! Ready-to-mount Axum router, session cookie handlers, and AuthUser extractor for Megh Gateway.
+//! Ready-to-mount Axum router and AuthUser extractor for Megh Gateway. Sessions come from `tower-sessions`:
+//! mount the router under a `SessionManagerLayer`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,14 +7,17 @@ use std::sync::Arc;
 pub use axum::extract::FromRef;
 use axum::{
     extract::{FromRequestParts, Path, Query, State},
-    http::{header, request::Parts, HeaderMap, StatusCode},
+    http::{request::Parts, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
+    middleware,
     routing::{get, post},
     Json, Router,
 };
-use chrono::Duration;
+use axum_tower_sessions_csrf::{get_or_create_token, CsrfMiddleware};
 use oauth2::TokenResponse;
 use serde::{Deserialize, Serialize};
+use tower_sessions::Session;
+use uuid::Uuid;
 
 use crate::auth::oauth::{
     build_authorization_url, fetch_user_info, oauth_http_client, AuthUrlOptions, CsrfToken, OAuthProviderConfig,
@@ -21,28 +25,21 @@ use crate::auth::oauth::{
 };
 use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
 use crate::auth::user::{UpsertUserInput, User, UserRepo};
-use crate::auth::CsrfLayer;
-use crate::session::{Session, SessionExt, SessionRepo, SessionView};
 
 /// Shared state required by the Megh authentication HTTP router.
 #[derive(Clone)]
 pub struct MeghAuthState {
     pub pool: sqlx::PgPool,
-    pub cookie_name: String,
-    pub session_duration: Duration,
     pub redirect_after_login: String,
     pub app_origin: String,
     pub providers: Arc<HashMap<String, OAuthProviderConfig>>,
     pub http_client: reqwest::Client,
-    pub csrf: CsrfLayer,
 }
 
 impl MeghAuthState {
     pub fn new(pool: sqlx::PgPool) -> Self {
         Self {
             pool,
-            cookie_name: "kyrios_session".to_string(),
-            session_duration: Duration::days(30),
             redirect_after_login: "/".to_string(),
             app_origin: "http://localhost:8080".to_string(),
             providers: Arc::new(HashMap::new()),
@@ -51,18 +48,7 @@ impl MeghAuthState {
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("static HTTP client configuration"),
-            csrf: CsrfLayer::new(),
         }
-    }
-
-    pub fn with_csrf(mut self, csrf: CsrfLayer) -> Self {
-        self.csrf = csrf;
-        self
-    }
-
-    pub fn with_cookie_name(mut self, cookie_name: impl Into<String>) -> Self {
-        self.cookie_name = cookie_name.into();
-        self
     }
 
     pub fn with_redirect_after_login(mut self, redirect: impl Into<String>) -> Self {
@@ -85,8 +71,9 @@ impl MeghAuthState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthMeResponse {
     pub user: User,
-    pub session: SessionView,
 }
+
+const USER_ID: &str = "user_id";
 
 /// Query parameters passed in OAuth callback redirects.
 #[derive(Debug, Deserialize)]
@@ -97,11 +84,10 @@ pub struct OAuthCallbackQuery {
     pub error_description: Option<String>,
 }
 
-/// Axum extractor that injects the authenticated User and Session into route handlers.
+/// Axum extractor that injects the authenticated User into route handlers.
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user: User,
-    pub session: Session,
 }
 
 impl<S> FromRequestParts<S> for AuthUser
@@ -112,49 +98,25 @@ where
     type Rejection = (StatusCode, &'static str);
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let auth_state = MeghAuthState::from_ref(state);
-        let token = extract_cookie(&parts.headers, &auth_state.cookie_name)
-            .ok_or((StatusCode::UNAUTHORIZED, "Missing session cookie"))?;
-
-        let session_repo = SessionRepo::new(&auth_state.pool);
-        let session = session_repo
-            .find_valid_by_token(&token)
+        let session = Session::from_request_parts(parts, state).await?;
+        let user_id: Uuid = session
+            .get(USER_ID)
             .await
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database query failed"))?
-            .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Session read failed"))?
+            .ok_or((StatusCode::UNAUTHORIZED, "Not logged in"))?;
 
-        let user_repo = UserRepo::new(&auth_state.pool);
-        let user = user_repo
-            .get_by_id(session.user_id)
+        let user = UserRepo::new(&MeghAuthState::from_ref(state).pool)
+            .get_by_id(user_id)
             .await
             .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database query failed"))?
             .ok_or((StatusCode::UNAUTHORIZED, "User not found"))?;
 
-        Ok(AuthUser { user, session })
+        Ok(AuthUser { user })
     }
-}
-
-/// Extracts a named cookie value from HTTP request headers.
-pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let prefix = format!("{name}=");
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|cookie| {
-            let cookie = cookie.trim();
-            if cookie.starts_with(&prefix) {
-                Some(cookie[prefix.len()..].to_string())
-            } else {
-                None
-            }
-        })
 }
 
 /// Builds an Axum router with all authentication and session endpoints.
 pub fn auth_router(state: MeghAuthState) -> Router {
-    let csrf = state.csrf.clone();
     Router::new()
         .route("/auth/{provider}", get(oauth_login))
         .route("/auth/{provider}/login", get(oauth_login))
@@ -162,8 +124,9 @@ pub fn auth_router(state: MeghAuthState) -> Router {
         .route("/auth/{provider}/token", get(oauth_callback))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(auth_logout))
+        .route("/auth/csrf-token", get(csrf_token))
+        .route_layer(middleware::from_fn(CsrfMiddleware::middleware))
         .with_state(state)
-        .layer(csrf)
 }
 
 /// Initiates OAuth login redirection for a given provider (e.g. `/auth/google`).
@@ -207,7 +170,7 @@ pub async fn oauth_callback(
     State(state): State<MeghAuthState>,
     Path(provider_id): Path<String>,
     Query(query): Query<OAuthCallbackQuery>,
-    headers: HeaderMap,
+    session: Session,
 ) -> Result<Response, (StatusCode, String)> {
     if let Some(err) = query.error {
         let desc = query.error_description.unwrap_or_default();
@@ -285,30 +248,14 @@ pub async fn oauth_callback(
         })
         .await;
 
-    // Create active Session
-    let user_agent = headers
-        .get(header::USER_AGENT)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let session_repo = SessionRepo::new(&state.pool);
-    let created_session = session_repo
-        .create(
-            user.id,
-            state.session_duration,
-            user_agent,
-            "",
-            serde_json::json!({}),
-        )
+    session
+        .cycle_id()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Session creation failed: {e}")))?;
-
-    // Build Cookie header and Popup / Redirect response
-    let cookie_val = format!(
-        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
-        state.cookie_name,
-        created_session.plaintext_token,
-        state.session_duration.num_seconds()
-    );
+    session
+        .insert(USER_ID, user.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Session creation failed: {e}")))?;
 
     let payload = serde_json::json!({
         "type": "oauth_success",
@@ -327,41 +274,21 @@ else if(f){{window.location.href=f;}}
 </script>"#
     );
 
-    let response = (
-        StatusCode::OK,
-        [
-            (header::SET_COOKIE, cookie_val),
-            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
-        ],
-        Html(html),
-    )
-        .into_response();
-
-    Ok(response)
+    Ok(Html(html).into_response())
 }
 
-/// Returns the current authenticated user and session.
+/// Returns the current authenticated user.
 pub async fn auth_me(auth: AuthUser) -> Json<AuthMeResponse> {
-    Json(AuthMeResponse {
-        user: auth.user,
-        session: auth.session.to_view(),
-    })
+    Json(AuthMeResponse { user: auth.user })
 }
 
-/// Revokes the current session and clears the cookie.
-pub async fn auth_logout(
-    State(state): State<MeghAuthState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Some(token) = extract_cookie(&headers, &state.cookie_name) {
-        let session_repo = SessionRepo::new(&state.pool);
-        let _ = session_repo.revoke_by_token(&token).await;
-    }
+/// Ends the current session.
+pub async fn auth_logout(session: Session) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    session.flush().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "status": "ok" })))
+}
 
-    let clear_cookie = format!("{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0", state.cookie_name);
-    (
-        StatusCode::OK,
-        [(header::SET_COOKIE, clear_cookie)],
-        Json(serde_json::json!({ "status": "ok" })),
-    )
+/// The token a client sends back in the `x-csrf-token` header on every write.
+pub async fn csrf_token(session: Session) -> Result<String, (StatusCode, String)> {
+    get_or_create_token(&session).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }

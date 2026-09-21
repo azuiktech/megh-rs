@@ -1,8 +1,8 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7, F9, F10, F11 and F15 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
-**Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
-**Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
+**Status:** F1–F7, F9, F10, F11, F15 and F16 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
+**Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
 This is the living design for everything that answers "who is calling" (authentication) and "may they do this" (authorization). Change-level detail belongs in `CHANGELOG.md`; this document changes when the feature's shape changes.
 
@@ -13,18 +13,19 @@ This is the living design for everything that answers "who is calling" (authenti
 | F1 | Org tenancy and Shiro-style permission grants | `[x]` | #2 / #1 |
 | F2 | User identity (`users`, `UserRepo`) | `[x]` | #4 / #3 |
 | F3 | OAuth 2.0 client and connected accounts | `[x]` | #6 / #5 |
-| F4 | Sessions; `User` as `Entity` | `[x]` | #8 / #7 |
+| F4 | Sessions; `User` as `Entity` (sessions replaced by F16) | `[x]` | #8 / #7 |
 | F5 | Axum auth router, session cookie, `AuthUser` extractor | `[x]` | #10 / #9 |
 | F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | `[x]` | #11 |
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
 | F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
-| F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[x]` | #26 / #25 |
+| F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
-| F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token) | `[ ]` | #31 |
+| F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token); superseded by F16, whose store table cannot match | `[!]` | #31 |
 | F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[ ]` | #29 |
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
 | F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token | `[x]` | #39 / #36 |
+| F16 | Sessions on `tower-sessions` (Postgres store) and token CSRF (`axum-tower-sessions-csrf`) in `auth_router` | `[x]` | #43 / #42 |
 
 ## 2. Design vocabulary (pac4j)
 
@@ -40,9 +41,9 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 
 ## 3. Architecture
 
-- **Stack:** axum 0.8, `tower-http` 0.7 (`csrf`), sqlx 0.9 (Postgres), `oauth2` 5 (no bundled HTTP client; `oauth_http_client` adapts the caller's `reqwest` 0.13 client), `reqwest` 0.13 (rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
+- **Stack:** axum 0.8, `tower-sessions` 0.14 with `axum-tower-sessions-csrf` =0.1.1, sqlx 0.8 (Postgres; held back, see `AGENTS.md`), `oauth2` 5 (no bundled HTTP client; `oauth_http_client` adapts the caller's `reqwest` 0.13 client), `reqwest` 0.13 (rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
 - **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
-- **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `sessions` insert → session cookie. Later requests: cookie → `SessionRepo::find_valid_by_token` → `UserRepo::get_by_id` → `AuthUser`.
+- **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `session.cycle_id()` and `user_id` stored in the `tower-sessions` session (cookie set by the app's `SessionManagerLayer`). Later requests: session `user_id` → `UserRepo::get_by_id` → `AuthUser`.
 - **Authorization path:** the application puts a `Member` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
 
 ## 4. Data model
@@ -53,7 +54,8 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 | `organization_members` | `id`, `organization_id`, `user_id`, `role`, `grants` (text, JSON array), `joined_at`, `invited_by` | unique `(organization_id, user_id)`; keeps a foreign key to `organizations` (cascade) where the table was renamed from `org_members`; `user_id` has no FK (was `org_members`) |
 | `users` | `id`, `account_id`, `provider`, `email`, `password_hash`, `display_name`, `photo_url`, `created_at`, `updated_at` | unique `(account_id, provider)`, unique `email` (F10; before F10: `subject` instead of `account_id`/`provider`, unique) |
 | `connected_accounts` | `account_id`, `provider`, `email`, `access_token`, `refresh_token`, `token_type`, `expiry`, `created_at`, `updated_at`, `disconnected_at` | PK `(account_id, provider)`; no `user_id` |
-| `sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `ip_address`, `metadata JSONB`, `created_at`, `updated_at` | FK `user_id` → `users` (cascade); unique `token_hash` |
+| `sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `ip_address`, `metadata JSONB`, `created_at`, `updated_at` | FK `user_id` → `users` (cascade); unique `token_hash`. Created by migration 0004, unused since F16 |
+| `tower_sessions.session` | `id text`, `data bytea`, `expiry_date timestamptz` | created by the app calling `PostgresStore::migrate()` (F16) |
 
 `megh::migrate(&pool)` runs every migration; `examples/server.rs` uses `sqlx::migrate!`. Migrations are idempotent because databases are shared with megh-go in practice (`kyrios` holds both stacks' tables).
 
@@ -68,7 +70,7 @@ megh-go has no SQL migrations; its schema is what GORM `AutoMigrate` creates fro
 | `organizations` | `org` in megh-rs, fewer columns | F11 |
 | `organization_members` | `org_members` in megh-rs; `role`, `invited_by`; `grants` is `text` holding a JSON array | F11 |
 | `organization_invites`, `org_configs`, plans, prices, add-ons, subscriptions | present | F11 (schema only) |
-| `sessions` | `id text`, `data text`, timestamps | F12 |
+| `sessions` | `id text`, `data text`, timestamps | not aligned: F16 uses the `tower-sessions` store table |
 
 ## 5. Implemented features and their APIs
 
@@ -180,63 +182,38 @@ api.get(url).send().await?;
 
 Refresh runs under a row lock (`SELECT … FOR UPDATE`), so concurrent requests refresh once, across processes; the provider call happens while the lock is held (bounded by the client's timeout). A refresh token the provider sends is stored, otherwise the stored one is kept. `invalid_grant` marks the account `disconnected_at` and the request fails with `AccountError::InvalidGrant`, carried in `reqwest_middleware::Error::Middleware` (`downcast_ref::<AccountError>()`); later requests fail with `Disconnected` without calling the provider. `ConnectedAccountRepo::save` no longer overwrites a stored refresh token with an empty one (a re-login: providers such as Google only send it on first consent). Not included: retry on 401, a connect flow that forces re-consent, token encryption at rest (A7).
 
-### F4 — Sessions (`session`)
+### F4 — Sessions
 
-```rust
-pub type Session = Entity<Uuid, FullSession>;          // FullSession = SessionData + SessionSecrets { token_hash }
-pub type SessionView = Entity<Uuid, SessionData>;      // no token hash; safe to serialize
-pub struct SessionData { user_id: Uuid, expires_at: DateTime<Utc>, user_agent: String, ip_address: String, metadata: serde_json::Value }
-impl SessionData { pub fn is_expired(&self) -> bool }
-pub struct CreatedSession { session: Session, plaintext_token: String }          // token is returned once
-pub trait SessionExt { fn to_view(&self) -> SessionView }
-
-pub fn generate_session_token() -> String;             // two UUIDv4 (simple), joined by '-'
-pub fn hash_session_token(token: &str) -> String;      // SHA-256, hex
-
-impl SessionRepo<'_> {                                 // feature "postgres"
-    pub fn new(pool: &PgPool) -> SessionRepo;
-    pub async fn create(&self, user_id: Uuid, duration: Duration, user_agent: &str, ip_address: &str, metadata: serde_json::Value)
-        -> Result<CreatedSession, sqlx::Error>;
-    pub async fn find_valid_by_token(&self, plaintext_token: &str) -> Result<Option<Session>, sqlx::Error>;   // hash lookup, expires_at > NOW()
-    pub async fn touch(&self, id: Uuid, extension: Duration) -> Result<Option<Session>, sqlx::Error>;         // adds to expires_at
-    pub async fn revoke(&self, id: Uuid) -> Result<bool, sqlx::Error>;
-    pub async fn revoke_by_token(&self, plaintext_token: &str) -> Result<bool, sqlx::Error>;
-    pub async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<u64, sqlx::Error>;
-    pub async fn list_by_user(&self, user_id: Uuid) -> Result<Vec<Session>, sqlx::Error>;
-}
-```
-
-Only the SHA-256 hash is stored; revocation deletes the row.
+Replaced by F16: the `session` module (`SessionRepo`, `Session`, `SessionView`, token helpers) no longer exists.
 
 ### F5 — Axum auth router (`auth::http`, features `axum` + `postgres`)
 
 ```rust
 pub struct MeghAuthState {                              // Clone; all fields pub
-    pool: PgPool, cookie_name: String, session_duration: Duration, redirect_after_login: String,
-    app_origin: String, providers: Arc<HashMap<String, OAuthProviderConfig>>, http_client: reqwest::Client,
+    pool: PgPool, redirect_after_login: String, app_origin: String,
+    providers: Arc<HashMap<String, OAuthProviderConfig>>, http_client: reqwest::Client,
 }
 impl MeghAuthState {
-    pub fn new(pool: PgPool) -> Self;                   // cookie "kyrios_session", 30 days, redirect "/", origin "http://localhost:8080"
-    pub fn with_cookie_name(self, impl Into<String>) -> Self;
+    pub fn new(pool: PgPool) -> Self;                   // redirect "/", origin "http://localhost:8080"
     pub fn with_redirect_after_login(self, impl Into<String>) -> Self;
     pub fn with_app_origin(self, impl Into<String>) -> Self;
     pub fn add_provider(self, OAuthProviderConfig) -> Self;
 }
-pub fn auth_router(state: MeghAuthState) -> Router;
-pub struct AuthUser { pub user: User, pub session: Session }   // FromRequestParts<S> where MeghAuthState: FromRef<S>
-pub struct AuthMeResponse { pub user: User, pub session: SessionView }
+pub fn auth_router(state: MeghAuthState) -> Router;    // needs a tower-sessions SessionManagerLayer around it
+pub struct AuthUser { pub user: User }                  // FromRequestParts<S> where MeghAuthState: FromRef<S>
+pub struct AuthMeResponse { pub user: User }
 pub use axum::extract::FromRef;                         // replaces the former hand-written trait
-pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String>;
 ```
 
 | Route | Behaviour |
 |---|---|
 | `GET /auth/{provider}`, `GET /auth/{provider}/login` | 303 to the provider authorization URL (`access_type=offline`, `include_granted_scopes=true`, `prompt=select_account`, provider default scopes). 404 unknown provider; 500 bad callback URL. |
-| `GET /auth/{provider}/callback`, `GET /auth/{provider}/token` | Same handler. Query: `code`, `state`, `error`, `error_description`. Exchanges the code, fetches userinfo, upserts the user, saves the `connected_accounts` row, creates a session. 200 HTML with `Set-Cookie`. 400 provider `error` or missing `code`; 404 unknown provider; 502 exchange or userinfo failure; 500 database failure. Callback URL defaults to `{app_origin}/auth/{provider}/token` unless `redirect_url` is set. |
-| `GET /auth/me` | 200 `AuthMeResponse`. 401 missing cookie, unknown or expired session, or missing user; 500 database error. |
-| `POST /auth/logout` | Revokes the session if the cookie is present, clears the cookie, always 200 `{"status":"ok"}`. |
+| `GET /auth/{provider}/callback`, `GET /auth/{provider}/token` | Same handler. Query: `code`, `state`, `error`, `error_description`. Exchanges the code, fetches userinfo, upserts the user, saves the `connected_accounts` row, starts the session (`cycle_id`, `user_id`). 200 HTML. 400 provider `error` or missing `code`; 404 unknown provider; 502 exchange or userinfo failure; 500 database or session failure. Callback URL defaults to `{app_origin}/auth/{provider}/token` unless `redirect_url` is set. |
+| `GET /auth/me` | 200 `AuthMeResponse`. 401 no `user_id` in the session or missing user; 500 database or session error. |
+| `POST /auth/logout` | Flushes the session, 200 `{"status":"ok"}`. Needs the CSRF token (F16). |
+| `GET /auth/csrf-token` | 200 with the session's CSRF token as the body (F16). |
 
-Session cookie: `{cookie_name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={session_duration}`.
+The session cookie, its name, lifetime and `Secure`/`SameSite` flags are the `SessionManagerLayer`'s settings, not megh's.
 
 ### F6 — Popup protocol and UI SDK (`ui/sdk/src/auth.ts`)
 
@@ -263,33 +240,26 @@ pub async fn authorizer(req: Request, next: Next) -> Result<Response, (StatusCod
 
 Responses: 401 `not authenticated` (no `Member` or grants in extensions), 403 `not permitted`, 404 `route not found` (no matched path). Verified by `tests/authorizer_test.rs` and `tests/course_authorizer_test.rs` with a fake injector.
 
-### F9 — CSRF protection (re-exported from `megh::auth`, feature `axum`; #26 / #25)
+### F9, F16 — Sessions and CSRF (`auth::http`; #26 / #25, then #43 / #42)
+
+F9 first used the stateless `tower-http` `CsrfLayer` (`Sec-Fetch-Site` / `Origin`). F16 replaced it with the synchronizer token pattern from `axum-tower-sessions-csrf` and moved sessions to `tower-sessions`; the app mounts the router under the session layer:
 
 ```rust
-pub use tower_http::csrf::{ConfigError, CsrfLayer, ProtectionError};   // no wrapper: attach to any router, route or Tower service
-
-impl MeghAuthState {
-    pub csrf: CsrfLayer,                                // default CsrfLayer::new(): no trusted origins
-    pub fn with_csrf(self, csrf: CsrfLayer) -> Self;
-}
-// auth_router applies `state.csrf` to every route it serves.
+let store = PostgresStore::new(pool.clone());            // tower-sessions-sqlx-store; store.migrate() once at startup
+let app = megh::auth_router(state).layer(SessionManagerLayer::new(store));
 ```
 
-The check is stateless (`tower-http` 0.7.1; behaviour verified against its source and a probe on axum 0.8). A request passes if any of these hold: the method is `GET`, `HEAD` or `OPTIONS`; its `Origin` is in the trusted list; `Sec-Fetch-Site` is `same-origin` or `none`; neither `Sec-Fetch-Site` nor `Origin` is present; or the `Origin` authority equals `Host`. Otherwise the response is 403 with a `ProtectionError` in its extensions.
+`auth_router` puts `CsrfMiddleware::middleware` on every route it serves (inside the session layer). A client calls `GET /auth/csrf-token` once per session and sends the value as `x-csrf-token` on every POST, PUT, PATCH and DELETE; a missing or wrong token gets 403. The token lives in the session (constant-time comparison, no cookie of its own), so it dies with `logout`. `GET`, `HEAD` and `OPTIONS` are not checked, so the OAuth login redirect and callback are outside the check (they are covered by F8).
 
-Configure with the layer's own builder: `add_trusted_origin("https://app.example.com")?` (exact browser form: no trailing slash, default port omitted) and `with_insecure_bypass(|method, uri| ..)` for routes with their own protection. There is no on/off flag; exempt routes with the bypass predicate. `with_rejection_response(..)` changes the layer's type, so it works only when you attach a layer yourself, not through `with_csrf`.
-
-Consequences:
-- A web app served from a different origin than the API must be a trusted origin, including a different port or subdomain (browsers report those as same-site, not same-origin). Otherwise its `POST /auth/logout` gets 403.
-- Non-browser clients send neither header and pass.
-- Reverse proxies must forward `Host` and `Origin` unchanged, or the fallback check weakens.
-- `events_router` (`POST /sub`) is not covered: it takes no configuration, so protecting it needs a signature change (§9).
+Versions are held back (`AGENTS.md`): the only Postgres store for `tower-sessions` is `tower-sessions-sqlx-store` 0.15, which needs `tower-sessions-core` 0.14 and `sqlx` 0.8; `axum-tower-sessions-csrf` 0.1.3+ needs `tower-sessions` 0.15. The store's `tower_sessions.session` table (`id`, `data`, `expiry_date`) cannot match megh-go's `sessions` table. `events_router` (`POST /sub`) is not covered (§9).
 
 ## 6. Test coverage (shipped)
 
-`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `session_user_test.rs` (F2, F4); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `session/*`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. No shipped test covers `SessionRepo` or the OAuth callback against a live database.
+`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
 
 ## 7. F8 — OAuth callback hardening (in scope, pending)
+
+> Written before F16: where this section sets or reads the session cookie, the cookie is now the app's `SessionManagerLayer` and the `user_id` lives in the `tower-sessions` session; `Secure` becomes that layer's setting. Revisit before implementing.
 
 **Issue:** azuiktech/megh-rs#22
 **Touches:** `src/auth/http.rs` (edit), `src/auth/flow.rs` (new), `src/auth/mod.rs` and `src/lib.rs` (`mod` + re-export lines), `tests/auth_router_test.rs` (extend). 5 files.
@@ -431,7 +401,7 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 | Accounts are linked by email without checking `email_verified` | A provider that reports an unverified email can take over an existing account (F10 stops the identity being overwritten; F8 adds the check) | — |
 | `AuthUser` is not linked to `Member`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
 | Callback page embeds `serde_json` output in an inline `<script>` | `</script>` in a provider-supplied name is not escaped | — |
-| `events_router` `POST /sub` has no CSRF check | F9 covers `auth_router` only; `events_router` takes no config, so protecting it changes its signature | F9's `CsrfLayer` |
+| `events_router` `POST /sub` has no CSRF check | F16 covers `auth_router` only; `events_router` has no session layer, so protecting it changes its signature | F16's `CsrfMiddleware` |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |
 | No rate limiting on `/auth/*` | | `tower_governor` (axum compatibility unverified) |
 | Error strings (SQL, provider bodies) returned to clients | `http.rs` callback error mapping | — |
@@ -446,6 +416,6 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 
 - **F8, pending approval:** the `Authorizer` trait surface in §7.3, and whether a `Matcher` trait is wanted now (proposed: no).
 - **F8 `Authorizer` trait:** should it stay, given that F9 shows Tower layers already serve as authorizers?
-- **`events_router` CSRF:** take a `CsrfLayer` parameter (breaking) or add a second constructor; the SDK posts `/sub` cross-origin with credentials, so a default with no trusted origins would break it.
+- **`events_router` CSRF:** the SDK posts `/sub` cross-origin with credentials and would have to fetch and send the token; protecting it also needs a session layer around `events_router`.
 - **Gaps in §8:** which become issues, and which fold into F8 (#22).
 - Resolved: `email_verified` `None` → reject; session cookie stays `SameSite=Lax`; axum upgraded to 0.8 with the duplicate `FromRef` removed; request CSRF uses the stateless `tower-http` layer, on by default in `auth_router`.

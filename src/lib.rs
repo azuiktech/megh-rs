@@ -29,7 +29,7 @@ pub use auth::oauth_http_client;
 #[cfg(feature = "axum")]
 pub use auth::authorizer;
 #[cfg(feature = "postgres")]
-pub use auth::UserRepo;
+pub use auth::{PasswordError, UserRepo};
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use auth::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};

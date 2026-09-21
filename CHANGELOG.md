@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-09-22
+- Password storage: `UserRepo::set_password` (bcrypt, portable with megh-go) and `verify_password`, which returns the `User` or a `PasswordError` saying why not (`UserNotFound`, `NoPassword`, `WrongPassword`, `Hash`, `Database`); megh-go's empty `password_hash` counts as no password, and a missing user or password still costs one bcrypt verification (PR #44, issue #29)
+
 ## 2026-09-21
 - Sessions and CSRF on libraries: `auth_router` uses `tower-sessions` (mount it under a `SessionManagerLayer`; the Postgres store creates `tower_sessions.session`) and `axum-tower-sessions-csrf`; `GET /auth/csrf-token` issues a token that every POST, PUT, PATCH and DELETE must send as `x-csrf-token` (403 otherwise). Removed `SessionRepo`, the `session` module, `extract_cookie`, `with_cookie_name`, `session_duration`, `with_csrf` and the `tower-http` `CsrfLayer`; `AuthUser` and `AuthMeResponse` no longer carry a session. `sqlx` back to 0.8, `tower-sessions` 0.14 and `axum-tower-sessions-csrf` =0.1.1 (see AGENTS.md); the `sessions` table from migration 0004 is no longer used (PR #43, issue #42)
 - Token refresh: `Accounts` with `auth`/`auth_for` returning `AccountAuth`, a `reqwest-middleware` layer that authenticates requests as a connected account and refreshes its token when expired (row lock so concurrent requests refresh once; a rejected refresh token marks the account disconnected and fails with `AccountError::InvalidGrant`); `ConnectedAccountRepo::save` keeps the stored refresh token on re-login (PR #39, issue #36)

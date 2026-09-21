@@ -29,6 +29,28 @@ pub struct UpsertUserInput {
     pub photo_url: Option<String>,
 }
 
+/// Why a password could not be set or verified.
+#[cfg(feature = "postgres")]
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PasswordError {
+    #[error("no user with that email")]
+    UserNotFound,
+    #[error("the user has no password")]
+    NoPassword,
+    #[error("wrong password")]
+    WrongPassword,
+    #[error("stored password hash is invalid: {0}")]
+    Hash(#[from] bcrypt::BcryptError),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+/// Compared against when the user or password is missing, so every failure costs one bcrypt verification.
+#[cfg(feature = "postgres")]
+static DUMMY_HASH: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| bcrypt::hash("", bcrypt::DEFAULT_COST).expect("bcrypt hashes the empty password"));
+
 #[cfg(feature = "postgres")]
 /// User repository for PostgreSQL operations.
 pub struct UserRepo<'a> {
@@ -92,6 +114,34 @@ impl<'a> UserRepo<'a> {
         .bind(photo_url)
         .fetch_one(self.pool)
         .await
+    }
+
+    /// Stores a bcrypt hash of the password (portable with megh-go).
+    pub async fn set_password(&self, user_id: Uuid, password: &str) -> Result<(), PasswordError> {
+        let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)?;
+        let updated = sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1")
+            .bind(user_id)
+            .bind(hash)
+            .execute(self.pool)
+            .await?;
+        (updated.rows_affected() > 0).then_some(()).ok_or(PasswordError::UserNotFound)
+    }
+
+    /// The user with that email if the password matches, otherwise the reason it does not. megh-go stores an
+    /// unset password as an empty string, which counts as no password.
+    pub async fn verify_password(&self, email: &str, password: &str) -> Result<User, PasswordError> {
+        let stored: Option<Option<String>> = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_optional(self.pool)
+            .await?;
+        let hash = stored.as_ref().and_then(|hash| hash.as_deref()).filter(|hash| !hash.is_empty());
+        let matches = bcrypt::verify(password, hash.unwrap_or(DUMMY_HASH.as_str()))?;
+        match (stored.is_some(), hash, matches) {
+            (false, ..) => Err(PasswordError::UserNotFound),
+            (_, None, _) => Err(PasswordError::NoPassword),
+            (_, _, false) => Err(PasswordError::WrongPassword),
+            _ => self.find_by_email(email).await?.ok_or(PasswordError::UserNotFound),
+        }
     }
 
     /// Updates display name and photo URL for an existing user.

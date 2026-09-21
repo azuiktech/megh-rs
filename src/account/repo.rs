@@ -2,7 +2,6 @@
 
 use sqlx::PgPool;
 use super::model::ConnectedAccount;
-use crate::TableEntity;
 
 #[cfg(feature = "postgres")]
 /// Repository for `connected_accounts` table operations in PostgreSQL.
@@ -42,9 +41,31 @@ impl<'a> ConnectedAccountRepo<'a> {
         .await
     }
 
-    /// Saves or updates a connected account using automated TableEntity upsert.
+    /// Saves or updates a connected account. A missing refresh token keeps the stored one (providers only send it on first consent).
     pub async fn save(&self, account: &ConnectedAccount) -> Result<ConnectedAccount, sqlx::Error> {
-        account.upsert(self.pool).await
+        sqlx::query_as::<_, ConnectedAccount>(
+            "INSERT INTO connected_accounts (account_id, provider, email, access_token, refresh_token, token_type, expiry, disconnected_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (account_id, provider) DO UPDATE SET
+                 email = EXCLUDED.email,
+                 access_token = EXCLUDED.access_token,
+                 refresh_token = COALESCE(EXCLUDED.refresh_token, connected_accounts.refresh_token),
+                 token_type = EXCLUDED.token_type,
+                 expiry = EXCLUDED.expiry,
+                 disconnected_at = EXCLUDED.disconnected_at,
+                 updated_at = NOW()
+             RETURNING *",
+        )
+        .bind(&account.account_id)
+        .bind(&account.provider)
+        .bind(&account.email)
+        .bind(&account.access_token)
+        .bind(&account.refresh_token)
+        .bind(&account.token_type)
+        .bind(account.expiry)
+        .bind(account.disconnected_at)
+        .fetch_one(self.pool)
+        .await
     }
 
     /// Soft-disconnects an account by setting disconnected_at to NOW().

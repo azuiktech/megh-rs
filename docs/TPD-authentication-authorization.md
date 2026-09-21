@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7, F9, F10 and F11 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F7, F9, F10, F11 and F15 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
 
@@ -24,6 +24,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token) | `[ ]` | #31 |
 | F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[ ]` | #29 |
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
+| F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token | `[x]` | #39 / #36 |
 
 ## 2. Design vocabulary (pac4j)
 
@@ -156,6 +157,28 @@ impl ConnectedAccountRepo<'_> {                        // feature "postgres"
 ```
 
 `oauth2` types (`BasicClient`, `CsrfToken`, `PkceCodeChallenge`, `PkceCodeVerifier`, `RedirectUrl`, `Scope`, `TokenResponse`, …) are re-exported from `megh::auth` and `megh::`. Provider factories exist only for Google; other providers are built with the generic config.
+
+### F15 — Token refresh (`account::accounts`, features `postgres` + `client`)
+
+The caller builds and configures their own `reqwest` client and adds megh's layer; every request is authenticated as the connected account, with the access token refreshed first when it has expired. Callers never handle tokens.
+
+```rust
+pub struct Accounts { .. }        // holds the injected pool and the configured providers
+impl Accounts {
+    pub fn new(pool: PgPool, providers: Arc<HashMap<String, OAuthProviderConfig>>) -> Self;
+    pub fn with_http_client(self, http: reqwest::Client) -> Self;         // token requests to the provider; must not follow redirects
+    pub fn with_expiry_margin(self, margin: Duration) -> Self;            // default 60 s
+    pub fn auth(&self, provider: &str, account_id: &str) -> AccountAuth;
+    pub async fn auth_for(&self, user: &User, provider: &str) -> Result<AccountAuth, AccountError>;   // account found by the user's email
+}
+pub struct AccountAuth { .. }     // impl reqwest_middleware::Middleware
+pub enum AccountError { NotFound, Disconnected, NoRefreshToken, NotConfigured(String), InvalidGrant(String), Provider(String), Database(sqlx::Error) }
+
+let api = reqwest_middleware::ClientBuilder::new(my_reqwest_client).with(accounts.auth("google", &account_id)).build();
+api.get(url).send().await?;
+```
+
+Refresh runs under a row lock (`SELECT … FOR UPDATE`), so concurrent requests refresh once, across processes; the provider call happens while the lock is held (bounded by the client's timeout). A refresh token the provider sends is stored, otherwise the stored one is kept. `invalid_grant` marks the account `disconnected_at` and the request fails with `AccountError::InvalidGrant`, carried in `reqwest_middleware::Error::Middleware` (`downcast_ref::<AccountError>()`); later requests fail with `Disconnected` without calling the provider. `ConnectedAccountRepo::save` no longer overwrites a stored refresh token with an empty one (a re-login: providers such as Google only send it on first consent). Not included: retry on 401, a connect flow that forces re-consent, token encryption at rest (A7).
 
 ### F4 — Sessions (`session`)
 

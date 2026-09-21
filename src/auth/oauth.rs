@@ -87,6 +87,9 @@ pub struct OAuthProviderConfig {
     pub userinfo_url: Option<String>,
     pub default_scopes: Vec<String>,
     pub redirect_url: Option<String>,
+    /// RFC 7009 token revocation endpoint; tokens are not revoked at the provider when unset.
+    #[serde(default)]
+    pub revoke_url: Option<String>,
 }
 
 impl OAuthProviderConfig {
@@ -105,6 +108,7 @@ impl OAuthProviderConfig {
                 "https://www.googleapis.com/auth/userinfo.profile".to_string(),
             ],
             redirect_url: None,
+            revoke_url: Some("https://oauth2.googleapis.com/revoke".to_string()),
         }
     }
 

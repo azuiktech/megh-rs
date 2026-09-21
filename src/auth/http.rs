@@ -7,21 +7,23 @@ pub use axum::extract::FromRef;
 use axum::{
     extract::{FromRequestParts, Path, Query, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Redirect, Response},
+    response::{AppendHeaders, Html, IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
 use chrono::Duration;
-use oauth2::TokenResponse;
+use oauth2::basic::BasicTokenResponse;
+use oauth2::{AuthorizationCode, TokenResponse};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::flow::{self, Flow};
 use crate::auth::oauth::{
-    build_authorization_url, fetch_user_info, oauth_http_client, AuthUrlOptions, CsrfToken, OAuthProviderConfig,
-    RedirectUrl,
+    build_authorization_url, fetch_user_info, oauth_http_client, AuthUrlOptions, OAuthProviderConfig, OAuthUserInfo,
+    ProviderClient, RedirectUrl,
 };
 use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
 use crate::auth::user::{UpsertUserInput, User, UserRepo};
-use crate::auth::CsrfLayer;
+use crate::auth::{connect, CsrfLayer};
 use crate::session::{Session, SessionExt, SessionRepo, SessionView};
 
 /// Shared state required by the Megh authentication HTTP router.
@@ -112,26 +114,24 @@ where
     type Rejection = (StatusCode, &'static str);
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let auth_state = MeghAuthState::from_ref(state);
-        let token = extract_cookie(&parts.headers, &auth_state.cookie_name)
-            .ok_or((StatusCode::UNAUTHORIZED, "Missing session cookie"))?;
-
-        let session_repo = SessionRepo::new(&auth_state.pool);
-        let session = session_repo
-            .find_valid_by_token(&token)
-            .await
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database query failed"))?
-            .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
-
-        let user_repo = UserRepo::new(&auth_state.pool);
-        let user = user_repo
-            .get_by_id(session.user_id)
-            .await
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database query failed"))?
-            .ok_or((StatusCode::UNAUTHORIZED, "User not found"))?;
-
-        Ok(AuthUser { user, session })
+        authenticate(&MeghAuthState::from_ref(state), &parts.headers).await
     }
+}
+
+/// Resolves the session cookie in `headers` to the signed-in user.
+pub async fn authenticate(state: &MeghAuthState, headers: &HeaderMap) -> Result<AuthUser, (StatusCode, &'static str)> {
+    let token = extract_cookie(headers, &state.cookie_name).ok_or((StatusCode::UNAUTHORIZED, "Missing session cookie"))?;
+    let session = SessionRepo::new(&state.pool)
+        .find_valid_by_token(&token)
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database query failed"))?
+        .ok_or((StatusCode::UNAUTHORIZED, "Invalid or expired session"))?;
+    let user = UserRepo::new(&state.pool)
+        .get_by_id(session.user_id)
+        .await
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Database query failed"))?
+        .ok_or((StatusCode::UNAUTHORIZED, "User not found"))?;
+    Ok(AuthUser { user, session })
 }
 
 /// Extracts a named cookie value from HTTP request headers.
@@ -160,184 +160,164 @@ pub fn auth_router(state: MeghAuthState) -> Router {
         .route("/auth/{provider}/login", get(oauth_login))
         .route("/auth/{provider}/callback", get(oauth_callback))
         .route("/auth/{provider}/token", get(oauth_callback))
+        .route("/auth/{provider}/connect", get(connect::oauth_connect))
+        .route("/auth/{provider}/disconnect", post(connect::oauth_disconnect))
+        .route("/auth/{provider}/revoke", post(connect::oauth_revoke))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(auth_logout))
         .with_state(state)
         .layer(csrf)
 }
 
-/// Initiates OAuth login redirection for a given provider (e.g. `/auth/google`).
-pub async fn oauth_login(
-    State(state): State<MeghAuthState>,
-    Path(provider_id): Path<String>,
-) -> Result<Redirect, (StatusCode, String)> {
-    let provider = state
-        .providers
-        .get(&provider_id)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Provider '{provider_id}' not configured")))?;
-
-    let callback_url = provider.redirect_url.clone().unwrap_or_else(|| {
-        format!("{}/auth/{provider_id}/token", state.app_origin.trim_end_matches('/'))
-    });
-    let redirect_url = RedirectUrl::new(callback_url)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid callback URL: {e}")))?;
-
-    let client = provider
-        .build_client(Some(redirect_url))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let csrf = CsrfToken::new_random();
-    let auth_url = build_authorization_url(
-        &client,
-        csrf,
-        AuthUrlOptions {
-            scopes: &provider.default_scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            pkce: None,
-            offline_access: true,
-            incremental: true,
-            prompt: Some("select_account"),
-        },
-    );
-
-    Ok(Redirect::to(auth_url.as_str()))
+/// Whether cookies set for this deployment carry `Secure` (the app is served over https).
+pub(super) fn secure(state: &MeghAuthState) -> bool {
+    state.app_origin.starts_with("https://")
 }
 
-/// Handles the OAuth redirect callback from providers.
+/// Looks up the provider and builds its OAuth client with the callback URL.
+pub(super) fn provider_client<'a>(state: &'a MeghAuthState, provider_id: &str) -> Result<(&'a OAuthProviderConfig, ProviderClient), (StatusCode, String)> {
+    let provider = state
+        .providers
+        .get(provider_id)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Provider '{provider_id}' not configured")))?;
+    let callback_url = provider
+        .redirect_url
+        .clone()
+        .unwrap_or_else(|| format!("{}/auth/{provider_id}/token", state.app_origin.trim_end_matches('/')));
+    let redirect_url = RedirectUrl::new(callback_url).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid callback URL: {e}")))?;
+    let client = provider.build_client(Some(redirect_url)).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((provider, client))
+}
+
+/// Redirects to the provider to start a flow, binding the browser with the `state` and PKCE cookies.
+pub(super) fn start_flow(state: &MeghAuthState, provider_id: &str, flow: Flow, extra_scopes: &[String]) -> Result<Response, (StatusCode, String)> {
+    let (provider, client) = provider_client(state, provider_id)?;
+    let attempt = flow::begin(provider_id, flow, secure(state));
+    let scopes: Vec<&str> = provider.default_scopes.iter().chain(extra_scopes).map(String::as_str).collect();
+    let auth_url = build_authorization_url(
+        &client,
+        attempt.csrf,
+        AuthUrlOptions {
+            scopes: &scopes,
+            pkce: Some(&attempt.challenge),
+            offline_access: true,
+            incremental: true,
+            prompt: Some(if flow == Flow::Connect { "consent" } else { "select_account" }),
+        },
+    );
+    let cookies = AppendHeaders(attempt.cookies.map(|c| (header::SET_COOKIE, c)));
+    Ok((cookies, Redirect::to(auth_url.as_str())).into_response())
+}
+
+/// Initiates OAuth login redirection for a given provider (e.g. `/auth/google`).
+pub async fn oauth_login(State(state): State<MeghAuthState>, Path(provider_id): Path<String>) -> Result<Response, (StatusCode, String)> {
+    start_flow(&state, &provider_id, Flow::Login, &[])
+}
+
+/// Handles the OAuth redirect callback from providers, for both login and connect flows.
 pub async fn oauth_callback(
     State(state): State<MeghAuthState>,
     Path(provider_id): Path<String>,
     Query(query): Query<OAuthCallbackQuery>,
     headers: HeaderMap,
-) -> Result<Response, (StatusCode, String)> {
+) -> Response {
+    let cleared = AppendHeaders(flow::clear_cookies(&provider_id).map(|c| (header::SET_COOKIE, c)));
+    match callback(&state, &provider_id, query, &headers).await {
+        Ok(response) => (cleared, response).into_response(),
+        Err((status, message)) => (status, cleared, message).into_response(),
+    }
+}
+
+async fn callback(state: &MeghAuthState, provider_id: &str, query: OAuthCallbackQuery, headers: &HeaderMap) -> Result<Response, (StatusCode, String)> {
     if let Some(err) = query.error {
         let desc = query.error_description.unwrap_or_default();
         return Err((StatusCode::BAD_REQUEST, format!("OAuth error: {err} ({desc})")));
     }
+    let (flow, verifier) = flow::verify(headers, provider_id, query.state.as_deref()).map_err(|(status, message)| (status, message.to_string()))?;
+    let code = query.code.ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing code in callback".to_string()))?;
+    let (provider, client) = provider_client(state, provider_id)?;
 
-    let code = query
-        .code
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing code in callback".to_string()))?;
-
-    let provider = state
-        .providers
-        .get(&provider_id)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Provider '{provider_id}' not configured")))?;
-
-    let callback_url = provider.redirect_url.clone().unwrap_or_else(|| {
-        format!("{}/auth/{provider_id}/token", state.app_origin.trim_end_matches('/'))
-    });
-    let redirect_url = RedirectUrl::new(callback_url)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid callback URL: {e}")))?;
-
-    let client = provider
-        .build_client(Some(redirect_url))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    // Exchange authorization code for tokens
-    let token_response = client
-        .exchange_code(oauth2::AuthorizationCode::new(code))
+    let tokens = client
+        .exchange_code(AuthorizationCode::new(code))
+        .set_pkce_verifier(verifier)
         .request_async(&oauth_http_client(state.http_client.clone()))
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Token exchange failed: {e}")))?;
-
-    // Fetch user profile
-    let userinfo_url = provider
-        .userinfo_url
-        .as_deref()
-        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "userinfo_url missing".to_string()))?;
-
-    let user_info = fetch_user_info(
-        &state.http_client,
-        userinfo_url,
-        token_response.access_token().secret(),
-    )
-    .await
-    .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Fetch userinfo failed: {e}")))?;
-
-    // Upsert User identity
-    let user_repo = UserRepo::new(&state.pool);
-    let user = user_repo
-        .upsert(&UpsertUserInput {
-            provider: provider_id.clone(),
-            account_id: user_info.subject.clone(),
-            email: user_info.email.clone(),
-            display_name: user_info.name,
-            photo_url: user_info.picture,
-        })
+    let userinfo_url = provider.userinfo_url.as_deref().ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "userinfo_url missing".to_string()))?;
+    let info = fetch_user_info(&state.http_client, userinfo_url, tokens.access_token().secret())
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("User upsert failed: {e}")))?;
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Fetch userinfo failed: {e}")))?;
 
-    // Save ConnectedAccount credentials
-    let oauth_tokens = OAuth2Tokens::from(&token_response);
-    let account_repo = ConnectedAccountRepo::new(&state.pool);
-    let _ = account_repo
+    match flow {
+        Flow::Login => login(state, provider_id, headers, &tokens, info).await,
+        Flow::Connect => connect::connect_account(state, provider_id, headers, &tokens, &info).await,
+    }
+}
+
+/// Saves the account's tokens; a token the provider did not resend keeps the stored one.
+pub(super) async fn save_account(state: &MeghAuthState, provider_id: &str, info: &OAuthUserInfo, tokens: &BasicTokenResponse) -> Result<ConnectedAccount, sqlx::Error> {
+    let tokens = OAuth2Tokens::from(tokens);
+    ConnectedAccountRepo::new(&state.pool)
         .save(&ConnectedAccount {
-            account_id: user_info.subject,
-            provider: provider_id,
-            email: Some(user_info.email),
-            access_token: oauth_tokens.access_token,
-            refresh_token: oauth_tokens.refresh_token,
+            account_id: info.subject.clone(),
+            provider: provider_id.to_string(),
+            email: Some(info.email.clone()),
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
             token_type: Some("Bearer".to_string()),
-            expiry: oauth_tokens.token_expires_at,
+            expiry: tokens.token_expires_at,
             created_at: None,
             updated_at: None,
             disconnected_at: None,
         })
-        .await;
+        .await
+}
 
-    // Create active Session
-    let user_agent = headers
-        .get(header::USER_AGENT)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("");
-    let session_repo = SessionRepo::new(&state.pool);
-    let created_session = session_repo
-        .create(
-            user.id,
-            state.session_duration,
-            user_agent,
-            "",
-            serde_json::json!({}),
-        )
+async fn login(state: &MeghAuthState, provider_id: &str, headers: &HeaderMap, tokens: &BasicTokenResponse, info: OAuthUserInfo) -> Result<Response, (StatusCode, String)> {
+    let user = UserRepo::new(&state.pool)
+        .upsert(&UpsertUserInput {
+            provider: provider_id.to_string(),
+            account_id: info.subject.clone(),
+            email: info.email.clone(),
+            display_name: info.name.clone(),
+            photo_url: info.picture.clone(),
+        })
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("User upsert failed: {e}")))?;
+    let _ = save_account(state, provider_id, &info, tokens).await;
+
+    let user_agent = headers.get(header::USER_AGENT).and_then(|h| h.to_str().ok()).unwrap_or("");
+    let session = SessionRepo::new(&state.pool)
+        .create(user.id, state.session_duration, user_agent, "", serde_json::json!({}))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Session creation failed: {e}")))?;
-
-    // Build Cookie header and Popup / Redirect response
-    let cookie_val = format!(
+    let cookie = format!(
         "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
         state.cookie_name,
-        created_session.plaintext_token,
+        session.plaintext_token,
         state.session_duration.num_seconds()
     );
+    let page = popup_page(&serde_json::json!({ "type": "oauth_success", "user": user }), &state.redirect_after_login);
+    Ok((StatusCode::OK, [(header::SET_COOKIE, cookie)], page).into_response())
+}
 
-    let payload = serde_json::json!({
-        "type": "oauth_success",
-        "user": user,
-    });
-    let payload_str = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-    let fallback_str = serde_json::to_string(&state.redirect_after_login).unwrap_or_else(|_| "\"/\"".to_string());
-
-    let html = format!(
+/// The page a popup lands on: posts `payload` to the opener and closes, or redirects to `fallback` without one.
+/// The JSON is escaped so provider-supplied text cannot end the script element.
+pub(super) fn popup_page(payload: &serde_json::Value, fallback: &str) -> Html<String> {
+    let embed = |value: &serde_json::Value| {
+        value.to_string().replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026").replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029")
+    };
+    Html(format!(
         r#"<!doctype html><meta charset="utf-8"><script>
 (function(){{
-var d={payload_str},f={fallback_str};
+var d={},f={};
 if(window.opener){{window.opener.postMessage(d,"*");window.close();}}
 else if(f){{window.location.href=f;}}
 }})();
-</script>"#
-    );
-
-    let response = (
-        StatusCode::OK,
-        [
-            (header::SET_COOKIE, cookie_val),
-            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
-        ],
-        Html(html),
-    )
-        .into_response();
-
-    Ok(response)
+</script>"#,
+        embed(payload),
+        embed(&serde_json::json!(fallback))
+    ))
 }
 
 /// Returns the current authenticated user and session.
@@ -358,10 +338,14 @@ pub async fn auth_logout(
         let _ = session_repo.revoke_by_token(&token).await;
     }
 
-    let clear_cookie = format!("{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0", state.cookie_name);
     (
         StatusCode::OK,
-        [(header::SET_COOKIE, clear_cookie)],
+        [(header::SET_COOKIE, clear_session_cookie(&state))],
         Json(serde_json::json!({ "status": "ok" })),
     )
+}
+
+/// A `Set-Cookie` value that removes the session cookie.
+pub(super) fn clear_session_cookie(state: &MeghAuthState) -> String {
+    format!("{}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0", state.cookie_name)
 }

@@ -24,6 +24,10 @@ pub use user::{UpsertUserInput, User, UserProfile};
 pub use user::UserRepo;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod connect;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod flow;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod http;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]

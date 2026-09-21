@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7, F9, F10, F11 and F15 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F7, F9, F10, F11, F15 and F16 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
 
@@ -17,13 +17,14 @@ This is the living design for everything that answers "who is calling" (authenti
 | F5 | Axum auth router, session cookie, `AuthUser` extractor | `[x]` | #10 / #9 |
 | F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | `[x]` | #11 |
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
-| F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
+| F8 | OAuth callback hardening, remaining part: `Secure` session cookie, verified email on login, `postMessage` origin, `Authorizer` trait (state, PKCE and popup escaping shipped with F16) | `[~]` design pending approval | #22 |
 | F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
 | F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token) | `[ ]` | #31 |
 | F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[ ]` | #29 |
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
+| F16 | Connect, disconnect and revoke routes; OAuth `state` + PKCE for login and connect; popup JSON escaping | `[x]` | #41 / #40 |
 | F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token | `[x]` | #39 / #36 |
 
 ## 2. Design vocabulary (pac4j)
@@ -235,8 +236,19 @@ pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String>;
 | `GET /auth/{provider}/callback`, `GET /auth/{provider}/token` | Same handler. Query: `code`, `state`, `error`, `error_description`. Exchanges the code, fetches userinfo, upserts the user, saves the `connected_accounts` row, creates a session. 200 HTML with `Set-Cookie`. 400 provider `error` or missing `code`; 404 unknown provider; 502 exchange or userinfo failure; 500 database failure. Callback URL defaults to `{app_origin}/auth/{provider}/token` unless `redirect_url` is set. |
 | `GET /auth/me` | 200 `AuthMeResponse`. 401 missing cookie, unknown or expired session, or missing user; 500 database error. |
 | `POST /auth/logout` | Revokes the session if the cookie is present, clears the cookie, always 200 `{"status":"ok"}`. |
+| `GET /auth/{provider}/connect` | Session required (401). Starts the flow for another provider account; repeated `scope` query values are added to the default scopes; `access_type=offline` and `prompt=consent` so a refresh token is issued. 303 to the provider. (F16) |
+| `POST /auth/{provider}/disconnect` | Session required. Body `{"account_id"}`. Revokes the account's token at the provider (best effort), marks it disconnected, 204. 404 when the account is not the user's own. (F16) |
+| `POST /auth/{provider}/revoke` | Session required. Optional body `{"token"}`, which must be one of the account's own (403). Revokes the token at the provider (502 on failure), disconnects the account, ends the session and clears the cookie, 204. (F16) |
 
 Session cookie: `{cookie_name}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={session_duration}`.
+
+### F16 — Connect, disconnect and revoke (`auth::connect`, `auth::flow`)
+
+- **`state` and PKCE for every flow** (`flow` module, used by login and connect): starting a flow sets `_oauth_state_<provider>` (`login.<random>` or `connect.<random>`) and `_oauth_pkce_<provider>` (the verifier), 10 minutes, `HttpOnly`, `SameSite=Lax`, `Secure` when `app_origin` is https. The callback runs only when its `state` equals the cookie (constant-time comparison, otherwise 403) and a verifier cookie exists (otherwise 400); the verifier goes with the code exchange, and both cookies are cleared on every callback. The `state` prefix selects the flow.
+- **Connect** needs a signed-in session. The provider account must carry the session user's verified email (403 otherwise): connected accounts are linked to users by email, as in megh-go, so an account with a different email cannot be attached. The popup answers `{"type":"oauth_connect_success","account":{account_id,provider,email}}`; tokens are stored, never sent to the page.
+- **Disconnect and revoke** act only on the user's own account (same email); `revoke_url` on `OAuthProviderConfig` (Google's is preset) is the RFC 7009 endpoint, and a provider without one is skipped.
+- **Popup page**: the embedded JSON is escaped (`<`, `>`, `&`, U+2028/2029), so provider-supplied text cannot end the script element. The `postMessage` target origin is still `"*"` (F8).
+- Differences from megh-go, whose routes need no session (review G1) and whose PKCE is optional (G2). Not included: `GET /auth/{provider}/profile`, `POST /auth/{provider}/token`, encryption of stored tokens.
 
 ### F6 — Popup protocol and UI SDK (`ui/sdk/src/auth.ts`)
 
@@ -430,7 +442,6 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 |---|---|---|
 | Accounts are linked by email without checking `email_verified` | A provider that reports an unverified email can take over an existing account (F10 stops the identity being overwritten; F8 adds the check) | — |
 | `AuthUser` is not linked to `Member`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
-| Callback page embeds `serde_json` output in an inline `<script>` | `</script>` in a provider-supplied name is not escaped | — |
 | `events_router` `POST /sub` has no CSRF check | F9 covers `auth_router` only; `events_router` takes no config, so protecting it changes its signature | F9's `CsrfLayer` |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |
 | No rate limiting on `/auth/*` | | `tower_governor` (axum compatibility unverified) |
@@ -439,7 +450,7 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 | Sessions: fixed expiry (`touch` unused), no purge of expired rows, `ip_address` always `""`, token is two UUIDv4s | | — |
 | Identity comes from the userinfo endpoint; no `nonce` or `id_token` validation | | `openidconnect` 3.5 (matches `oauth2` 4.4) |
 | `StandardUserInfo.id` is `Option<String>` | GitHub returns a numeric `id`; parsing is likely to fail | — |
-| SDK methods without server routes: `signInWithPassword`, `connect*`, `disconnect*`, `revoke*`, `return_to` | | — |
+| SDK methods without server routes: `signInWithPassword` (F14), `return_to` | | — |
 | `examples/server.rs` uses `CorsLayer::very_permissive()` | Copy-paste hazard with credentialed cookies | `tower-http` `cors` (configured) |
 
 ## 9. Open questions

@@ -5,12 +5,15 @@ use thiserror::Error;
 
 // Re-export standard oauth2 types so consumers don't need to depend on oauth2 directly.
 pub use oauth2::basic::{BasicClient, BasicTokenResponse, BasicTokenType};
-pub use oauth2::reqwest::async_http_client;
 pub use oauth2::url::{self, Url};
 pub use oauth2::{
     AccessToken, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
     PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
 };
+use oauth2::{EndpointNotSet, EndpointSet};
+
+/// A client with the authorization and token endpoints configured, as built by `OAuthProviderConfig::build_client`.
+pub type ProviderClient = BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
 
 /// OAuth specific error variants.
 #[derive(Debug, Error)]
@@ -91,18 +94,19 @@ impl OAuthProviderConfig {
         self
     }
 
-    /// Builds a standard `oauth2::basic::BasicClient` from this configuration.
-    pub fn build_client(&self, redirect_url: Option<RedirectUrl>) -> Result<BasicClient, OAuthError> {
-        let auth_url = AuthUrl::new(self.auth_url.clone())?;
-        let token_url = TokenUrl::new(self.token_url.clone())?;
-        let client_id = ClientId::new(self.client_id.clone());
-        let client_secret = self.client_secret.clone().map(ClientSecret::new);
-
-        let mut client = BasicClient::new(client_id, client_secret, auth_url, Some(token_url));
-        if let Some(redirect) = redirect_url {
-            client = client.set_redirect_uri(redirect);
-        }
-        Ok(client)
+    /// Builds a standard `oauth2` client from this configuration.
+    pub fn build_client(&self, redirect_url: Option<RedirectUrl>) -> Result<ProviderClient, OAuthError> {
+        let client = BasicClient::new(ClientId::new(self.client_id.clone()))
+            .set_auth_uri(AuthUrl::new(self.auth_url.clone())?)
+            .set_token_uri(TokenUrl::new(self.token_url.clone())?);
+        let client = match self.client_secret.clone() {
+            Some(secret) => client.set_client_secret(ClientSecret::new(secret)),
+            None => client,
+        };
+        Ok(match redirect_url {
+            Some(redirect) => client.set_redirect_uri(redirect),
+            None => client,
+        })
     }
 }
 
@@ -121,9 +125,9 @@ pub struct AuthUrlOptions<'a> {
     pub prompt: Option<&'a str>,
 }
 
-/// Builds an authorization URL using `oauth2::basic::BasicClient`.
+/// Builds an authorization URL for a configured client.
 pub fn build_authorization_url(
-    client: &BasicClient,
+    client: &ProviderClient,
     csrf_token: CsrfToken,
     opts: AuthUrlOptions,
 ) -> Url {

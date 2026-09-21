@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7, F9 and F10 shipped. F11–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F7, F9, F10 and F11 shipped. F12–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
 
@@ -20,7 +20,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
 | F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
-| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[~]` branch `feature/org-schema-align` | #28 |
+| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
 | F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token) | `[ ]` | #31 |
 | F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[ ]` | #29 |
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
@@ -39,7 +39,7 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 
 ## 3. Architecture
 
-- **Stack:** axum 0.8, `tower-http` 0.7 (`csrf`), sqlx 0.8 (Postgres), `oauth2` 4.4 (reqwest, rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
+- **Stack:** axum 0.8, `tower-http` 0.7 (`csrf`), sqlx 0.9 (Postgres), `oauth2` 5 (reqwest 0.12, rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
 - **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
 - **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `sessions` insert → session cookie. Later requests: cookie → `SessionRepo::find_valid_by_token` → `UserRepo::get_by_id` → `AuthUser`.
 - **Authorization path:** the application puts a `Member` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
@@ -123,7 +123,7 @@ pub struct OAuthProviderConfig {
 impl OAuthProviderConfig {
     pub fn google(client_id: impl Into<String>, client_secret: Option<String>) -> Self;
     pub fn with_redirect_url(self, redirect_url: impl Into<String>) -> Self;
-    pub fn build_client(&self, redirect_url: Option<RedirectUrl>) -> Result<BasicClient, OAuthError>;
+    pub fn build_client(&self, redirect_url: Option<RedirectUrl>) -> Result<ProviderClient, OAuthError>;   // ProviderClient = oauth2 5 BasicClient with auth and token endpoints set
 }
 
 pub struct AuthUrlOptions<'a> {
@@ -132,7 +132,7 @@ pub struct AuthUrlOptions<'a> {
     incremental: bool,        // include_granted_scopes=true
     prompt: Option<&'a str>,
 }
-pub fn build_authorization_url(client: &BasicClient, csrf_token: CsrfToken, opts: AuthUrlOptions) -> Url;
+pub fn build_authorization_url(client: &ProviderClient, csrf_token: CsrfToken, opts: AuthUrlOptions) -> Url;
 
 pub struct OAuthUserInfo { subject: String, email: String, email_verified: Option<bool>, name: Option<String>, picture: Option<String> }
 pub async fn fetch_user_info(http: &reqwest::Client, userinfo_url: &str, access_token: &str)

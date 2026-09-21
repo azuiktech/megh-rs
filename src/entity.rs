@@ -119,7 +119,7 @@ pub trait TableEntity: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postg
         let set = cols.join(", ");
         let excl = cols.iter().map(|c| format!("EXCLUDED.{c}")).collect::<Vec<_>>().join(", ");
         let q = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1::json) ON CONFLICT ({pks}) DO UPDATE SET ({set}) = ({excl}) RETURNING *");
-        sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
+        sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(q)).bind(sqlx::types::Json(self)).fetch_one(pool).await
     }
 
     async fn update(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error> where Self: Sized {
@@ -129,13 +129,13 @@ pub trait TableEntity: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postg
         let p_set = cols.iter().map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ");
         let where_clause = Self::PRIMARY_KEY.iter().map(|k| format!("{table}.{k} = p.{k}")).collect::<Vec<_>>().join(" AND ");
         let q = format!("UPDATE {table} SET ({set}) = ({p_set}) FROM json_populate_record(NULL::{table}, $1::json) p WHERE {where_clause} RETURNING {table}.*");
-        sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
+        sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(q)).bind(sqlx::types::Json(self)).fetch_one(pool).await
     }
 
     async fn insert(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error> where Self: Sized {
         let table = Self::TABLE_NAME;
         let q = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1::json) RETURNING *");
-        sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
+        sqlx::query_as::<_, Self>(sqlx::AssertSqlSafe(q)).bind(sqlx::types::Json(self)).fetch_one(pool).await
     }
 }
 

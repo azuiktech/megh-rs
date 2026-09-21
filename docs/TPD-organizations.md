@@ -1,6 +1,6 @@
 # TPD — Organizations, Membership & Invitations
 
-**Status:** O1 (schema, `Member`, `Orgs::memberships`) is in progress; before it only the data types, the two tables and the grant check existed. Everything else in megh-go's organization domain is pending (§4) and will be ported (all of it, including login onboarding). The design in §6 is proposed and awaiting approval. megh-go is the reference (`/Users/abir/Documents/GitHub/megh-go`: `organizations.go`, `members.go`, `org.go`, `sessions.go`); the schema comparison below was made by running its real GORM `AutoMigrate` on Postgres.
+**Status:** O1 (schema, `Member`, `Orgs::memberships`) is shipped; before it only the data types, the two tables and the grant check existed. Everything else in megh-go's organization domain is pending (§4) and will be ported (all of it, including login onboarding). The design in §6 is proposed and awaiting approval. megh-go is the reference (`/Users/abir/Documents/GitHub/megh-go`: `organizations.go`, `members.go`, `org.go`, `sessions.go`); the schema comparison below was made by running its real GORM `AutoMigrate` on Postgres.
 **Modules:** `src/org`, `src/auth/authorizer.rs`, `migrations/0001_create_org.sql`.
 **Related:** `TPD-authentication-authorization.md` (grants, authorizer, login). Billing (plans, subscriptions) is a separate feature area with no TPD yet.
 
@@ -10,7 +10,7 @@
 |---|---|---|---|
 | S1 | `Org` and `OrgMember` types; `org` and `org_members` tables | `[x]` | #2 / #1 |
 | S2 | `OrgMember::has_grant`, used by the route authorizer through request extensions | `[x]` | #2 / #1, #20 / #19 |
-| O1 | Schema alignment with megh-go (legacy tables renamed, or copied when megh-go's exist; columns; `grants` as JSON text; all megh-go tables incl. billing created schema-only), `OrgMember` renamed `Member`, `Orgs::memberships` | `[~]` branch `feature/org-schema-align` | #28 |
+| O1 | Schema alignment with megh-go (legacy tables renamed, or copied when megh-go's exist; columns; `grants` as JSON text; all megh-go tables incl. billing created schema-only), `OrgMember` renamed `Member`, `Orgs::memberships` | `[x]` | #33 / #28 |
 | O2 | `Orgs`: org lifecycle, members, grants | `[ ]` | — |
 | O3 | `Orgs`: invitations (redeem by token or email) and auto-join domains | `[ ]` | — |
 | O4 | `Onboarding`: membership at login | `[ ]` | — |

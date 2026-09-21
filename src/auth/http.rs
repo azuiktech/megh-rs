@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub use axum::extract::FromRef;
 use axum::{
-    async_trait,
     extract::{FromRequestParts, Path, Query, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
@@ -92,7 +92,6 @@ pub struct AuthUser {
     pub session: Session,
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,
@@ -123,17 +122,6 @@ where
     }
 }
 
-/// Trait to extract MeghAuthState from application state.
-pub trait FromRef<T> {
-    fn from_ref(input: &T) -> Self;
-}
-
-impl FromRef<MeghAuthState> for MeghAuthState {
-    fn from_ref(input: &MeghAuthState) -> Self {
-        input.clone()
-    }
-}
-
 /// Extracts a named cookie value from HTTP request headers.
 pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let prefix = format!("{name}=");
@@ -155,10 +143,10 @@ pub fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 /// Builds an Axum router with all authentication and session endpoints.
 pub fn auth_router(state: MeghAuthState) -> Router {
     Router::new()
-        .route("/auth/:provider", get(oauth_login))
-        .route("/auth/:provider/login", get(oauth_login))
-        .route("/auth/:provider/callback", get(oauth_callback))
-        .route("/auth/:provider/token", get(oauth_callback))
+        .route("/auth/{provider}", get(oauth_login))
+        .route("/auth/{provider}/login", get(oauth_login))
+        .route("/auth/{provider}/callback", get(oauth_callback))
+        .route("/auth/{provider}/token", get(oauth_callback))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(auth_logout))
         .with_state(state)

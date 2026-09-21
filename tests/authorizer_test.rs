@@ -35,8 +35,8 @@ async fn fake_auth_injector(mut req: Request<Body>, next: Next) -> Response {
 fn build_test_router() -> Router {
     let api = Router::new()
         .route("/invoices", get(|| async { "ok-invoices" }).post(|| async { "ok-create-invoice" }))
-        .route("/invoices/:id", get(|| async { "ok-invoice-detail" }))
-        .route("/members/:id", delete(|| async { "ok-delete-member" }))
+        .route("/invoices/{id}", get(|| async { "ok-invoice-detail" }))
+        .route("/members/{id}", delete(|| async { "ok-delete-member" }))
         .layer(middleware::from_fn(authorizer));
 
     Router::new()

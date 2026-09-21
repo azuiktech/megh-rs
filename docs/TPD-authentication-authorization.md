@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7 and F9 shipped. F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F7 and F9 shipped. F10 (users schema alignment, #27) in progress; F11–F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
 
@@ -19,6 +19,11 @@ This is the living design for everything that answers "who is calling" (authenti
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
 | F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
 | F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[x]` | #26 / #25 |
+| F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[~]` branch `feature/users-schema-align` | #27 |
+| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup | `[ ]` | #28 |
+| F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token) | `[ ]` | #31 |
+| F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[ ]` | #29 |
+| F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
 
 ## 2. Design vocabulary (pac4j)
 
@@ -45,11 +50,24 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 |---|---|---|
 | `org` | `id`, `name`, `description`, `timezone`, `created_at` | PK `id` |
 | `org_members` | `id`, `organization_id`, `user_id`, `joined_at`, `grants TEXT[]` | FK `organization_id` → `org` (cascade); unique `(organization_id, user_id)`; `user_id` has no FK |
-| `users` | `id`, `subject`, `email`, `display_name`, `photo_url`, `created_at`, `updated_at` | unique `subject`, unique `email` |
+| `users` | `id`, `account_id`, `provider`, `email`, `password_hash`, `display_name`, `photo_url`, `created_at`, `updated_at` | unique `(account_id, provider)`, unique `email` (F10; before F10: `subject` instead of `account_id`/`provider`, unique) |
 | `connected_accounts` | `account_id`, `provider`, `email`, `access_token`, `refresh_token`, `token_type`, `expiry`, `created_at`, `updated_at`, `disconnected_at` | PK `(account_id, provider)`; no `user_id` |
 | `sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `ip_address`, `metadata JSONB`, `created_at`, `updated_at` | FK `user_id` → `users` (cascade); unique `token_hash` |
 
-`megh::migrate(&pool)` runs `0001`–`0004`; `examples/server.rs` uses `sqlx::migrate!`.
+`megh::migrate(&pool)` runs every migration; `examples/server.rs` uses `sqlx::migrate!`. Migrations are idempotent because databases are shared with megh-go in practice (`kyrios` holds both stacks' tables).
+
+### Schema parity with megh-go
+
+megh-go has no SQL migrations; its schema is what GORM `AutoMigrate` creates from the model tags. The comparison below was made by running that migration on Postgres and diffing against ours. Goal: same tables and columns wherever possible; values need not match (portable values are a bonus). megh-rs may add columns and foreign keys on top.
+
+| Table | megh-go | megh-rs |
+|---|---|---|
+| `users` | `id`, `account_id`, `provider`, `email`, `password_hash`, `created_at` (all `text` but ids/timestamps) | F10 |
+| `connected_accounts` | `(account_id, provider)` key, token columns | aligned |
+| `organizations` | `org` in megh-rs, fewer columns | F11 |
+| `organization_members` | `org_members` in megh-rs; `role`, `invited_by`; `grants` is `text` holding a JSON array | F11 |
+| `organization_invites`, `org_configs`, plans, prices, add-ons, subscriptions | present | F11 (schema only) |
+| `sessions` | `id text`, `data text`, timestamps | F12 |
 
 ## 5. Implemented features and their APIs
 
@@ -78,20 +96,20 @@ impl Grant {
 
 ```rust
 pub type User = Entity<Uuid, UserProfile>;
-pub struct UserProfile { subject: String, email: String, display_name: String, photo_url: String }
-pub struct UpsertUserInput { subject: String, email: String, display_name: Option<String>, photo_url: Option<String> }
+pub struct UserProfile { account_id: Option<String>, provider: Option<String>, email: String, display_name: String, photo_url: String }
+pub struct UpsertUserInput { provider: String, account_id: String, email: String, display_name: Option<String>, photo_url: Option<String> }
 
 impl UserRepo<'_> {                            // feature "postgres"
     pub fn new(pool: &PgPool) -> UserRepo;
     pub async fn get_by_id(&self, id: Uuid) -> Result<Option<User>, sqlx::Error>;
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error>;
-    pub async fn find_by_subject(&self, subject: &str) -> Result<Option<User>, sqlx::Error>;
+    pub async fn find_by_account(&self, provider: &str, account_id: &str) -> Result<Option<User>, sqlx::Error>;
     pub async fn upsert(&self, input: &UpsertUserInput) -> Result<User, sqlx::Error>;   // conflict key: email
     pub async fn update_profile(&self, id: Uuid, display_name: &str, photo_url: &str) -> Result<User, sqlx::Error>;
 }
 ```
 
-`upsert` overwrites `subject` and keeps existing `display_name`/`photo_url` when the new value is empty. Subjects are stored as `"{provider}:{provider_subject}"`.
+`upsert` keeps one user per email across providers: the first provider's `(provider, account_id)` is kept and never overwritten by later logins (it only fills them in when unset), and existing `display_name`/`photo_url` are kept when the new value is empty. Each provider's tokens live in their own `connected_accounts` row, keyed by `(account_id, provider)` and linked by email. Linking by email is only safe for verified emails (F8).
 
 ### F3 — OAuth 2.0 client and connected accounts (`auth::oauth`, `account`)
 
@@ -245,7 +263,7 @@ Consequences:
 
 ## 6. Test coverage (shipped)
 
-`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `session_user_test.rs` (F2, F4); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9); unit tests in `auth/grant.rs`, `auth/user.rs`, `session/*`, `org/member.rs`. Repo and router tests use a lazy pool and never query. The exception is `test_connected_account_repo_persistence`, which uses `DATABASE_URL` if reachable and otherwise returns early and passes without asserting anything. No shipped test covers `UserRepo`, `SessionRepo` or the callback against a live database.
+`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `session_user_test.rs` (F2, F4); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `session/*`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. No shipped test covers `SessionRepo` or the OAuth callback against a live database.
 
 ## 7. F8 — OAuth callback hardening (in scope, pending)
 
@@ -386,7 +404,7 @@ Found while auditing the shipped stack. F8 covers OAuth `state`, PKCE, the `Secu
 
 | Gap | Note | Candidate |
 |---|---|---|
-| `upsert` conflicts on email and overwrites `subject` | A second provider with the same email takes over the account; F8 only adds `email_verified` | — |
+| Accounts are linked by email without checking `email_verified` | A provider that reports an unverified email can take over an existing account (F10 stops the identity being overwritten; F8 adds the check) | — |
 | `AuthUser` is not linked to `OrgMember`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
 | Callback page embeds `serde_json` output in an inline `<script>` | `</script>` in a provider-supplied name is not escaped | — |
 | `events_router` `POST /sub` has no CSRF check | F9 covers `auth_router` only; `events_router` takes no config, so protecting it changes its signature | F9's `CsrfLayer` |

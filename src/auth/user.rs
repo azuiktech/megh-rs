@@ -9,7 +9,8 @@ use crate::entity::Entity;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 pub struct UserProfile {
-    pub subject: String,
+    pub account_id: Option<String>,
+    pub provider: Option<String>,
     pub email: String,
     pub display_name: String,
     pub photo_url: String,
@@ -21,7 +22,8 @@ pub type User = Entity<Uuid, UserProfile>;
 /// Parameters for creating or updating a user identity upon login.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpsertUserInput {
-    pub subject: String,
+    pub provider: String,
+    pub account_id: String,
     pub email: String,
     pub display_name: Option<String>,
     pub photo_url: Option<String>,
@@ -55,32 +57,36 @@ impl<'a> UserRepo<'a> {
             .await
     }
 
-    /// Finds a user by OAuth provider subject.
-    pub async fn find_by_subject(&self, subject: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE subject = $1")
-            .bind(subject)
+    /// Finds a user by the identity of the provider that first created it.
+    pub async fn find_by_account(&self, provider: &str, account_id: &str) -> Result<Option<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE provider = $1 AND account_id = $2")
+            .bind(provider)
+            .bind(account_id)
             .fetch_optional(self.pool)
             .await
     }
 
-    /// Upserts user by email: updates subject and non-empty display name/photo; inserts if not existing.
+    /// Upserts user by email: one user across providers. The first provider identity is kept (only filled in
+    /// when unset); non-empty display name/photo are updated; inserts if not existing.
     pub async fn upsert(&self, input: &UpsertUserInput) -> Result<User, sqlx::Error> {
         let display_name = input.display_name.as_deref().unwrap_or("");
         let photo_url = input.photo_url.as_deref().unwrap_or("");
 
         sqlx::query_as::<_, User>(
             r#"
-            INSERT INTO users (subject, email, display_name, photo_url, updated_at)
-            VALUES ($1, $2, $3, $4, NOW())
+            INSERT INTO users (provider, account_id, email, display_name, photo_url, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
             ON CONFLICT (email) DO UPDATE SET
-                subject = EXCLUDED.subject,
+                provider = COALESCE(users.provider, EXCLUDED.provider),
+                account_id = COALESCE(users.account_id, EXCLUDED.account_id),
                 display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE users.display_name END,
                 photo_url = CASE WHEN EXCLUDED.photo_url <> '' THEN EXCLUDED.photo_url ELSE users.photo_url END,
                 updated_at = NOW()
             RETURNING *
             "#,
         )
-        .bind(&input.subject)
+        .bind(&input.provider)
+        .bind(&input.account_id)
         .bind(&input.email)
         .bind(display_name)
         .bind(photo_url)
@@ -121,7 +127,8 @@ mod tests {
         let user: User = Entity::new(
             id,
             UserProfile {
-                subject: "google:abirbasak@gmail.com".to_string(),
+                account_id: Some("1234".to_string()),
+                provider: Some("google".to_string()),
                 email: "abirbasak@gmail.com".to_string(),
                 display_name: "Abir Basak".to_string(),
                 photo_url: "https://photo.example.com/avatar.png".to_string(),
@@ -130,7 +137,7 @@ mod tests {
 
         // Deref directly into profile fields
         assert_eq!(user.id, id);
-        assert_eq!(user.subject, "google:abirbasak@gmail.com");
+        assert_eq!(user.provider.as_deref(), Some("google"));
         assert_eq!(user.email, "abirbasak@gmail.com");
         assert_eq!(user.display_name, "Abir Basak");
 
@@ -146,7 +153,8 @@ mod tests {
     #[test]
     fn test_upsert_input_serialization() {
         let input = UpsertUserInput {
-            subject: "google:test@example.com".to_string(),
+            provider: "google".to_string(),
+            account_id: "1234".to_string(),
             email: "test@example.com".to_string(),
             display_name: Some("Test User".to_string()),
             photo_url: None,

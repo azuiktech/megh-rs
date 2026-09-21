@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7, F9, F10, F11, F13, F15 and F16 shipped. F12 and F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F7, F9, F10, F11, F13, F15, F16 and F17 shipped. F12 and F14 planned (password login with `Member`, aligned with megh-go). F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -26,6 +26,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
 | F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token | `[x]` | #39 / #36 |
 | F16 | Sessions on `tower-sessions` (Postgres store) and token CSRF (`axum-tower-sessions-csrf`) in `auth_router` | `[x]` | #43 / #42 |
+| F17 | JWT access token as a cache in front of the session (`jwt_session`, `jsonwebtoken`), renewed from the session | `[x]` | #50 / #49 |
 
 ## 2. Design vocabulary (pac4j)
 
@@ -265,9 +266,33 @@ let app = megh::auth_router(state).layer(SessionManagerLayer::new(store));
 
 Versions are held back (`AGENTS.md`): the only Postgres store for `tower-sessions` is `tower-sessions-sqlx-store` 0.15, which needs `tower-sessions-core` 0.14 and `sqlx` 0.8; `axum-tower-sessions-csrf` 0.1.3+ needs `tower-sessions` 0.15. The store's `tower_sessions.session` table (`id`, `data`, `expiry_date`) cannot match megh-go's `sessions` table. `events_router` (`POST /sub`) is not covered (§9).
 
+### F17 — JWT access token (`auth::token`, features `axum` + `postgres`; #50 / #49)
+
+A short-lived signed token that answers requests without a database lookup, and is renewed from the session when it expires. It is not a session: nothing is stored, and the transport (a cookie here) is independent of the token.
+
+```rust
+pub struct AccessToken { sub: Uuid, iss: String, aud: Vec<String>, exp: u64, iat: u64, client_id: String, scope: String }   // RFC 9068
+impl AccessToken { pub fn new(member: &Member, ttl: Duration) -> Self; pub fn grants(&self) -> Vec<Grant> }
+pub struct JwtSession { .. }                                   // Clone; signing key, lifetime, pool
+impl JwtSession { pub fn new(secret: &[u8], ttl: Duration, pool: PgPool) -> Self }
+pub async fn jwt_session(State<JwtSession>, CookieJar, Session, Request, Next) -> Result<(CookieJar, Response), StatusCode>
+pub const JWT_COOKIE: &str = "jwt_token";
+
+let api = Router::new().route(..).layer(from_fn(megh::authorizer)).layer(from_fn_with_state(jwt, megh::auth::jwt_session));
+let app = api.layer(SessionManagerLayer::new(store));           // jwt_session sits inside the session layer
+```
+
+The claims are megh-go's (`sub` member id, `iss` "megh", `aud` organization id, `scope` the grants space-separated, HS256), so a token minted by either stack verifies in the other with the same secret. Per request: a valid token puts its grants in the request extensions, where `authorizer` already reads them (zero database queries); a missing or expired token is renewed from the session's `user_id` and the user's first membership, sets a fresh cookie and continues; a token with a bad signature, issuer or format is 401 even when a session exists; no session, or no membership, is 401. Expiry has no leeway. `POST /auth/logout` clears the cookie (when the request carried one).
+
+Cookie: `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` = the lifetime (megh-go omits `Secure`).
+
+Revocation is the token lifetime, as in megh-go: there is no `jti` or denylist, ending the session stops renewal but a token already issued works until it expires, so keep the lifetime short. Not included: minting at login (the first request renews), a bearer-header transport, key rotation.
+
+`jsonwebtoken` 11 with its `aws_lc_rs` backend (already in the build through `rustls`); its `rust_crypto` backend would pull in the `rsa` crate.
+
 ## 6. Test coverage (shipped)
 
-`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
+`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16); `jwt_session_test.rs` (F17); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
 
 ## 7. F8 — OAuth callback hardening (in scope, pending)
 

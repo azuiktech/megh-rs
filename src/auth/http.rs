@@ -13,6 +13,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use axum_extra::extract::cookie::{Cookie, CookieJar};
 use axum_tower_sessions_csrf::{get_or_create_token, CsrfMiddleware};
 use oauth2::TokenResponse;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,7 @@ use crate::auth::oauth::{
     RedirectUrl,
 };
 use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
+use crate::auth::token::JWT_COOKIE;
 use crate::auth::user::{UpsertUserInput, User, UserRepo};
 
 /// Shared state required by the Megh authentication HTTP router.
@@ -73,7 +75,7 @@ pub struct AuthMeResponse {
     pub user: User,
 }
 
-const USER_ID: &str = "user_id";
+pub(crate) const USER_ID: &str = "user_id";
 
 /// Query parameters passed in OAuth callback redirects.
 #[derive(Debug, Deserialize)]
@@ -282,10 +284,10 @@ pub async fn auth_me(auth: AuthUser) -> Json<AuthMeResponse> {
     Json(AuthMeResponse { user: auth.user })
 }
 
-/// Ends the current session.
-pub async fn auth_logout(session: Session) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+/// Ends the current session and clears the JWT cookie (a token already issued stays valid until it expires).
+pub async fn auth_logout(session: Session, jar: CookieJar) -> Result<(CookieJar, Json<serde_json::Value>), (StatusCode, String)> {
     session.flush().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "status": "ok" })))
+    Ok((jar.remove(Cookie::build(JWT_COOKIE).path("/")), Json(serde_json::json!({ "status": "ok" }))))
 }
 
 /// The token a client sends back in the `x-csrf-token` header on every write.

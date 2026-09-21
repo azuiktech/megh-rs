@@ -45,7 +45,7 @@ async fn educator_auth_injector(mut req: Request<Body>, next: Next) -> Response 
 fn build_course_router() -> Router {
     let courses = Router::new()
         .route("/courses", get(|| async { "courses-list" }).post(|| async { "course-created" }))
-        .route("/courses/:id", get(|| async { "course-detail" }).patch(|| async { "course-updated" }))
+        .route("/courses/{id}",get(|| async { "course-detail" }).patch(|| async { "course-updated" }))
         .layer(middleware::from_fn(authorizer));
 
     Router::new()

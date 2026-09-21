@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F7 shipped. F9 (CSRF protection, #25) in progress. F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
+**Status:** F1–F7 and F9 shipped. F8 (OAuth callback hardening, azuiktech/megh-rs#22) is in scope and awaiting approval of §7.3. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/session`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`, `Session` and `SessionView`.
 
@@ -18,7 +18,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | `[x]` | #11 |
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
 | F8 | OAuth callback hardening (state, PKCE, `Secure`, verified email, `postMessage` origin) | `[~]` design pending approval, branch `fix/oauth-callback-hardening` | #22 |
-| F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[~]` branch `feature/csrf-check` | #25 |
+| F9 | CSRF protection (`tower-http` `csrf` layer, on by default in `auth_router`) | `[x]` | #26 / #25 |
 
 ## 2. Design vocabulary (pac4j)
 
@@ -221,7 +221,7 @@ pub async fn authorizer(req: Request, next: Next) -> Result<Response, (StatusCod
 
 Responses: 401 `not authenticated` (no `OrgMember` or grants in extensions), 403 `not permitted`, 404 `route not found` (no matched path). Verified by `tests/authorizer_test.rs` and `tests/course_authorizer_test.rs` with a fake injector.
 
-### F9 — CSRF protection (re-exported from `megh::auth`, feature `axum`; in progress, #25)
+### F9 — CSRF protection (re-exported from `megh::auth`, feature `axum`; #26 / #25)
 
 ```rust
 pub use tower_http::csrf::{ConfigError, CsrfLayer, ProtectionError};   // no wrapper: attach to any router, route or Tower service

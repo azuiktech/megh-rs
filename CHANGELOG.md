@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-09-22
+- `Subscriptions` (billing lifecycle ported from megh-go): plans (`create_plan`, `list_plans`, `plan`, `plan_by_sku`), `add_price`, `create_add_on`, `attach_plan_add_on`, and per organization `subscribe` (replaces the subscription, pads seats to the price's included seats, starts a trial and sets a one-month or one-year period), `change_seats`, `cancel(CancelWhen::Now | AtPeriodEnd)`, `attach_add_on`, `detach_add_on`, with `BillingError` (PR #48, issue #46)
 - Billing entities and money: `megh::billing` row types for the megh-go billing tables (`Plan`, `PlanPrice`, `AddOn`, `PlanAddOn`, `Subscription`, `SubscriptionItem`, the status, interval and add-on type enums, `Money` accessors) and `megh::money` (`rusty-money`, `from_micros`, `to_micros`; prices stay `BIGINT` micros); `JsonText<T>` reads the JSON that megh-go keeps in text columns, NULL as empty (PR #47, issue #45)
 - Password storage: `UserRepo::set_password` (bcrypt, portable with megh-go) and `verify_password`, which returns the `User` or a `PasswordError` saying why not (`UserNotFound`, `NoPassword`, `WrongPassword`, `Hash`, `Database`); megh-go's empty `password_hash` counts as no password, and a missing user or password still costs one bcrypt verification (PR #44, issue #29)
 

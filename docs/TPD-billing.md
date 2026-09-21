@@ -1,7 +1,7 @@
 # TPD — Billing
 
-**Status:** B1 shipped (money and entities). B2 (`Subscriptions` lifecycle) is designed and pending. Ports megh-go's plans, prices, add-ons and subscriptions; megh-go has no price calculation, invoicing or payment-provider calls, so neither does this.
-**Modules:** `src/billing.rs`, `src/money.rs`, `migrations/0006_align_org.sql` (the tables).
+**Status:** B1 (money and entities) and B2 (`Subscriptions` lifecycle) shipped. Ports megh-go's plans, prices, add-ons and subscriptions; megh-go has no price calculation, invoicing or payment-provider calls, so neither does this.
+**Modules:** `src/billing/mod.rs`, `src/billing/subscriptions.rs`, `src/money.rs`, `migrations/0006_align_org.sql` (the tables).
 **Related:** `TPD-organizations.md` (the billing tables were created there, schema only).
 
 ## 1. Delivery
@@ -9,7 +9,7 @@
 | # | Feature | Status | PR / issue |
 |---|---|---|---|
 | B1 | `megh::money` and the billing row types with `Money` accessors | `[x]` | #47 / #45 |
-| B2 | `Subscriptions`: plans, prices, add-ons, subscribe, change seats, cancel, add-on attach and detach | `[ ]` | #46 |
+| B2 | `Subscriptions`: plans, prices, add-ons, subscribe, change seats, cancel, add-on attach and detach | `[x]` | #48 / #46 |
 
 ## 2. Money (`megh::money`)
 
@@ -46,7 +46,7 @@ impl AddOn { pub fn price(&self) -> Result<Money, MoneyError> }
 
 `PlanPrice::trial_duration` is nanoseconds because megh-go stores a Go `time.Duration` (a real row holds `2592000000000000`, 30 days); `trial()` converts it.
 
-## 4. Pending: `Subscriptions` (B2, #46)
+## 4. `Subscriptions` (`billing::subscriptions`, feature `postgres`; #48 / #46)
 
 ```rust
 impl Subscriptions {                       // holds the injected pool, like Orgs
@@ -64,7 +64,9 @@ impl Subscriptions {                       // holds the injected pool, like Orgs
 pub enum BillingError { NotFound, InvalidSeats, Database(sqlx::Error) }   // #[non_exhaustive]
 ```
 
-Behaviour follows megh-go: `subscribe` replaces the organization's subscription (unique per organization), uses the price's included seats as a minimum, starts a trial (`trialing`, `trial_ends_at`) when the price has a trial, and sets the period end one month or one year ahead; seats are at least 1; an add-on quantity below 1 becomes 1 and re-attaching updates it; `cancel(Now)` sets `canceled`, `cancel(AtPeriodEnd)` sets `cancel_at_period_end`. Unlike megh-go, `subscribe` takes no plan id: the price row names its plan.
+`list_plans` returns the active plans only (`active = true`). megh-go preloads each plan's prices and add-ons and a subscription's add-ons through GORM relations; here every call returns the plain row, and there is no accessor for a subscription's add-ons yet (attach and detach return the `Subscription`).
+
+Behaviour follows megh-go: `subscribe` replaces the organization's subscription (unique per organization), uses the price's included seats as a minimum, starts a trial (`trialing`, `trial_ends_at`) when the price has a trial, and sets the period end one month or one year ahead; seats are at least 1; an add-on quantity below 1 becomes 1 and re-attaching updates it; `cancel(Now)` sets `canceled`, `cancel(AtPeriodEnd)` sets `cancel_at_period_end`. `subscribe` reads and then upserts (megh-go used a transaction), so two simultaneous first subscriptions of one organization end with a unique-index error for one of them. Unlike megh-go, `subscribe` takes no plan id: the price row names its plan.
 
 ## 5. Limits
 

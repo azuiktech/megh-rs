@@ -3,6 +3,8 @@
 use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_sessions::SessionManagerLayer;
+use tower_sessions_sqlx_store::PostgresStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,8 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let google_client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
     let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default();
 
+    let sessions = PostgresStore::new(pool.clone());
+    sessions.migrate().await?;
+
     let mut megh_state = megh::MeghAuthState::new(pool)
-        .with_cookie_name("kyrios_session")
         .with_app_origin(&app_origin)
         .with_redirect_after_login("/");
 
@@ -42,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("GOOGLE_CLIENT_ID not set; Google login will not be available");
     }
 
-    let auth_router = megh::auth_router(megh_state);
+    let auth_router = megh::auth_router(megh_state).layer(SessionManagerLayer::new(sessions));
     let serve_ui = ServeDir::new("ui/sdk");
 
     let app = axum::Router::new()

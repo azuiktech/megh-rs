@@ -1,37 +1,27 @@
 use axum::body::Body;
 use axum::http::{header, Request, Response, StatusCode};
 use megh::auth::http::{auth_router, MeghAuthState};
-use megh::auth::CsrfLayer;
 use tower::ServiceExt;
+use tower_sessions::{MemoryStore, SessionManagerLayer};
 
-const WEB_ORIGIN: &str = "https://app.example.com";
-
-fn state() -> MeghAuthState {
-    MeghAuthState::new(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap())
+fn app() -> axum::Router {
+    let state = MeghAuthState::new(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap());
+    auth_router(state).layer(SessionManagerLayer::new(MemoryStore::default()))
 }
 
-async fn logout_from_web_app(state: MeghAuthState) -> Response<Body> {
-    let request = Request::builder()
-        .method("POST")
-        .uri("/auth/logout")
-        .header("sec-fetch-site", "same-site")
-        .header("origin", WEB_ORIGIN)
-        .body(Body::empty())
-        .unwrap();
-    auth_router(state).oneshot(request).await.unwrap()
+async fn logout(app: &axum::Router, cookie: &str, token: &str) -> Response<Body> {
+    let request = Request::post("/auth/logout").header(header::COOKIE, cookie).header("x-csrf-token", token);
+    app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap()
 }
 
 #[tokio::test]
-async fn auth_router_is_csrf_protected_by_default() {
-    let response = logout_from_web_app(state()).await;
+async fn writes_need_the_token_issued_to_the_session() {
+    let app = app();
+    let issued = app.clone().oneshot(Request::get("/auth/csrf-token").body(Body::empty()).unwrap()).await.unwrap();
+    let cookie = issued.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_string();
+    let token = String::from_utf8(axum::body::to_bytes(issued.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
 
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert!(response.headers().get(header::SET_COOKIE).is_none());
-}
-
-#[tokio::test]
-async fn with_csrf_configures_auth_router() {
-    let state = state().with_csrf(CsrfLayer::new().add_trusted_origin(WEB_ORIGIN).unwrap());
-
-    assert_eq!(logout_from_web_app(state).await.status(), StatusCode::OK);
+    assert_eq!(logout(&app, &cookie, "").await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(logout(&app, &cookie, "forged").await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(logout(&app, &cookie, &token).await.status(), StatusCode::OK);
 }

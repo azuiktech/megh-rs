@@ -17,3 +17,6 @@ Instructions for AI coding assistants contributing to `megh-rs`.
 | Dependency | Held at | Latest | Reason | Waiting for |
 |---|---|---|---|---|
 | `matchit` (transitive) | 0.8.4 | 0.8.6 | `axum` 0.8.9 pins `=0.8.4` | the next `axum` release |
+| `sqlx` | 0.8 | 0.9 | the only Postgres store for `tower-sessions`, `tower-sessions-sqlx-store` 0.15, needs `sqlx ^0.8` | a Postgres store for `tower-sessions-core` 0.15 on `sqlx` 0.9 |
+| `tower-sessions` | 0.14 | 0.15 | that store needs `tower-sessions-core` 0.14 | the same store |
+| `axum-tower-sessions-csrf` | =0.1.1 | 0.1.4 | 0.1.3 and later need `tower-sessions` 0.15 | the same store |

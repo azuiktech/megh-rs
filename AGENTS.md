@@ -16,5 +16,4 @@ Instructions for AI coding assistants contributing to `megh-rs`.
 
 | Dependency | Held at | Latest | Reason | Waiting for |
 |---|---|---|---|---|
-| `reqwest` | 0.12 | 0.13.5 | `oauth2` 5.0.0 requires `reqwest ^0.12` for its HTTP client adapter | an `oauth2` release that supports `reqwest` 0.13 |
 | `matchit` (transitive) | 0.8.4 | 0.8.6 | `axum` 0.8.9 pins `=0.8.4` | the next `axum` release |

@@ -16,7 +16,7 @@ use oauth2::TokenResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::oauth::{
-    build_authorization_url, fetch_user_info, AuthUrlOptions, CsrfToken, OAuthProviderConfig,
+    build_authorization_url, fetch_user_info, oauth_http_client, AuthUrlOptions, CsrfToken, OAuthProviderConfig,
     RedirectUrl,
 };
 use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
@@ -236,7 +236,7 @@ pub async fn oauth_callback(
     // Exchange authorization code for tokens
     let token_response = client
         .exchange_code(oauth2::AuthorizationCode::new(code))
-        .request_async(&state.http_client)
+        .request_async(&oauth_http_client(state.http_client.clone()))
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Token exchange failed: {e}")))?;
 

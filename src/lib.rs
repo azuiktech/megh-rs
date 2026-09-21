@@ -25,6 +25,8 @@ pub use auth::{
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, UpsertUserInput, User,
     UserProfile, request_action, request_grant,
 };
+#[cfg(feature = "client")]
+pub use auth::oauth_http_client;
 #[cfg(feature = "axum")]
 pub use auth::authorizer;
 #[cfg(feature = "postgres")]

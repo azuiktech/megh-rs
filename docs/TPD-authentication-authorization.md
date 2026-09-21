@@ -39,7 +39,7 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 
 ## 3. Architecture
 
-- **Stack:** axum 0.8, `tower-http` 0.7 (`csrf`), sqlx 0.9 (Postgres), `oauth2` 5 (reqwest 0.12, rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
+- **Stack:** axum 0.8, `tower-http` 0.7 (`csrf`), sqlx 0.9 (Postgres), `oauth2` 5 (no bundled HTTP client; `oauth_http_client` adapts the caller's `reqwest` 0.13 client), `reqwest` 0.13 (rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
 - **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
 - **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `sessions` insert → session cookie. Later requests: cookie → `SessionRepo::find_valid_by_token` → `UserRepo::get_by_id` → `AuthUser`.
 - **Authorization path:** the application puts a `Member` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).

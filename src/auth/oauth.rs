@@ -12,6 +12,25 @@ pub use oauth2::{
 };
 use oauth2::{EndpointNotSet, EndpointSet};
 
+/// Lets a caller-configured `reqwest` client perform `oauth2` token requests.
+/// The client must not follow redirects (`redirect::Policy::none()`), as the `oauth2` crate requires.
+#[cfg(feature = "client")]
+pub fn oauth_http_client(
+    client: reqwest::Client,
+) -> impl Fn(oauth2::HttpRequest) -> std::pin::Pin<Box<dyn Future<Output = Result<oauth2::HttpResponse, oauth2::HttpClientError<reqwest::Error>>> + Send + Sync>> {
+    move |request| {
+        let client = client.clone();
+        Box::pin(async move {
+            let response = client.execute(request.try_into().map_err(Box::new)?).await.map_err(Box::new)?;
+            let mut builder = oauth2::http::Response::builder().status(response.status()).version(response.version());
+            for (name, value) in response.headers() {
+                builder = builder.header(name, value);
+            }
+            builder.body(response.bytes().await.map_err(Box::new)?.to_vec()).map_err(oauth2::HttpClientError::Http)
+        })
+    }
+}
+
 /// A client with the authorization and token endpoints configured, as built by `OAuthProviderConfig::build_client`.
 pub type ProviderClient = BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
 

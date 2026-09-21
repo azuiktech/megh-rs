@@ -16,6 +16,8 @@ pub use oauth::{
     CsrfToken, OAuthError, OAuthFlowMode, OAuthProviderConfig, OAuthUserInfo, PkceCodeChallenge,
     PkceCodeVerifier, RedirectUrl, Scope, TokenResponse,
 };
+#[cfg(feature = "client")]
+pub use oauth::oauth_http_client;
 pub use user::{UpsertUserInput, User, UserProfile};
 
 #[cfg(feature = "postgres")]

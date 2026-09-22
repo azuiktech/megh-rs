@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11, F13, F15, F16, F17 and F18 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
+**Status:** F1–F11, F13, F15, F16, F17, F18 and F19 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -19,6 +19,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
 | F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | `[x]` | #53 / #22 |
 | F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
+| F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
@@ -194,7 +195,7 @@ let api = reqwest_middleware::ClientBuilder::new(my_reqwest_client).with(account
 api.get(url).send().await?;
 ```
 
-Refresh runs under a row lock (`SELECT … FOR UPDATE`), so concurrent requests refresh once, across processes; the provider call happens while the lock is held (bounded by the client's timeout). A refresh token the provider sends is stored, otherwise the stored one is kept. `invalid_grant` marks the account `disconnected_at` and the request fails with `AccountError::InvalidGrant`, carried in `reqwest_middleware::Error::Middleware` (`downcast_ref::<AccountError>()`); later requests fail with `Disconnected` without calling the provider. `ConnectedAccountRepo::save` no longer overwrites a stored refresh token with an empty one (a re-login: providers such as Google only send it on first consent). Not included: retry on 401, a connect flow that forces re-consent, token encryption at rest (A7).
+Refresh runs under a row lock (`SELECT … FOR UPDATE`), so concurrent requests refresh once, across processes; the provider call happens while the lock is held (bounded by the client's timeout). A refresh token the provider sends is stored, otherwise the stored one is kept. `invalid_grant` marks the account `disconnected_at` and the request fails with `AccountError::InvalidGrant`, carried in `reqwest_middleware::Error::Middleware` (`downcast_ref::<AccountError>()`); later requests fail with `Disconnected` without calling the provider. `ConnectedAccountRepo::save` no longer overwrites a stored refresh token with an empty one (a re-login: providers such as Google only send it on first consent). Not included: retry on 401, a connect flow that forces re-consent. Token encryption is F19.
 
 ### F4 — Sessions
 
@@ -291,6 +292,24 @@ Revocation is the token lifetime, as in megh-go: there is no `jti` or denylist, 
 
 `jsonwebtoken` 11 with its `aws_lc_rs` backend (already in the build through `rustls`); its `rust_crypto` backend would pull in the `rsa` crate.
 
+### F19 — Token encryption at rest (`account::encryption`, feature `postgres`; #57 / #56)
+
+Ports megh-go's `Encryptor` (AES-256-GCM, `aes-gcm` crate). Optional, default off (plaintext, as before and as in megh-go); no fallback or migration for rows already stored in plaintext.
+
+```rust
+pub struct Encryptor { .. }
+impl Encryptor {
+    pub fn new(key: &[u8; 32]) -> Self;                                  // the caller supplies the key; megh never reads the environment
+    pub fn encrypt(&self, plaintext: &str) -> Result<String, EncryptError>;   // random nonce + ciphertext, base64
+    pub fn decrypt(&self, encoded: &str) -> Result<String, EncryptError>;
+}
+impl<'a> ConnectedAccountRepo<'a> { pub fn with_encryptor(self, encryptor: Encryptor) -> Self; }   // save/get/find_by_email_or_account/list_by_email
+impl Accounts { pub fn with_encryptor(self, encryptor: Encryptor) -> Self; }                        // access_token's own SELECT/UPDATE
+impl MeghAuthState { pub fn with_token_encryptor(self, encryptor: Encryptor) -> Self; }             // the oauth_callback save
+```
+
+One `Encryptor` instance (same key) must be given to whichever of `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` an application uses, since they read and write the same `access_token`/`refresh_token` columns; `Accounts::with_encryptor` documents this. A decrypt failure is a hard `sqlx::Error`/`AccountError`, never silently ignored or treated as "already plaintext" — megh does not support mixed plaintext/encrypted rows.
+
 ## 6. Test coverage (shipped)
 
 `tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16); `jwt_session_test.rs` (F17); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
@@ -328,7 +347,7 @@ Found while auditing the shipped stack. F8 has closed the OAuth `state`, PKCE, `
 | `events_router` `POST /sub` has no CSRF check | F16 covers `auth_router` only; `events_router` has no session layer, so protecting it changes its signature | F16's `CsrfMiddleware` |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |
 | No rate limiting on `/auth/*` | | `tower_governor` (axum compatibility unverified) |
-| Tokens stored in plaintext; `connected_accounts` has no `user_id` link | Per-user disconnect cannot be authorized | — |
+| `connected_accounts` has no `user_id` link | Per-user disconnect cannot be authorized | — |
 | Sessions: fixed expiry (`touch` unused), no purge of expired rows, `ip_address` always `""`, token is two UUIDv4s | | — |
 | Identity comes from the userinfo endpoint; no `nonce` or `id_token` validation | | `openidconnect` 3.5 (matches `oauth2` 4.4) |
 | `StandardUserInfo.id` is `Option<String>` | GitHub returns a numeric `id`; parsing is likely to fail | — |

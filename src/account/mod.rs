@@ -2,11 +2,15 @@
 
 pub mod model;
 #[cfg(feature = "postgres")]
+pub mod encryption;
+#[cfg(feature = "postgres")]
 pub mod repo;
 #[cfg(all(feature = "postgres", feature = "client"))]
 pub mod accounts;
 
 pub use model::{ConnectedAccount, OAuth2Tokens};
+#[cfg(feature = "postgres")]
+pub use encryption::{EncryptError, Encryptor};
 #[cfg(feature = "postgres")]
 pub use repo::ConnectedAccountRepo;
 #[cfg(all(feature = "postgres", feature = "client"))]

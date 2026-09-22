@@ -10,6 +10,7 @@ use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use megh::auth::http::{auth_router, MeghAuthState};
 use megh::auth::{OAuthProviderConfig, PkceCodeChallenge, PkceCodeVerifier};
+use megh::Encryptor;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -65,6 +66,7 @@ async fn fixture(pool: PgPool, userinfo: Value, fail_token: bool, web_origin: Op
         Some(origin) => state.with_web_origin(origin),
         None => state,
     };
+    let state = state.with_token_encryptor(Encryptor::new(&[5u8; 32]));
     Fixture { app: auth_router(state).layer(SessionManagerLayer::new(MemoryStore::default())), requests }
 }
 
@@ -194,4 +196,17 @@ async fn provider_failures_do_not_reach_the_client(pool: PgPool) {
 
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert!(!body(response).await.contains("secret-detail-xyz"));
+}
+
+#[sqlx::test]
+async fn a_configured_token_encryptor_encrypts_what_the_callback_saves(pool: PgPool) {
+    let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
+    let (cookie, state, _) = start_login(&app).await;
+
+    let response = get_page(&app, &format!("/auth/stub/callback?code=abc&state={state}"), &cookie).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored: (String, String) = sqlx::query_as("SELECT access_token, refresh_token FROM connected_accounts").fetch_one(&pool).await.unwrap();
+    assert!(stored.0 != "at" && Encryptor::new(&[5u8; 32]).decrypt(&stored.0).unwrap() == "at");
+    assert_eq!(Encryptor::new(&[5u8; 32]).decrypt(&stored.1).unwrap(), "rt");
 }

@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11, F13, F15, F16 and F17 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
+**Status:** F1–F11, F13, F15, F16, F17 and F18 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -18,6 +18,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | `[x]` | #11 |
 | F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
 | F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | `[x]` | #53 / #22 |
+| F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |

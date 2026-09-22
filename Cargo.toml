@@ -32,6 +32,7 @@ axum = { version = "0.8", optional = true }
 html-escape = { version = "0.2", optional = true }
 tracing = { version = "0.1", optional = true }
 axum-extra = { version = "0.12", features = ["cookie"], optional = true }
+tower-http = { version = "0.7", features = ["csrf"], optional = true }
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"], optional = true }
 tower-sessions = { version = "0.14", optional = true }
 axum-tower-sessions-csrf = { version = "=0.1.1", optional = true }
@@ -53,4 +54,4 @@ tracing-subscriber = "0.3"
 default = ["postgres", "client", "axum"]
 postgres = ["dep:sqlx", "dep:bcrypt"]
 client = ["dep:reqwest", "dep:reqwest-middleware", "dep:async-trait"]
-axum = ["dep:axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:jsonwebtoken", "dep:tower-sessions", "dep:axum-tower-sessions-csrf", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]
+axum = ["dep:axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:axum-tower-sessions-csrf", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]

@@ -15,7 +15,7 @@ pub use event::{
     NoopHistoryProvider, RingBuffer, Topic,
 };
 #[cfg(feature = "axum")]
-pub use event::events_router;
+pub use event::{events_router, events_router_with_csrf};
 
 pub use entity::{ColumnMeta, Entity, JsonText, Table};
 #[cfg(feature = "postgres")]

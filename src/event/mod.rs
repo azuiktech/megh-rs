@@ -16,4 +16,4 @@ pub use ring::RingBuffer;
 pub use topic::Topic;
 
 #[cfg(feature = "axum")]
-pub use sse::events_router;
+pub use sse::{events_router, events_router_with_csrf};

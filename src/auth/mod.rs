@@ -8,6 +8,8 @@ pub mod user;
 pub use authorizer::{request_action, request_grant};
 #[cfg(feature = "axum")]
 pub use authorizer::authorizer;
+#[cfg(feature = "axum")]
+pub use axum_tower_sessions_csrf::{get_or_create_token, CsrfMiddleware, TOKEN_HEADER, TOKEN_KEY};
 pub use grant::Grant;
 pub use oauth::{
     build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType, ProviderClient,

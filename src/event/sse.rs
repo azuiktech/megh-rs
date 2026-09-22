@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tower_http::csrf::CsrfLayer;
 use uuid::Uuid;
 
 use super::broker::Broker;
@@ -25,12 +26,19 @@ pub struct StreamQuery {
     pub history_limit: Option<usize>,
 }
 
-/// Returns an Axum router mounted with SSE streaming and subscription routes.
+/// Returns an Axum router mounted with SSE streaming and subscription routes. `POST /sub` is CSRF-protected by
+/// default (no trusted cross-origin callers); use [`events_router_with_csrf`] to configure trusted origins.
 pub fn events_router(broker: Arc<Broker>) -> Router {
+    events_router_with_csrf(broker, CsrfLayer::new())
+}
+
+/// [`events_router`] with a caller-configured [`CsrfLayer`], for a web app served from a different origin than
+/// this router (`csrf.add_trusted_origin("https://app.example.com")`).
+pub fn events_router_with_csrf(broker: Arc<Broker>, csrf: CsrfLayer) -> Router {
     Router::new()
         .route("/stream", get(sse_handler))
         .route("/", get(sse_handler))
-        .route("/sub", post(sub_handler))
+        .route("/sub", post(sub_handler).layer(csrf))
         .with_state(broker)
 }
 

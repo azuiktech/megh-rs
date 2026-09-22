@@ -17,6 +17,7 @@ export interface AuthConfig<User> {
     logout?: string       // default: /auth/logout
     googleLogin?: string  // default: /auth/google/login
     googleRevoke?: string // default: /auth/google/revoke
+    csrfToken?: string    // default: /auth/csrf-token
   }
   /**
    * Map the raw /me response to the User type.
@@ -36,6 +37,7 @@ export class Auth<User = Record<string, unknown>> {
   readonly #transform: (raw: unknown) => User
   #user: User | null = null
   #listeners: Listener<User>[] = []
+  #csrfTokenCache: Promise<string> | null = null
 
   constructor(config: AuthConfig<User>) {
     this.#base = config.base.replace(/\/$/, '')
@@ -45,6 +47,7 @@ export class Auth<User = Record<string, unknown>> {
       logout:       config.paths?.logout       ?? '/auth/logout',
       googleLogin:  config.paths?.googleLogin  ?? '/auth/google/login',
       googleRevoke: config.paths?.googleRevoke ?? '/auth/google/revoke',
+      csrfToken:    config.paths?.csrfToken    ?? '/auth/csrf-token',
     }
     this.#transform = config.transform ?? ((raw) => raw as User)
   }
@@ -263,11 +266,20 @@ export class Auth<User = Record<string, unknown>> {
     for (const fn of this.#listeners) fn(user)
   }
 
-  #fetch(path: string, init?: RequestInit): Promise<Response> {
-    return fetch(`${this.#base}${path}`, {
-      ...init,
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...init?.headers },
-    })
+  async #fetch(path: string, init?: RequestInit): Promise<Response> {
+    const isWrite = !!init?.method && init.method !== 'GET'
+    const headers = { 'Content-Type': 'application/json', ...init?.headers } as Record<string, string>
+    if (isWrite) headers['x-csrf-token'] = await this.#csrfToken()
+
+    const res = await fetch(`${this.#base}${path}`, { ...init, credentials: 'include', headers })
+    // The token may have rotated (e.g. a new session) — drop the cache so the next write re-fetches it.
+    if (isWrite && res.status === 403) this.#csrfTokenCache = null
+    return res
+  }
+
+  /** Fetches and caches the CSRF token. Every write on this Auth instance shares one in-flight/cached fetch. */
+  #csrfToken(): Promise<string> {
+    this.#csrfTokenCache ??= fetch(`${this.#base}${this.#paths.csrfToken}`, { credentials: 'include' }).then((res) => res.text())
+    return this.#csrfTokenCache
   }
 }

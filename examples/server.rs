@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use tower_sessions::cookie::SameSite;
 use tower_sessions::SessionManagerLayer;
 use tower_sessions_sqlx_store::PostgresStore;
 
@@ -46,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("GOOGLE_CLIENT_ID not set; Google login will not be available");
     }
 
-    let auth_router = megh::auth_router(megh_state).layer(SessionManagerLayer::new(sessions));
+    let auth_router = megh::auth_router(megh_state).layer(SessionManagerLayer::new(sessions).with_same_site(SameSite::Lax));
     let serve_ui = ServeDir::new("ui/sdk");
 
     let app = axum::Router::new()

@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::auth::oauth::{
     build_authorization_url, fetch_user_info, oauth_http_client, AuthUrlOptions, CsrfToken, OAuthProviderConfig,
+    PkceCodeChallenge, PkceCodeVerifier,
     RedirectUrl,
 };
 use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
@@ -36,6 +37,8 @@ pub struct MeghAuthState {
     pub app_origin: String,
     pub providers: Arc<HashMap<String, OAuthProviderConfig>>,
     pub http_client: reqwest::Client,
+    /// Where the sign-in popup posts its result (the origin of the page that opened it); defaults to `app_origin`.
+    pub web_origin: Option<String>,
 }
 
 impl MeghAuthState {
@@ -50,6 +53,7 @@ impl MeghAuthState {
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("static HTTP client configuration"),
+            web_origin: None,
         }
     }
 
@@ -60,6 +64,11 @@ impl MeghAuthState {
 
     pub fn with_app_origin(mut self, app_origin: impl Into<String>) -> Self {
         self.app_origin = app_origin.into();
+        self
+    }
+
+    pub fn with_web_origin(mut self, web_origin: impl Into<String>) -> Self {
+        self.web_origin = Some(web_origin.into());
         self
     }
 
@@ -135,6 +144,7 @@ pub fn auth_router(state: MeghAuthState) -> Router {
 pub async fn oauth_login(
     State(state): State<MeghAuthState>,
     Path(provider_id): Path<String>,
+    session: Session,
 ) -> Result<Redirect, (StatusCode, String)> {
     let provider = state
         .providers
@@ -145,19 +155,24 @@ pub async fn oauth_login(
         format!("{}/auth/{provider_id}/token", state.app_origin.trim_end_matches('/'))
     });
     let redirect_url = RedirectUrl::new(callback_url)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid callback URL: {e}")))?;
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "invalid callback URL", e))?;
 
     let client = provider
         .build_client(Some(redirect_url))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "invalid provider configuration", e))?;
 
     let csrf = CsrfToken::new_random();
+    let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+    session
+        .insert(&attempt_key(&provider_id), (csrf.secret(), verifier.secret()))
+        .await
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "could not start the login", e))?;
     let auth_url = build_authorization_url(
         &client,
         csrf,
         AuthUrlOptions {
             scopes: &provider.default_scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            pkce: None,
+            pkce: Some(&challenge),
             offline_access: true,
             incremental: true,
             prompt: Some("select_account"),
@@ -174,9 +189,10 @@ pub async fn oauth_callback(
     Query(query): Query<OAuthCallbackQuery>,
     session: Session,
 ) -> Result<Response, (StatusCode, String)> {
+    let verifier = take_attempt(&session, &provider_id, query.state).await?;
     if let Some(err) = query.error {
         let desc = query.error_description.unwrap_or_default();
-        return Err((StatusCode::BAD_REQUEST, format!("OAuth error: {err} ({desc})")));
+        return Err(failed(StatusCode::BAD_REQUEST, "sign-in was not completed", format!("{err} ({desc})")));
     }
 
     let code = query
@@ -192,24 +208,25 @@ pub async fn oauth_callback(
         format!("{}/auth/{provider_id}/token", state.app_origin.trim_end_matches('/'))
     });
     let redirect_url = RedirectUrl::new(callback_url)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Invalid callback URL: {e}")))?;
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "invalid callback URL", e))?;
 
     let client = provider
         .build_client(Some(redirect_url))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "invalid provider configuration", e))?;
 
     // Exchange authorization code for tokens
     let token_response = client
         .exchange_code(oauth2::AuthorizationCode::new(code))
+        .set_pkce_verifier(verifier)
         .request_async(&oauth_http_client(state.http_client.clone()))
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Token exchange failed: {e}")))?;
+        .map_err(|e| failed(StatusCode::BAD_GATEWAY, "sign-in failed", e))?;
 
     // Fetch user profile
     let userinfo_url = provider
         .userinfo_url
         .as_deref()
-        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "userinfo_url missing".to_string()))?;
+        .ok_or_else(|| failed(StatusCode::INTERNAL_SERVER_ERROR, "invalid provider configuration", "userinfo_url missing"))?;
 
     let user_info = fetch_user_info(
         &state.http_client,
@@ -217,7 +234,10 @@ pub async fn oauth_callback(
         token_response.access_token().secret(),
     )
     .await
-    .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Fetch userinfo failed: {e}")))?;
+    .map_err(|e| failed(StatusCode::BAD_GATEWAY, "sign-in failed", e))?;
+    (user_info.email_verified == Some(true))
+        .then_some(())
+        .ok_or((StatusCode::FORBIDDEN, "the provider has not verified this email".to_string()))?;
 
     // Upsert User identity
     let user_repo = UserRepo::new(&state.pool);
@@ -230,12 +250,12 @@ pub async fn oauth_callback(
             photo_url: user_info.picture,
         })
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("User upsert failed: {e}")))?;
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "could not save the user", e))?;
 
     // Save ConnectedAccount credentials
     let oauth_tokens = OAuth2Tokens::from(&token_response);
     let account_repo = ConnectedAccountRepo::new(&state.pool);
-    let _ = account_repo
+    account_repo
         .save(&ConnectedAccount {
             account_id: user_info.subject,
             provider: provider_id,
@@ -248,32 +268,29 @@ pub async fn oauth_callback(
             updated_at: None,
             disconnected_at: None,
         })
-        .await;
+        .await
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "could not save the account", e))?;
 
     session
         .cycle_id()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Session creation failed: {e}")))?;
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "could not start the session", e))?;
     session
         .insert(USER_ID, user.id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Session creation failed: {e}")))?;
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "could not start the session", e))?;
 
-    let payload = serde_json::json!({
-        "type": "oauth_success",
-        "user": user,
-    });
-    let payload_str = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
-    let fallback_str = serde_json::to_string(&state.redirect_after_login).unwrap_or_else(|_| "\"/\"".to_string());
-
+    let payload = serde_json::json!({ "type": "oauth_success", "user": user }).to_string();
+    let target = state.web_origin.as_deref().unwrap_or(&state.app_origin);
     let html = format!(
-        r#"<!doctype html><meta charset="utf-8"><script>
-(function(){{
-var d={payload_str},f={fallback_str};
-if(window.opener){{window.opener.postMessage(d,"*");window.close();}}
-else if(f){{window.location.href=f;}}
-}})();
-</script>"#
+        r#"<!doctype html><meta charset="utf-8"><body data-payload="{}" data-target="{}" data-fallback="{}"><script>
+var d=document.body.dataset;
+if(window.opener){{window.opener.postMessage(JSON.parse(d.payload),d.target);window.close();}}
+else if(d.fallback){{window.location.href=d.fallback;}}
+</script>"#,
+        html_escape::encode_double_quoted_attribute(&payload),
+        html_escape::encode_double_quoted_attribute(target),
+        html_escape::encode_double_quoted_attribute(&state.redirect_after_login),
     );
 
     Ok(Html(html).into_response())
@@ -293,4 +310,26 @@ pub async fn auth_logout(session: Session, jar: CookieJar) -> Result<(CookieJar,
 /// The token a client sends back in the `x-csrf-token` header on every write.
 pub async fn csrf_token(session: Session) -> Result<String, (StatusCode, String)> {
     get_or_create_token(&session).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+fn attempt_key(provider: &str) -> String {
+    format!("oauth:{provider}")
+}
+
+/// The PKCE verifier of the login this callback answers. The stored attempt is consumed, so a callback works once,
+/// and the returned `state` must equal the one that was sent.
+async fn take_attempt(session: &Session, provider: &str, returned: Option<String>) -> Result<PkceCodeVerifier, (StatusCode, String)> {
+    let stored: Option<(String, String)> = session
+        .remove(&attempt_key(provider))
+        .await
+        .map_err(|e| failed(StatusCode::INTERNAL_SERVER_ERROR, "could not read the session", e))?;
+    let (state, verifier) = stored.ok_or((StatusCode::BAD_REQUEST, "no login in progress".to_string()))?;
+    let matches = returned.is_some_and(|returned| CsrfToken::new(state) == CsrfToken::new(returned));
+    matches.then(|| PkceCodeVerifier::new(verifier)).ok_or((StatusCode::FORBIDDEN, "state mismatch".to_string()))
+}
+
+/// A failure the client sees only as a status and a fixed message; the cause is logged.
+fn failed(status: StatusCode, message: &'static str, cause: impl std::fmt::Display) -> (StatusCode, String) {
+    tracing::error!("{message}: {cause}");
+    (status, message.to_string())
 }

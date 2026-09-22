@@ -77,7 +77,7 @@ impl OAuthFlowMode {
 }
 
 /// OAuth 2.0 provider configuration (e.g. Google, GitHub, Apple, HubSpot).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 pub struct OAuthProviderConfig {
     pub provider_id: String,
     pub client_id: String,
@@ -87,6 +87,21 @@ pub struct OAuthProviderConfig {
     pub userinfo_url: Option<String>,
     pub default_scopes: Vec<String>,
     pub redirect_url: Option<String>,
+}
+
+impl std::fmt::Debug for OAuthProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthProviderConfig")
+            .field("provider_id", &self.provider_id)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "[redacted]"))
+            .field("auth_url", &self.auth_url)
+            .field("token_url", &self.token_url)
+            .field("userinfo_url", &self.userinfo_url)
+            .field("default_scopes", &self.default_scopes)
+            .field("redirect_url", &self.redirect_url)
+            .finish()
+    }
 }
 
 impl OAuthProviderConfig {

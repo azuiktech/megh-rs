@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11, F13, F15, F16, F17, F18 and F19 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
+**Status:** F1–F11, F13, F15, F16, F17, F18, F19 and F20 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -20,6 +20,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | `[x]` | #53 / #22 |
 | F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
 | F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
+| F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | `[x]` | #59 / #58 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
@@ -309,6 +310,10 @@ impl MeghAuthState { pub fn with_token_encryptor(self, encryptor: Encryptor) -> 
 ```
 
 One `Encryptor` instance (same key) must be given to whichever of `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` an application uses, since they read and write the same `access_token`/`refresh_token` columns; `Accounts::with_encryptor` documents this. A decrypt failure is a hard `sqlx::Error`/`AccountError`, never silently ignored or treated as "already plaintext" — megh does not support mixed plaintext/encrypted rows.
+
+### F20 — Redacted secrets (`auth::oauth`, `account::model`; #59 / #58)
+
+`OAuthProviderConfig` (`client_secret`), `ConnectedAccount` and `OAuth2Tokens` (`access_token`/`refresh_token`) had `derive(Debug, Serialize)`: a stray `{:?}` or `Json(..)` would print or return the secret. Each now has a hand-written `Debug` that prints `"[redacted]"` for the secret fields (keeping the shape, so `None` still prints `None`) and no longer derives `Serialize`, so any accidental serialization fails to compile rather than leaking at runtime. `Deserialize` is kept (loading a provider's config, or a fixture, is not a leak). oauth2's own secret newtypes (`ClientSecret`, `CsrfToken`, `AccessToken`, ...) already redact `Debug` and never derive `Serialize`; nothing there needed changing. No `tracing::`/log call in the crate was found to print a secret value (one call site, `auth::http::failed`, only ever logs an error's own `Display`, never a token or client secret).
 
 ## 6. Test coverage (shipped)
 

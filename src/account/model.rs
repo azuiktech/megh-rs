@@ -3,12 +3,12 @@
 use chrono::{DateTime, Duration, Utc};
 use oauth2::basic::BasicTokenResponse;
 use oauth2::TokenResponse;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::Table;
 
 /// Third-party OAuth connected account stored in `connected_accounts`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Table)]
+#[derive(Clone, Deserialize, PartialEq, Eq, Table)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "connected_accounts", keys = ["account_id", "provider"])]
 pub struct ConnectedAccount {
@@ -22,6 +22,23 @@ pub struct ConnectedAccount {
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub disconnected_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for ConnectedAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectedAccount")
+            .field("account_id", &self.account_id)
+            .field("provider", &self.provider)
+            .field("email", &self.email)
+            .field("access_token", &"[redacted]")
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "[redacted]"))
+            .field("token_type", &self.token_type)
+            .field("expiry", &self.expiry)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("disconnected_at", &self.disconnected_at)
+            .finish()
+    }
 }
 
 impl ConnectedAccount {
@@ -39,11 +56,21 @@ impl ConnectedAccount {
 }
 
 /// Helper container for token extraction from OAuth2 responses.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 pub struct OAuth2Tokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub token_expires_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for OAuth2Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth2Tokens")
+            .field("access_token", &"[redacted]")
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "[redacted]"))
+            .field("token_expires_at", &self.token_expires_at)
+            .finish()
+    }
 }
 
 impl OAuth2Tokens {

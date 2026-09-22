@@ -25,7 +25,7 @@ use crate::auth::oauth::{
     PkceCodeChallenge, PkceCodeVerifier,
     RedirectUrl,
 };
-use crate::account::{ConnectedAccount, ConnectedAccountRepo, OAuth2Tokens};
+use crate::account::{ConnectedAccount, ConnectedAccountRepo, Encryptor, OAuth2Tokens};
 use crate::auth::token::JWT_COOKIE;
 use crate::auth::user::{UpsertUserInput, User, UserRepo};
 
@@ -39,6 +39,8 @@ pub struct MeghAuthState {
     pub http_client: reqwest::Client,
     /// Where the sign-in popup posts its result (the origin of the page that opened it); defaults to `app_origin`.
     pub web_origin: Option<String>,
+    /// Encrypts stored OAuth tokens at rest when set (default: plaintext, as before).
+    pub token_encryptor: Option<Encryptor>,
 }
 
 impl MeghAuthState {
@@ -54,7 +56,13 @@ impl MeghAuthState {
                 .build()
                 .expect("static HTTP client configuration"),
             web_origin: None,
+            token_encryptor: None,
         }
+    }
+
+    pub fn with_token_encryptor(mut self, encryptor: Encryptor) -> Self {
+        self.token_encryptor = Some(encryptor);
+        self
     }
 
     pub fn with_redirect_after_login(mut self, redirect: impl Into<String>) -> Self {
@@ -254,7 +262,10 @@ pub async fn oauth_callback(
 
     // Save ConnectedAccount credentials
     let oauth_tokens = OAuth2Tokens::from(&token_response);
-    let account_repo = ConnectedAccountRepo::new(&state.pool);
+    let mut account_repo = ConnectedAccountRepo::new(&state.pool);
+    if let Some(encryptor) = state.token_encryptor.clone() {
+        account_repo = account_repo.with_encryptor(encryptor);
+    }
     account_repo
         .save(&ConnectedAccount {
             account_id: user_info.subject,

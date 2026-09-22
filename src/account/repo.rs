@@ -1,29 +1,38 @@
 //! PostgreSQL repository for ConnectedAccount persistence.
 
 use sqlx::PgPool;
+use super::encryption::Encryptor;
 use super::model::ConnectedAccount;
 
 #[cfg(feature = "postgres")]
 /// Repository for `connected_accounts` table operations in PostgreSQL.
 pub struct ConnectedAccountRepo<'a> {
     pool: &'a PgPool,
+    encryptor: Option<Encryptor>,
 }
 
 #[cfg(feature = "postgres")]
 impl<'a> ConnectedAccountRepo<'a> {
     pub fn new(pool: &'a PgPool) -> Self {
-        Self { pool }
+        Self { pool, encryptor: None }
+    }
+
+    /// Encrypts `access_token`/`refresh_token` before every write and decrypts them after every read.
+    pub fn with_encryptor(mut self, encryptor: Encryptor) -> Self {
+        self.encryptor = Some(encryptor);
+        self
     }
 
     /// Fetches an account by exact compound primary key (account_id, provider).
     pub async fn get(&self, account_id: &str, provider: &str) -> Result<Option<ConnectedAccount>, sqlx::Error> {
-        sqlx::query_as::<_, ConnectedAccount>(
+        let account = sqlx::query_as::<_, ConnectedAccount>(
             "SELECT * FROM connected_accounts WHERE account_id = $1 AND provider = $2"
         )
         .bind(account_id)
         .bind(provider)
         .fetch_optional(self.pool)
-        .await
+        .await?;
+        account.map(|a| self.decrypted(a)).transpose()
     }
 
     /// Finds an account matching identifier as either account_id or email for the provider.
@@ -32,18 +41,20 @@ impl<'a> ConnectedAccountRepo<'a> {
         identifier: &str,
         provider: &str,
     ) -> Result<Option<ConnectedAccount>, sqlx::Error> {
-        sqlx::query_as::<_, ConnectedAccount>(
+        let account = sqlx::query_as::<_, ConnectedAccount>(
             "SELECT * FROM connected_accounts WHERE (account_id = $1 OR email = $1) AND provider = $2 AND disconnected_at IS NULL LIMIT 1"
         )
         .bind(identifier)
         .bind(provider)
         .fetch_optional(self.pool)
-        .await
+        .await?;
+        account.map(|a| self.decrypted(a)).transpose()
     }
 
     /// Saves or updates a connected account. A missing refresh token keeps the stored one (providers only send it on first consent).
     pub async fn save(&self, account: &ConnectedAccount) -> Result<ConnectedAccount, sqlx::Error> {
-        sqlx::query_as::<_, ConnectedAccount>(
+        let account = self.encrypted(account.clone())?;
+        let saved = sqlx::query_as::<_, ConnectedAccount>(
             "INSERT INTO connected_accounts (account_id, provider, email, access_token, refresh_token, token_type, expiry, disconnected_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (account_id, provider) DO UPDATE SET
@@ -65,7 +76,8 @@ impl<'a> ConnectedAccountRepo<'a> {
         .bind(account.expiry)
         .bind(account.disconnected_at)
         .fetch_one(self.pool)
-        .await
+        .await?;
+        self.decrypted(saved)
     }
 
     /// Soft-disconnects an account by setting disconnected_at to NOW().
@@ -83,11 +95,32 @@ impl<'a> ConnectedAccountRepo<'a> {
 
     /// Lists all active (non-disconnected) accounts associated with an email.
     pub async fn list_by_email(&self, email: &str) -> Result<Vec<ConnectedAccount>, sqlx::Error> {
-        sqlx::query_as::<_, ConnectedAccount>(
+        let accounts = sqlx::query_as::<_, ConnectedAccount>(
             "SELECT * FROM connected_accounts WHERE email = $1 AND disconnected_at IS NULL ORDER BY created_at DESC"
         )
         .bind(email)
         .fetch_all(self.pool)
-        .await
+        .await?;
+        accounts.into_iter().map(|a| self.decrypted(a)).collect()
     }
+
+    fn encrypted(&self, mut account: ConnectedAccount) -> Result<ConnectedAccount, sqlx::Error> {
+        if let Some(enc) = &self.encryptor {
+            account.access_token = enc.encrypt(&account.access_token).map_err(crypto_error)?;
+            account.refresh_token = account.refresh_token.map(|t| enc.encrypt(&t)).transpose().map_err(crypto_error)?;
+        }
+        Ok(account)
+    }
+
+    fn decrypted(&self, mut account: ConnectedAccount) -> Result<ConnectedAccount, sqlx::Error> {
+        if let Some(enc) = &self.encryptor {
+            account.access_token = enc.decrypt(&account.access_token).map_err(crypto_error)?;
+            account.refresh_token = account.refresh_token.map(|t| enc.decrypt(&t)).transpose().map_err(crypto_error)?;
+        }
+        Ok(account)
+    }
+}
+
+fn crypto_error(_: super::encryption::EncryptError) -> sqlx::Error {
+    sqlx::Error::Protocol("token encryption failed".into())
 }

@@ -40,7 +40,7 @@ pub use auth::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};
 
 pub use account::{ConnectedAccount, OAuth2Tokens};
 #[cfg(feature = "postgres")]
-pub use account::ConnectedAccountRepo;
+pub use account::{ConnectedAccountRepo, EncryptError, Encryptor};
 #[cfg(all(feature = "postgres", feature = "client"))]
 pub use account::{AccountAuth, AccountError, Accounts};
 

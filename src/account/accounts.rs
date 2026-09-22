@@ -10,6 +10,7 @@ use oauth2::{RefreshToken, RequestTokenError};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use sqlx::PgPool;
 
+use super::encryption::Encryptor;
 use super::model::{ConnectedAccount, OAuth2Tokens};
 use super::repo::ConnectedAccountRepo;
 use crate::auth::{oauth_http_client, OAuthProviderConfig, User};
@@ -41,6 +42,7 @@ pub struct Accounts {
     providers: Arc<HashMap<String, OAuthProviderConfig>>,
     http: reqwest::Client,
     expiry_margin: Duration,
+    encryptor: Option<Encryptor>,
 }
 
 impl Accounts {
@@ -50,7 +52,14 @@ impl Accounts {
             .timeout(Duration::from_secs(10))
             .build()
             .expect("static HTTP client configuration");
-        Self { pool, providers, http, expiry_margin: Duration::from_secs(60) }
+        Self { pool, providers, http, expiry_margin: Duration::from_secs(60), encryptor: None }
+    }
+
+    /// Encrypts `access_token`/`refresh_token` before every write and decrypts them after every read. Must be the
+    /// same key the tokens were saved with (for example by `ConnectedAccountRepo::with_encryptor`).
+    pub fn with_encryptor(mut self, encryptor: Encryptor) -> Self {
+        self.encryptor = Some(encryptor);
+        self
     }
 
     /// The client used for token requests to the provider. It must not follow redirects.
@@ -91,17 +100,20 @@ impl Accounts {
         if !account.is_connected() {
             return Err(AccountError::Disconnected);
         }
+        let access_token = self.decrypt(&account.access_token)?;
         if !account.is_expired(self.expiry_margin.as_secs() as i64) {
-            return Ok(account.access_token);
+            return Ok(access_token);
         }
-        let refresh_token = account.refresh_token.ok_or(AccountError::NoRefreshToken)?;
+        let refresh_token = account.refresh_token.map(|t| self.decrypt(&t)).transpose()?.ok_or(AccountError::NoRefreshToken)?;
         match self.request_refresh(provider, refresh_token).await {
             Ok(tokens) => {
+                let stored_access = self.encrypt(&tokens.access_token)?;
+                let stored_refresh = tokens.refresh_token.as_deref().map(|t| self.encrypt(t)).transpose()?;
                 sqlx::query("UPDATE connected_accounts SET access_token = $3, refresh_token = COALESCE($4, refresh_token), expiry = $5, updated_at = NOW() WHERE account_id = $1 AND provider = $2")
                     .bind(account_id)
                     .bind(provider)
-                    .bind(&tokens.access_token)
-                    .bind(tokens.refresh_token)
+                    .bind(stored_access)
+                    .bind(stored_refresh)
                     .bind(tokens.token_expires_at)
                     .execute(&mut *tx)
                     .await?;
@@ -118,6 +130,20 @@ impl Accounts {
                 Err(error)
             }
             Err(error) => Err(error),
+        }
+    }
+
+    fn encrypt(&self, plaintext: &str) -> Result<String, AccountError> {
+        match &self.encryptor {
+            Some(enc) => enc.encrypt(plaintext).map_err(|_| AccountError::Provider("token encryption failed".into())),
+            None => Ok(plaintext.to_string()),
+        }
+    }
+
+    fn decrypt(&self, stored: &str) -> Result<String, AccountError> {
+        match &self.encryptor {
+            Some(enc) => enc.decrypt(stored).map_err(|_| AccountError::Provider("token decryption failed".into())),
+            None => Ok(stored.to_string()),
         }
     }
 

@@ -14,7 +14,7 @@
 | O2 | `Orgs`: org lifecycle, members, grants | `[ ]` | — |
 | O3 | `Orgs`: invitations (redeem by token or email) and auto-join domains | `[ ]` | — |
 | O4 | `Onboarding`: membership at login | `[ ]` | — |
-| O5 | Memberships in `/auth/me` and the login response | `[ ]` | with #30 |
+| O5 | Memberships in `/auth/me` and the login response | `[~]` login response done (F14, #60/#30); `/auth/me` still returns `{user}` only | with #30 |
 
 Features are not delivered in number order.
 

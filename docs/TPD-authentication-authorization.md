@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11, F13, F15, F16, F17, F18, F19 and F20 shipped (F12 is superseded by F16). F14 (basic login route with `Member`, aligned with megh-go) is planned. Features are not delivered in number order.
+**Status:** F1–F11 and F13–F20 shipped (F12 is superseded by F16). Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -21,6 +21,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
 | F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
 | F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | `[x]` | #59 / #58 |
+| F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns memberships | `[x]` | #60 / #30 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
 | F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
@@ -314,6 +315,17 @@ One `Encryptor` instance (same key) must be given to whichever of `ConnectedAcco
 ### F20 — Redacted secrets (`auth::oauth`, `account::model`; #59 / #58)
 
 `OAuthProviderConfig` (`client_secret`), `ConnectedAccount` and `OAuth2Tokens` (`access_token`/`refresh_token`) had `derive(Debug, Serialize)`: a stray `{:?}` or `Json(..)` would print or return the secret. Each now has a hand-written `Debug` that prints `"[redacted]"` for the secret fields (keeping the shape, so `None` still prints `None`) and no longer derives `Serialize`, so any accidental serialization fails to compile rather than leaking at runtime. `Deserialize` is kept (loading a provider's config, or a fixture, is not a leak). oauth2's own secret newtypes (`ClientSecret`, `CsrfToken`, `AccessToken`, ...) already redact `Debug` and never derive `Serialize`; nothing there needed changing. No `tracing::`/log call in the crate was found to print a secret value (one call site, `auth::http::failed`, only ever logs an error's own `Display`, never a token or client secret).
+
+### F14 — Basic login route (`auth::http`; #60 / #30)
+
+```rust
+pub fn basic_login_router(state: MeghAuthState, path: &str) -> Router;   // POST <path>; merge with auth_router
+pub struct BasicLoginResponse { pub user: User, pub memberships: Vec<Member> }
+```
+
+`Authorization: Basic base64(email:password)` via `axum-extra`'s `TypedHeader<Authorization<Basic>>`; verifies with `UserRepo::verify_password` (F13). Success: 200 `BasicLoginResponse`, session gets `cycle_id()` and `user_id`, exactly like the OAuth callback. Failure: a missing header and every `PasswordError` variant (`UserNotFound`, `NoPassword`, `WrongPassword`) all give the same 401 `{"error":"invalid credentials"}`; login never creates an account. A database or session failure is 500 with a fixed message, logged. The route carries its own `CsrfMiddleware` layer, so it is protected standalone; merge it with `auth_router` for `/auth/me`, `/auth/logout` and `/auth/csrf-token`, which it needs but does not provide itself.
+
+Memberships come from `Orgs::memberships`, earliest first (O1). `/auth/me` (the OAuth path) does not return memberships; that is O5, still open.
 
 ## 6. Test coverage (shipped)
 

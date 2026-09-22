@@ -14,6 +14,8 @@ use axum::{
     Json, Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
+use axum_extra::headers::{authorization::Basic, Authorization};
+use axum_extra::TypedHeader;
 use axum_tower_sessions_csrf::{get_or_create_token, CsrfMiddleware};
 use oauth2::TokenResponse;
 use serde::{Deserialize, Serialize};
@@ -27,7 +29,8 @@ use crate::auth::oauth::{
 };
 use crate::account::{ConnectedAccount, ConnectedAccountRepo, Encryptor, OAuth2Tokens};
 use crate::auth::token::JWT_COOKIE;
-use crate::auth::user::{UpsertUserInput, User, UserRepo};
+use crate::auth::user::{PasswordError, UpsertUserInput, User, UserRepo};
+use crate::org::Orgs;
 
 /// Shared state required by the Megh authentication HTTP router.
 #[derive(Clone)]
@@ -146,6 +149,68 @@ pub fn auth_router(state: MeghAuthState) -> Router {
         .route("/auth/csrf-token", get(csrf_token))
         .route_layer(middleware::from_fn(CsrfMiddleware::middleware))
         .with_state(state)
+}
+
+/// A `POST <path>` route for email/password sign-in, CSRF-protected. Merge it with [`auth_router`], which
+/// provides `/auth/me`, `/auth/logout` and the session/CSRF plumbing this route needs. Never creates an account.
+pub fn basic_login_router(state: MeghAuthState, path: &str) -> Router {
+    Router::new()
+        .route(path, post(basic_login))
+        .route_layer(middleware::from_fn(CsrfMiddleware::middleware))
+        .with_state(state)
+}
+
+/// Response returned by a successful [`basic_login_router`] sign-in.
+#[derive(Debug, Serialize)]
+pub struct BasicLoginResponse {
+    pub user: User,
+    pub memberships: Vec<crate::org::Member>,
+}
+
+async fn basic_login(
+    State(state): State<MeghAuthState>,
+    session: Session,
+    credentials: Option<TypedHeader<Authorization<Basic>>>,
+) -> Result<Json<BasicLoginResponse>, LoginError> {
+    let TypedHeader(Authorization(basic)) = credentials.ok_or(LoginError::InvalidCredentials)?;
+
+    let user = UserRepo::new(&state.pool).verify_password(basic.username(), basic.password()).await?;
+    let memberships = Orgs::new(state.pool.clone()).memberships(user.id).await.map_err(|e| login_failed("login failed", e))?;
+    session.cycle_id().await.map_err(|e| login_failed("could not start the session", e))?;
+    session.insert(USER_ID, user.id).await.map_err(|e| login_failed("could not start the session", e))?;
+
+    Ok(Json(BasicLoginResponse { user, memberships }))
+}
+
+/// A login failure as the client sees it: the reason is either "invalid credentials" or a fixed 500 message,
+/// never the underlying database or hashing error.
+enum LoginError {
+    InvalidCredentials,
+    Failed(&'static str),
+}
+
+fn login_failed(message: &'static str, cause: impl std::fmt::Display) -> LoginError {
+    tracing::error!("{message}: {cause}");
+    LoginError::Failed(message)
+}
+
+impl From<PasswordError> for LoginError {
+    fn from(error: PasswordError) -> Self {
+        match error {
+            PasswordError::UserNotFound | PasswordError::NoPassword | PasswordError::WrongPassword => Self::InvalidCredentials,
+            e => login_failed("login failed", e),
+        }
+    }
+}
+
+impl IntoResponse for LoginError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid credentials"),
+            Self::Failed(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+        };
+        (status, Json(serde_json::json!({ "error": message }))).into_response()
+    }
 }
 
 /// Initiates OAuth login redirection for a given provider (e.g. `/auth/google`).

@@ -59,7 +59,7 @@ async fn fixture(pool: PgPool, userinfo: Value, fail_token: bool, web_origin: Op
         token_url: format!("{base}/token"),
         userinfo_url: Some(format!("{base}/userinfo")),
         default_scopes: vec![],
-        redirect_url: None,
+        redirect_url: None, revoke_url: None,
     };
     let state = MeghAuthState::new(pool).add_provider(provider).with_app_origin("http://api.test");
     let state = match web_origin {

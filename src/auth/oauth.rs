@@ -87,6 +87,8 @@ pub struct OAuthProviderConfig {
     pub userinfo_url: Option<String>,
     pub default_scopes: Vec<String>,
     pub redirect_url: Option<String>,
+    /// The provider's token revocation endpoint (RFC 7009); `revoke` is 400 for a provider without one.
+    pub revoke_url: Option<String>,
 }
 
 impl std::fmt::Debug for OAuthProviderConfig {
@@ -100,6 +102,7 @@ impl std::fmt::Debug for OAuthProviderConfig {
             .field("userinfo_url", &self.userinfo_url)
             .field("default_scopes", &self.default_scopes)
             .field("redirect_url", &self.redirect_url)
+            .field("revoke_url", &self.revoke_url)
             .finish()
     }
 }
@@ -120,6 +123,7 @@ impl OAuthProviderConfig {
                 "https://www.googleapis.com/auth/userinfo.profile".to_string(),
             ],
             redirect_url: None,
+            revoke_url: Some("https://oauth2.googleapis.com/revoke".to_string()),
         }
     }
 

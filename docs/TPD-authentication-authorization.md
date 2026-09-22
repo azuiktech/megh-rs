@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11 and F13–F20 shipped (F12 is superseded by F16). Features are not delivered in number order.
+**Status:** F1–F11, F13–F20 and F21 shipped (F12 is superseded by F16). Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -21,6 +21,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
 | F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
 | F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | `[x]` | #59 / #58 |
+| F21 | Connect, disconnect, revoke an extra account (login required throughout, unlike megh-go); `OAuthProviderConfig.revoke_url` | `[x]` | #62 / #40 |
 | F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns memberships | `[x]` | #60 / #30 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
@@ -326,6 +327,24 @@ pub struct BasicLoginResponse { pub user: User, pub memberships: Vec<Member> }
 `Authorization: Basic base64(email:password)` via `axum-extra`'s `TypedHeader<Authorization<Basic>>`; verifies with `UserRepo::verify_password` (F13). Success: 200 `BasicLoginResponse`, session gets `cycle_id()` and `user_id`, exactly like the OAuth callback. Failure: a missing header and every `PasswordError` variant (`UserNotFound`, `NoPassword`, `WrongPassword`) all give the same 401 `{"error":"invalid credentials"}`; login never creates an account. A database or session failure is 500 with a fixed message, logged. The route carries its own `CsrfMiddleware` layer, so it is protected standalone; merge it with `auth_router` for `/auth/me`, `/auth/logout` and `/auth/csrf-token`, which it needs but does not provide itself.
 
 Memberships come from `Orgs::memberships`, earliest first (O1). `/auth/me` (the OAuth path) does not return memberships; that is O5, still open.
+
+### F21 — Connect, disconnect, revoke (`auth::http`; #62 / #40)
+
+Ported from megh-go's `Oauth2Provider` (`/connect`, `/disconnect`, `/revoke`), with one deliberate difference: megh-go mounts these with no session check at all (review G1) and optional PKCE (G2); here every route requires [`AuthUser`], and connect uses the same mandatory state+PKCE attempt as login (F8).
+
+```rust
+pub async fn oauth_connect(State<MeghAuthState>, Path<String>, AuthUser, Session, axum_extra::extract::Query<ConnectQuery>) -> Result<Redirect, _>;   // GET /auth/{p}/connect
+pub struct ConnectQuery { pub scope: Vec<String> }         // repeated ?scope=; added on top of the provider's default_scopes
+pub async fn oauth_disconnect(State<MeghAuthState>, Path<String>, AuthUser, Json<DisconnectRequest>) -> Result<StatusCode, _>;    // POST /auth/{p}/disconnect {account_id}
+pub async fn oauth_revoke(State<MeghAuthState>, Path<String>, AuthUser, Session, CookieJar, Json<RevokeRequest>) -> Result<(CookieJar, StatusCode), _>;   // POST /auth/{p}/revoke {token?}
+pub struct OAuthProviderConfig { .., pub revoke_url: Option<String> }   // Google: https://oauth2.googleapis.com/revoke
+```
+
+**Connect** shares the login callback (`GET /auth/{p}/callback`, `/token`): the attempt stored in the session (F8) now carries an `AttemptPurpose` (`Login` or `Connect`), extracted with `axum_extra::extract::Query` because axum's own `Query` (`serde_urlencoded`) does not deserialize repeated keys into a `Vec` — checked directly, not assumed. `prompt=consent` (not `select_account`) so a refresh token is issued even on an already-consented account. On callback, the `ConnectedAccount` is saved exactly as at login, but a `Connect` attempt never upserts `users` or cycles the session; it requires `USER_ID` still be present in the session (401 otherwise), then answers the popup with `{"type":"oauth_connect_success","account":{...}}` (no tokens) instead of `oauth_success`.
+
+**Ownership** is by email, same as `AuthUser`/`find_by_email_or_account`: `disconnect` looks the account up by `(account_id, provider)` and requires `account.email == Some(user.email)`, returning 404 (not 403) either way so `account_id` cannot be probed. An account connected under a different email than the user's own cannot be disconnected, revoked, or (in F22) profiled through these routes — a known limit of linking by email rather than a `user_id` column, not new to this feature.
+
+**Disconnect vs. revoke** treat a failed provider call differently, both intentionally: `disconnect`'s provider-side revoke is best-effort (logged, then disconnects locally regardless) since the user's intent — stop using this account here — doesn't depend on the provider's cooperation; `revoke`'s entire point is provider-side invalidation, so a failed call is a hard error and nothing local changes (the account stays connected, the session stays active). A provider with no `revoke_url` gives 404 (not 400) for both, consistent with the router's own "provider not found"-style responses.
 
 ## 6. Test coverage (shipped)
 

@@ -74,7 +74,7 @@ export class Auth<User = Record<string, unknown>> {
    */
   async restore(): Promise<void> {
     try {
-      const res = await this.#fetch(this.#paths.me)
+      const res = await this.fetch(this.#paths.me)
       this.#setUser(res.ok ? this.#transform(await res.json()) : null)
     } catch {
       this.#setUser(null)
@@ -154,7 +154,7 @@ export class Auth<User = Record<string, unknown>> {
    * Only works when the server has basic auth enabled (non-production).
    */
   async signInWithPassword(email: string, password: string): Promise<void> {
-    const res = await this.#fetch(this.#paths.login, {
+    const res = await this.fetch(this.#paths.login, {
       method: 'POST',
       headers: { Authorization: `Basic ${btoa(`${email}:${password}`)}` },
     })
@@ -169,7 +169,7 @@ export class Auth<User = Record<string, unknown>> {
 
   /** Sign out — clears the session cookie and notifies listeners. */
   async signOut(): Promise<void> {
-    await this.#fetch(this.#paths.logout, { method: 'POST' })
+    await this.fetch(this.#paths.logout, { method: 'POST' })
     this.#setUser(null)
   }
 
@@ -217,7 +217,7 @@ export class Auth<User = Record<string, unknown>> {
 
   /** Disconnect a provider from the current user's account. */
   async disconnectWithOAuth(provider: string, accountId: string): Promise<void> {
-    const res = await this.#fetch(`/auth/${provider}/disconnect`, {
+    const res = await this.fetch(`/auth/${provider}/disconnect`, {
       method: 'POST',
       body: JSON.stringify({ account_id: accountId }),
     })
@@ -236,7 +236,7 @@ export class Auth<User = Record<string, unknown>> {
    * Revoke an OAuth token for a provider and sign out.
    */
   async revokeOAuth(provider: string, token?: string): Promise<void> {
-    const res = await this.#fetch(`/auth/${provider}/revoke`, {
+    const res = await this.fetch(`/auth/${provider}/revoke`, {
       method: 'POST',
       body: token ? JSON.stringify({ token }) : undefined,
     })
@@ -266,9 +266,14 @@ export class Auth<User = Record<string, unknown>> {
     for (const fn of this.#listeners) fn(user)
   }
 
-  async #fetch(path: string, init?: RequestInit): Promise<Response> {
+  /**
+   * `fetch` against the server's base URL with the session cookie. Writes carry the `x-csrf-token` header, so an app
+   * can make its own protected requests with the same token handling as the SDK's.
+   */
+  async fetch(path: string, init?: RequestInit): Promise<Response> {
     const isWrite = !!init?.method && init.method !== 'GET'
-    const headers = { 'Content-Type': 'application/json', ...init?.headers } as Record<string, string>
+    const contentType = init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }
+    const headers = { ...contentType, ...init?.headers } as Record<string, string>
     if (isWrite) headers['x-csrf-token'] = await this.#csrfToken()
 
     const res = await fetch(`${this.#base}${path}`, { ...init, credentials: 'include', headers })

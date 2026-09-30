@@ -272,7 +272,8 @@ export class Auth<User = Record<string, unknown>> {
    */
   async fetch(path: string, init?: RequestInit): Promise<Response> {
     const isWrite = !!init?.method && init.method !== 'GET'
-    const headers = { 'Content-Type': 'application/json', ...init?.headers } as Record<string, string>
+    const contentType = init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }
+    const headers = { ...contentType, ...init?.headers } as Record<string, string>
     if (isWrite) headers['x-csrf-token'] = await this.#csrfToken()
 
     const res = await fetch(`${this.#base}${path}`, { ...init, credentials: 'include', headers })

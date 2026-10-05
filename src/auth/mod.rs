@@ -5,7 +5,7 @@ pub mod grant;
 pub mod oauth;
 pub mod user;
 
-pub use authorizer::{request_action, request_grant};
+pub use authorizer::{request_action, request_grant, request_grants};
 #[cfg(feature = "axum")]
 pub use authorizer::authorizer;
 #[cfg(feature = "axum")]

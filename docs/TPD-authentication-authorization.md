@@ -249,13 +249,14 @@ The SDK also defines `signInWithPassword`, `connectWithOAuth`/`connectWithGoogle
 
 ```rust
 pub fn request_action(method: &str) -> &'static str;   // POST→create, PUT/PATCH→update, DELETE→delete, else read
-pub fn request_grant(method: &str, matched_template: Option<&str>, uri_path: &str) -> Grant;
+pub fn request_grant(method: &str, matched_template: Option<&str>, uri_path: &str) -> Grant;   // one grant from the last segment (no longer used by `authorizer`)
+pub fn request_grants(method: &str, matched_template: &str, uri_path: &str) -> Vec<Grant>;     // one per resource level
 pub async fn authorizer(req: Request, next: Next) -> Result<Response, (StatusCode, &'static str)>;
 ```
 
-`authorizer` is an Axum `from_fn` middleware. It reads a `Member` (else a `Vec<Grant>`) from request extensions and requires a `MatchedPath`. The requested grant is `resource:action[:instance]`: `resource` is the last static path segment, or the segment before the last path parameter; `instance` is the last path parameter's value.
+`authorizer` is an Axum `from_fn` middleware. It reads a `Member` (else a `Vec<Grant>`) from request extensions and requires a `MatchedPath`. It requires **every** grant `request_grants` derives (one per resource level, ancestors `read`, the last level the HTTP action or the `:verb`); see [TPD-grants](TPD-grants.md). Under `Router::nest` it reads the path from `OriginalUri`.
 
-Responses: 401 `not authenticated` (no `Member` or grants in extensions), 403 `not permitted`, 404 `route not found` (no matched path). Verified by `tests/authorizer_test.rs` and `tests/course_authorizer_test.rs` with a fake injector.
+Responses: 401 `not authenticated` (no `Member` or grants in extensions), 403 `not permitted`, 404 `route not found` (no matched path). Verified by `tests/authorizer_test.rs`, `course_authorizer_test.rs`, `request_grants_test.rs` and `authorizer_levels_test.rs`.
 
 ### F9, F16 — Sessions and CSRF (`auth::http`; #26 / #25, then #43 / #42)
 

@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-05
+- Grants per resource level: `authorizer` now requires a grant for every resource level of the request path, from `request_grants(method, matched_template, uri_path)` (one grant per level in `resource:action:instance` form; the last level takes the HTTP action or a trailing `:verb` such as `/organizations/acme:activate` or `/organizations:batchCreate`, every ancestor needs `read`; a level without an id needs `*` or no instance; no level and no action implies another; prefixes such as `v1` produce no grant; under `Router::nest` the path comes from `OriginalUri`). This also fixes routes with a leading path parameter, which were always 403 because the resource was taken from the wrong segment. `Grant` is unchanged and `request_grant` stays for callers that want one grant (PR #68, issue #67; supersedes #66, issue #65)
+
 ## 2026-09-22
 - Basic login route: `basic_login_router(state, path)` (opt-in, merge with `auth_router`), CSRF-protected; `Authorization: Basic` verified against `UserRepo::verify_password`, a uniform 401 `{"error":"invalid credentials"}` for a missing header or any wrong-credential reason, never creates an account; on success returns the user and their memberships and starts a session like the OAuth callback (PR #60, issue #30)
 - Redacted secrets: `OAuthProviderConfig`, `ConnectedAccount` and `OAuth2Tokens` now hand-write `Debug` to print `"[redacted]"` for `client_secret`/`access_token`/`refresh_token` instead of deriving it, and no longer derive `Serialize`, so a stray `{:?}` or `Json(..)` of one fails to compile instead of leaking the secret at runtime (PR #59, issue #58)

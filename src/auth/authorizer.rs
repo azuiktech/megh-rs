@@ -44,23 +44,70 @@ pub fn request_grant(method: &str, matched_template: Option<&str>, uri_path: &st
     Grant::from_parts(resource, action, None)
 }
 
+/// One path segment of the request: whether the template makes it an id, and its value without any `:verb`.
+struct Segment {
+    is_param: bool,
+    value: String,
+}
+
+fn segments(matched_template: &str, uri_path: &str) -> (Vec<Segment>, Option<String>) {
+    let names = |path: &str| path.split('/').filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>();
+    let verb = names(uri_path).last().and_then(|last| last.split_once(':').map(|(_, verb)| verb.to_string()));
+    let segments = names(matched_template)
+        .iter()
+        .zip(names(uri_path))
+        .map(|(template, value)| Segment { is_param: template.starts_with('{'), value: value.split(':').next().unwrap_or_default().to_string() })
+        .collect();
+    (segments, verb)
+}
+
+/// The resources of a path with the id of each: a literal is a resource when a parameter follows it or it ends the path.
+fn resources(segments: &[Segment]) -> Vec<(&str, Option<&str>)> {
+    segments
+        .iter()
+        .enumerate()
+        .filter(|(_, segment)| !segment.is_param)
+        .filter_map(|(i, segment)| match segments.get(i + 1) {
+            Some(next) if next.is_param => Some((segment.value.as_str(), Some(next.value.as_str()))),
+            None => Some((segment.value.as_str(), None)),
+            Some(_) => None,
+        })
+        .collect()
+}
+
+/// The grants a request needs, one per resource level of its path, outermost first.
+///
+/// The last level takes the `:verb` of the last segment, else the action of the HTTP method; every level above it needs `read`.
+/// A path with no resource needs `root`.
+pub fn request_grants(method: &str, matched_template: &str, uri_path: &str) -> Vec<Grant> {
+    let (segments, verb) = segments(matched_template, uri_path);
+    let leaf_action = verb.as_deref().unwrap_or_else(|| request_action(method));
+    let levels = resources(&segments);
+    let leaf = levels.len().saturating_sub(1);
+    let grants: Vec<Grant> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, (resource, id))| Grant::from_parts(resource, if i == leaf { leaf_action } else { "read" }, *id))
+        .collect();
+    if grants.is_empty() { vec![Grant::from_parts("root", leaf_action, None)] } else { grants }
+}
+
 #[cfg(feature = "axum")]
 pub use axum_middleware::authorizer;
 
 #[cfg(feature = "axum")]
 mod axum_middleware {
-    use std::path::Path as FilePath;
-    use axum::extract::{FromRequestParts, MatchedPath, RawPathParams, Request};
+    use axum::extract::{MatchedPath, OriginalUri, Request};
     use axum::http::StatusCode;
     use axum::middleware::Next;
     use axum::response::Response;
 
     use crate::auth::grant::Grant;
     use crate::org::Member;
-    use super::request_action;
+    use super::request_grants;
 
-    /// Zero-declaration Axum middleware that inspects the authenticated Member in request extensions,
-    /// derives the requested Grant automatically from Axum's RawPathParams and std::path::Path, and verifies permissions.
+    /// Zero-declaration Axum middleware that inspects the authenticated Member in request extensions
+    /// and requires every grant `request_grants` derives from the matched route and the request path.
     pub async fn authorizer(
         req: Request,
         next: Next,
@@ -68,45 +115,21 @@ mod axum_middleware {
         let member = req.extensions().get::<Member>().cloned();
         let grants = req.extensions().get::<Vec<Grant>>().cloned();
 
-        let (mut parts, body) = req.into_parts();
+        let (parts, body) = req.into_parts();
         let matched = parts
             .extensions
             .get::<MatchedPath>()
             .cloned()
             .ok_or((StatusCode::NOT_FOUND, "route not found"))?;
+        let uri_path = parts.extensions.get::<OriginalUri>().map_or_else(|| parts.uri.path().to_string(), |uri| uri.0.path().to_string());
 
-        let params = RawPathParams::from_request_parts(&mut parts, &())
-            .await
-            .ok();
-
-        let action = request_action(parts.method.as_str());
-        let path = FilePath::new(matched.as_str());
-
-        let (resource, instance) = match params.as_ref().and_then(|p| p.iter().last()) {
-            Some((_key, val)) => {
-                let res = path
-                    .parent()
-                    .and_then(FilePath::file_name)
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("root");
-                (res, Some(val))
-            }
-            None => {
-                let res = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("root");
-                (res, None)
-            }
-        };
-
-        let requested = Grant::from_parts(resource, action, instance);
+        let required = request_grants(parts.method.as_str(), matched.as_str(), &uri_path);
         let req = Request::from_parts(parts, body);
 
         let permitted = if let Some(m) = member {
-            m.has_grant(&requested)
+            required.iter().all(|grant| m.has_grant(grant))
         } else if let Some(g_list) = grants {
-            g_list.iter().any(|g| g.implies(&requested))
+            required.iter().all(|grant| g_list.iter().any(|g| g.implies(grant)))
         } else {
             return Err((StatusCode::UNAUTHORIZED, "not authenticated"));
         };

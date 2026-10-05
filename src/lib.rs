@@ -26,7 +26,7 @@ pub use auth::{
     build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType, ProviderClient,
     CsrfToken, Grant, OAuthError, OAuthFlowMode, OAuthProviderConfig, OAuthUserInfo,
     PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, TokenResponse, UpsertUserInput, User,
-    UserProfile, request_action, request_grant,
+    UserProfile, request_action, request_grant, request_grants,
 };
 #[cfg(feature = "client")]
 pub use auth::oauth_http_client;

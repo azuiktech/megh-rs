@@ -29,6 +29,9 @@ pub struct ColumnMeta {
     pub has_default: bool,
 }
 
+/// The condition every read adds so that deleted rows are not returned.
+pub const NOT_DELETED: &str = "deleted_at IS NULL";
+
 /// Trait for types mapping to a database table with compile-time metadata.
 pub trait Table {
     const TABLE_NAME: &'static str;
@@ -56,6 +59,8 @@ pub struct Entity<ID, T> {
     pub data: T,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Set when the entity is deleted; the row stays until a separate cleanup removes it.
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
 impl<ID, T> Deref for Entity<ID, T> {
@@ -70,15 +75,15 @@ impl<ID, T> DerefMut for Entity<ID, T> {
 impl<ID, T> Entity<ID, T> {
     pub fn new(id: ID, data: T) -> Self {
         let now = Utc::now();
-        Self { id, data, created_at: now, updated_at: now }
+        Self { id, data, created_at: now, updated_at: now, deleted_at: None }
     }
 
     pub fn with_timestamps(id: ID, data: T, created_at: DateTime<Utc>, updated_at: DateTime<Utc>) -> Self {
-        Self { id, data, created_at, updated_at }
+        Self { id, data, created_at, updated_at, deleted_at: None }
     }
 
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Entity<ID, U> {
-        Entity { id: self.id, data: f(self.data), created_at: self.created_at, updated_at: self.updated_at }
+        Entity { id: self.id, data: f(self.data), created_at: self.created_at, updated_at: self.updated_at, deleted_at: self.deleted_at }
     }
 
     pub fn patch(&self, patch: &serde_json::Value) -> Result<Self, serde_json::Error>
@@ -89,7 +94,7 @@ impl<ID, T> Entity<ID, T> {
         let mut target = serde_json::to_value(&self.data)?;
         json_patch::merge(&mut target, patch);
         let updated_data: T = serde_json::from_value(target)?;
-        Ok(Entity { id: self.id.clone(), data: updated_data, created_at: self.created_at, updated_at: Utc::now() })
+        Ok(Entity { id: self.id.clone(), data: updated_data, created_at: self.created_at, updated_at: Utc::now(), deleted_at: self.deleted_at })
     }
 }
 
@@ -134,7 +139,7 @@ pub trait TableEntity: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postg
         let cols = Self::update_columns();
         let set = cols.join(", ");
         let excl = cols.iter().map(|c| format!("EXCLUDED.{c}")).collect::<Vec<_>>().join(", ");
-        let q = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1::json) ON CONFLICT ({pks}) DO UPDATE SET ({set}) = ({excl}) RETURNING *");
+        let q = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1::json) ON CONFLICT ({pks}) DO UPDATE SET ({set}) = ROW({excl}) WHERE {table}.deleted_at IS NULL RETURNING *");
         sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
     }
 
@@ -144,8 +149,23 @@ pub trait TableEntity: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postg
         let set = cols.join(", ");
         let p_set = cols.iter().map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ");
         let where_clause = Self::PRIMARY_KEY.iter().map(|k| format!("{table}.{k} = p.{k}")).collect::<Vec<_>>().join(" AND ");
-        let q = format!("UPDATE {table} SET ({set}) = ({p_set}) FROM json_populate_record(NULL::{table}, $1::json) p WHERE {where_clause} RETURNING {table}.*");
+        let q = format!("UPDATE {table} SET ({set}) = ROW({p_set}) FROM json_populate_record(NULL::{table}, $1::json) p WHERE {where_clause} AND {table}.deleted_at IS NULL RETURNING {table}.*");
         sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
+    }
+
+    /// Marks this row and everything a physical delete would remove (rows reached through foreign keys
+    /// declared `ON DELETE CASCADE`) as deleted, in one transaction. `None` if the row is missing or already deleted.
+    async fn soft_delete(&self, pool: &sqlx::PgPool) -> Result<Option<Self>, sqlx::Error> where Self: Sized {
+        let table = Self::TABLE_NAME;
+        let where_clause = Self::PRIMARY_KEY.iter().map(|k| format!("{table}.{k} = p.{k}")).collect::<Vec<_>>().join(" AND ");
+        let q = format!("UPDATE {table} SET deleted_at = now(), updated_at = now() FROM json_populate_record(NULL::{table}, $1::json) p WHERE {where_clause} AND {table}.deleted_at IS NULL RETURNING {table}.*");
+        let mut transaction = pool.begin().await?;
+        let deleted = sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_optional(&mut *transaction).await?;
+        if deleted.is_some() {
+            crate::soft_delete::cascade(&mut transaction, table).await?;
+        }
+        transaction.commit().await?;
+        Ok(deleted)
     }
 
     async fn insert(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error> where Self: Sized {

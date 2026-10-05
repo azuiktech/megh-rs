@@ -9,6 +9,8 @@ pub mod entity;
 pub mod event;
 pub mod money;
 pub mod org;
+#[cfg(feature = "postgres")]
+mod soft_delete;
 
 pub use event::{
     Broker, Event, EventSource, HistoryError, HistoryFuture, HistoryOptions, HistoryProvider,
@@ -17,7 +19,7 @@ pub use event::{
 #[cfg(feature = "axum")]
 pub use event::{events_router, events_router_with_csrf};
 
-pub use entity::{ColumnMeta, Entity, JsonText, Table};
+pub use entity::{ColumnMeta, Entity, JsonText, Table, NOT_DELETED};
 #[cfg(feature = "postgres")]
 pub use entity::TableEntity;
 pub use megh_derive::Table;

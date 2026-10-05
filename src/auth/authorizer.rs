@@ -49,18 +49,17 @@ pub use axum_middleware::authorizer;
 
 #[cfg(feature = "axum")]
 mod axum_middleware {
-    use std::path::Path as FilePath;
-    use axum::extract::{FromRequestParts, MatchedPath, RawPathParams, Request};
+    use axum::extract::{MatchedPath, Request};
     use axum::http::StatusCode;
     use axum::middleware::Next;
     use axum::response::Response;
 
     use crate::auth::grant::Grant;
     use crate::org::Member;
-    use super::request_action;
+    use super::request_grant;
 
     /// Zero-declaration Axum middleware that inspects the authenticated Member in request extensions,
-    /// derives the requested Grant automatically from Axum's RawPathParams and std::path::Path, and verifies permissions.
+    /// derives the requested Grant from the matched route and the request path (see `request_grant`), and verifies permissions.
     pub async fn authorizer(
         req: Request,
         next: Next,
@@ -68,39 +67,14 @@ mod axum_middleware {
         let member = req.extensions().get::<Member>().cloned();
         let grants = req.extensions().get::<Vec<Grant>>().cloned();
 
-        let (mut parts, body) = req.into_parts();
+        let (parts, body) = req.into_parts();
         let matched = parts
             .extensions
             .get::<MatchedPath>()
             .cloned()
             .ok_or((StatusCode::NOT_FOUND, "route not found"))?;
 
-        let params = RawPathParams::from_request_parts(&mut parts, &())
-            .await
-            .ok();
-
-        let action = request_action(parts.method.as_str());
-        let path = FilePath::new(matched.as_str());
-
-        let (resource, instance) = match params.as_ref().and_then(|p| p.iter().last()) {
-            Some((_key, val)) => {
-                let res = path
-                    .parent()
-                    .and_then(FilePath::file_name)
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("root");
-                (res, Some(val))
-            }
-            None => {
-                let res = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("root");
-                (res, None)
-            }
-        };
-
-        let requested = Grant::from_parts(resource, action, instance);
+        let requested = request_grant(parts.method.as_str(), Some(matched.as_str()), parts.uri.path());
         let req = Request::from_parts(parts, body);
 
         let permitted = if let Some(m) = member {

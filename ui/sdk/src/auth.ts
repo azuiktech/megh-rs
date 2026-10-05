@@ -170,6 +170,7 @@ export class Auth<User = Record<string, unknown>> {
   /** Sign out — clears the session cookie and notifies listeners. */
   async signOut(): Promise<void> {
     await this.fetch(this.#paths.logout, { method: 'POST' })
+    this.#csrfTokenCache = null // the session the token belonged to is gone
     this.#setUser(null)
   }
 

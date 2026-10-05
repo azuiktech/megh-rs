@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-05
+- Soft delete for every entity: `Entity.deleted_at` and `TableEntity::soft_delete`, which marks the row and, in one transaction, everything a physical delete would remove through foreign keys declared `ON DELETE CASCADE` (read from the catalog, repeated to the leaves of a self-referencing tree; keys without `ON DELETE CASCADE` are not followed; a dependant table without `deleted_at` and `updated_at` fails the delete and changes nothing); `update` and `upsert` refuse deleted rows; `NOT_DELETED` is the condition reads add; migration 0008 adds `deleted_at` to the tables megh maps with `Table`; `update` and `upsert` now write `SET (cols) = ROW(values)`, which Postgres accepts for a single data column (PR #71, issue #70)
+
 ## 2026-09-22
 - Basic login route: `basic_login_router(state, path)` (opt-in, merge with `auth_router`), CSRF-protected; `Authorization: Basic` verified against `UserRepo::verify_password`, a uniform 401 `{"error":"invalid credentials"}` for a missing header or any wrong-credential reason, never creates an account; on success returns the user and their memberships and starts a session like the OAuth callback (PR #60, issue #30)
 - Redacted secrets: `OAuthProviderConfig`, `ConnectedAccount` and `OAuth2Tokens` now hand-write `Debug` to print `"[redacted]"` for `client_secret`/`access_token`/`refresh_token` instead of deriving it, and no longer derive `Serialize`, so a stray `{:?}` or `Json(..)` of one fails to compile instead of leaking the secret at runtime (PR #59, issue #58)

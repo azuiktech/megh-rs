@@ -10,7 +10,7 @@ pub use oauth2::{
     AccessToken, AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
     PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
 };
-use oauth2::{EndpointNotSet, EndpointSet};
+use oauth2::{EndpointMaybeSet, EndpointNotSet, EndpointSet, RevocationUrl};
 
 /// Lets a caller-configured `reqwest` client perform `oauth2` token requests.
 /// The client must not follow redirects (`redirect::Policy::none()`), as the `oauth2` crate requires.
@@ -32,7 +32,7 @@ pub fn oauth_http_client(
 }
 
 /// A client with the authorization and token endpoints configured, as built by `OAuthProviderConfig::build_client`.
-pub type ProviderClient = BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
+pub type ProviderClient = BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointMaybeSet, EndpointSet>;
 
 /// OAuth specific error variants.
 #[derive(Debug, Error)]
@@ -87,6 +87,8 @@ pub struct OAuthProviderConfig {
     pub userinfo_url: Option<String>,
     pub default_scopes: Vec<String>,
     pub redirect_url: Option<String>,
+    /// Where a token is revoked (RFC 7009); without it nothing is revoked at the provider.
+    pub revoke_url: Option<String>,
 }
 
 impl std::fmt::Debug for OAuthProviderConfig {
@@ -100,6 +102,7 @@ impl std::fmt::Debug for OAuthProviderConfig {
             .field("userinfo_url", &self.userinfo_url)
             .field("default_scopes", &self.default_scopes)
             .field("redirect_url", &self.redirect_url)
+            .field("revoke_url", &self.revoke_url)
             .finish()
     }
 }
@@ -120,6 +123,7 @@ impl OAuthProviderConfig {
                 "https://www.googleapis.com/auth/userinfo.profile".to_string(),
             ],
             redirect_url: None,
+            revoke_url: Some("https://oauth2.googleapis.com/revoke".to_string()),
         }
     }
 
@@ -132,7 +136,8 @@ impl OAuthProviderConfig {
     pub fn build_client(&self, redirect_url: Option<RedirectUrl>) -> Result<ProviderClient, OAuthError> {
         let client = BasicClient::new(ClientId::new(self.client_id.clone()))
             .set_auth_uri(AuthUrl::new(self.auth_url.clone())?)
-            .set_token_uri(TokenUrl::new(self.token_url.clone())?);
+            .set_token_uri(TokenUrl::new(self.token_url.clone())?)
+            .set_revocation_url_option(self.revoke_url.clone().map(RevocationUrl::new).transpose()?);
         let client = match self.client_secret.clone() {
             Some(secret) => client.set_client_secret(ClientSecret::new(secret)),
             None => client,

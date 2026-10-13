@@ -92,7 +92,7 @@ async fn a_refreshed_token_is_stored_encrypted_and_served_decrypted(pool: PgPool
         .unwrap();
     let providers = Arc::new(HashMap::from([(
         "google".to_string(),
-        OAuthProviderConfig { provider_id: "google".into(), client_id: "id".into(), client_secret: None, auth_url: format!("{base}/authorize"), token_url: format!("{base}/token"), userinfo_url: None, default_scopes: vec![], redirect_url: None },
+        OAuthProviderConfig { provider_id: "google".into(), client_id: "id".into(), client_secret: None, auth_url: format!("{base}/authorize"), token_url: format!("{base}/token"), userinfo_url: None, default_scopes: vec![], redirect_url: None, revoke_url: None },
     )]));
     let accounts = Accounts::new(pool.clone(), providers).with_encryptor(Encryptor::new(&KEY));
     let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).with(accounts.auth("google", "acct")).build();

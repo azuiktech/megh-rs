@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-13
+- `GET /auth/{p}/connect` (session required, repeated `scope`) adds another account of the signed-in user, `POST /auth/{p}/disconnect` revokes it at the provider (best effort) and marks it disconnected, `POST /auth/{p}/revoke` revokes a token; every route needs a session and the account's email must be the user's; login and connect use `state` and PKCE kept in the session, and the sign-in popup escapes the JSON it embeds (PR #NNN, issue #40)
+
 ## 2026-10-05
 - Fix: the UI SDK drops its cached CSRF token when signing out, so the sign-in after a sign-out no longer fails once with 403; vitest added to the SDK (PR #75, issue #74)
 - Fix: `megh::migrate` now runs migration 0008 (soft delete), which was missing from its list so `deleted_at` was never added and sign-in failed with "no column found for name: deleted_at`; it can also run again on a migrated database (0001 no longer recreates the renamed `org` tables, 0002 no longer indexes the dropped `users.subject`), as applications call it on every start (PR #73, issue #72)

@@ -1,0 +1,46 @@
+//! What the REST resources share: the org's time zone, durations as AIP-142 writes them, and local times.
+
+use std::time::Duration;
+
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono_tz::Tz;
+use serde_json::{json, Value};
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use super::error::ApiError;
+use crate::booking::Price;
+
+/// `3600s`, with a fraction when needed (AIP-142).
+pub(super) fn seconds(duration: Duration) -> String {
+    match duration.subsec_nanos() {
+        0 => format!("{}s", duration.as_secs()),
+        nanos => format!("{}.{:09}s", duration.as_secs(), nanos).trim_end_matches('0').to_string() + "s",
+    }
+}
+
+pub(super) async fn zone_of(pool: &PgPool, org: Uuid) -> Result<Tz, ApiError> {
+    let found: Option<Option<String>> = sqlx::query_scalar("SELECT timezone FROM organizations WHERE id = $1").bind(org).fetch_optional(pool).await?;
+    let name = found.ok_or_else(|| ApiError::not_found(format!("org {org} not found")))?;
+    name.map_or(Ok(Tz::UTC), |name| name.parse().map_err(|_| ApiError::invalid(format!("the time zone {name} of the org is not known"))))
+}
+
+pub(super) fn span_of(text: &str) -> Result<Duration, ApiError> {
+    humantime::parse_duration(text).map_err(|_| ApiError::invalid(format!("{text:?} is not a duration like 3600s")))
+}
+
+/// A time with an offset, or a local time (`2026-11-04T09:00:00`) read in the org's zone.
+pub(super) fn instant(text: &str, zone: Tz) -> Result<DateTime<Utc>, ApiError> {
+    let invalid = || ApiError::invalid(format!("{text:?} is not a time like 2026-11-04T09:00:00 or 2026-11-04T09:00:00-05:00"));
+    if let Ok(with_offset) = DateTime::parse_from_rfc3339(text) {
+        return Ok(with_offset.with_timezone(&Utc));
+    }
+    let local = NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S").map_err(|_| invalid())?;
+    zone.from_local_datetime(&local).earliest().map(|time| time.with_timezone(&Utc)).ok_or_else(|| ApiError::invalid(format!("{text:?} does not exist in {}", zone.name())))
+}
+
+/// A price as `google.type.Money`: whole `units` (a string, as protobuf JSON writes an int64) and `nanos`.
+pub(super) fn money(price: &Price) -> Value {
+    let (units, micros) = (price.micros.div_euclid(1_000_000), price.micros.rem_euclid(1_000_000));
+    json!({"currency_code": price.currency, "units": units.to_string(), "nanos": micros * 1000})
+}

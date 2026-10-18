@@ -88,3 +88,13 @@ async fn reading_deleting_and_listing_need_their_own_grants_on_the_instance(pool
     assert_eq!(status(&app, "DELETE", &one, &format!("org:read:{org} schedules:read:{id}"), "").await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "DELETE", &one, &format!("org:read:{org} schedules:delete:{id}"), "").await, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn searching_the_availability_needs_the_search_grant(pool: PgPool) {
+    let org = org(&pool, "clinic").await;
+    let (app, uri) = (app(pool), format!("/api/v1/org/{org}/availability:search"));
+    let body = r#"{"parties": [], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T11:00:00"}"#;
+    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} availability:search"), body).await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} availability:create"), body).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "POST", &uri, "availability:search", body).await, StatusCode::FORBIDDEN);
+}

@@ -44,6 +44,6 @@ pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
 pub(super) async fn subtree(pool: &PgPool, root: Uuid) -> Result<Vec<Uuid>> {
     let groups = Groups::load(pool, Grouped::Org).await?;
     let orgs: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM organizations").fetch_all(pool).await?;
-    let below: Result<Vec<_>> = orgs.into_iter().map(|org| Ok((org, groups.reach(org)?))).collect::<Result<Vec<(Uuid, HashMap<Uuid, usize>)>>>().map(|all| all.into_iter().filter(|(_, reach)| reach.contains_key(&root)).map(|(org, _)| org).collect());
-    below
+    let reaching: Vec<(Uuid, HashMap<Uuid, usize>)> = orgs.into_iter().map(|org| Ok((org, groups.reach(org)?))).collect::<Result<_>>()?;
+    Ok(reaching.into_iter().filter(|(_, reach)| reach.contains_key(&root)).map(|(org, _)| org).collect())
 }

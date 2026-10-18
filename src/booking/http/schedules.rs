@@ -163,8 +163,11 @@ async fn check_axes(pool: &PgPool, org: Uuid, schedule: &Schedule) -> Result<(),
         owner.filter(|owner| scope.contains(owner)).ok_or_else(outside)?;
     }
     if let Some(service) = schedule.service_id {
-        let owner: Option<Option<Uuid>> = sqlx::query_scalar("SELECT org_id FROM services WHERE id = $1 AND deleted_at IS NULL").bind(service).fetch_optional(pool).await?;
-        owner.ok_or_else(outside)?.filter(|owner| !scope.contains(owner)).map_or(Ok(()), |_| Err(outside()))?;
+        let found: Option<Option<Uuid>> = sqlx::query_scalar("SELECT org_id FROM services WHERE id = $1 AND deleted_at IS NULL").bind(service).fetch_optional(pool).await?;
+        let owner = found.ok_or_else(outside)?;
+        if owner.is_some_and(|owner| !scope.contains(&owner)) {
+            return Err(outside());
+        }
     }
     Ok(())
 }

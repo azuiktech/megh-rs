@@ -83,7 +83,7 @@ async fn appointments_holds_and_the_rest_round_trip(pool: PgPool) {
         attributes: attributes(),
     };
     PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), method).insert(&pool).await.unwrap();
-    let hold = Hold { org_id: Some(org), tz: "UTC".into(), parties: vec![], expires_at: now + Duration::minutes(5), attributes: attributes() };
+    let hold = Hold { org_id: Some(org), tz: "UTC".into(), parties: vec![], placements: vec![], expires_at: now + Duration::minutes(5), attributes: attributes() };
     HoldRow::new(HoldId(Uuid::new_v4()), hold).insert(&pool).await.unwrap();
     let target = Target::Window(ServiceId(Uuid::new_v4()), Interval { start: now, end: now + Duration::days(1) });
     let entry = WaitlistEntry { client_id: client.id, target, requested_at: now, attributes: attributes() };

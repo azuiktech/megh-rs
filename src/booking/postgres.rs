@@ -20,6 +20,18 @@ impl Slots {
     }
 }
 
+/// Holds, appointments and their cancellation: implements `Appointments`.
+#[derive(Clone)]
+pub struct Reservations {
+    pub(super) pool: PgPool,
+}
+
+impl Reservations {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
 impl Calendar {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }

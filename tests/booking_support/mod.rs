@@ -154,7 +154,7 @@ pub async fn booked(pool: &PgPool, bookable: BookableId, during: Interval, engag
 
 /// An existing hold on `bookable` that expires at `expires_at`.
 pub async fn held(pool: &PgPool, bookable: BookableId, during: Interval, expires_at: DateTime<Utc>) -> HoldRow {
-    let data = Hold { org_id: None, tz: "UTC".into(), parties: vec![], expires_at, attributes: Attributes::new() };
+    let data = Hold { org_id: None, tz: "UTC".into(), parties: vec![], placements: vec![], expires_at, attributes: Attributes::new() };
     let hold = HoldRow::new(HoldId(Uuid::new_v4()), data).insert(pool).await.unwrap();
     occupy(pool, Some(hold.id), None, bookable, during, Engagement::Engaged, 1).await;
     hold

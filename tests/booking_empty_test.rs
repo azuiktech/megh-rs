@@ -2,7 +2,7 @@
 //! Behaviour on a database with nothing booked. Seeded scenarios are in the other booking tests.
 
 use chrono::{Duration, Utc};
-use megh::booking::{Appointments, Availability, Axes, BookableId, Calendar, ClientId, Confirmation, Error, HoldId, IdempotencyKey, Interval, Reservations, ServiceId};
+use megh::booking::{Appointments, Availability, Axes, BookableId, Calendar, ClientId, Confirmation, Error, HoldId, IdempotencyKey, Interval, Queue, Reservations, ServiceId, Target, Waitlist};
 use megh::booking::AppointmentId;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -33,4 +33,10 @@ async fn confirming_an_unknown_hold_is_not_found(pool: PgPool) {
     let key = IdempotencyKey("key".into());
     let result = Reservations::new(pool).confirm(HoldId(Uuid::new_v4()), confirmation(), key).await;
     assert!(matches!(result, Err(Error::NotFound)));
+}
+
+#[sqlx::test]
+async fn nobody_waits_for_an_unknown_target(pool: PgPool) {
+    let target = Target::Window(ServiceId(Uuid::new_v4()), day());
+    assert_eq!(Queue::new(pool).waiting(&target).await.unwrap(), vec![]);
 }

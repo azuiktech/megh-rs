@@ -34,7 +34,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres",
 axum = { version = "0.8", optional = true }
 html-escape = { version = "0.2", optional = true }
 tracing = { version = "0.1", optional = true }
-axum-extra = { version = "0.12", features = ["cookie", "query", "typed-header"], optional = true }
+axum-extra = { version = "0.12", features = ["cookie", "query", "typed-header", "with-rejection"], optional = true }
 tower-http = { version = "0.7", features = ["csrf"], optional = true }
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"], optional = true }
 tower-sessions = { version = "0.14", optional = true }
@@ -49,6 +49,7 @@ itertools = "0.15"
 chrono-tz = "0.10"
 aip-filtering = "0.1"
 regex = "1"
+humantime = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

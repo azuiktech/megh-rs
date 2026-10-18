@@ -7,6 +7,7 @@ mod calendar;
 mod groups;
 #[cfg(feature = "postgres")]
 mod market;
+mod filter;
 mod model;
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -25,6 +26,7 @@ mod times;
 mod variants;
 
 pub use appointments::*;
+pub use filter::Filter;
 pub use model::*;
 #[cfg(feature = "postgres")]
 pub use postgres::{Calendar, Queue, Reservations, Slots};

@@ -47,6 +47,8 @@ rangemap = "1.8"
 petgraph = "0.8"
 itertools = "0.15"
 chrono-tz = "0.10"
+aip-filtering = "0.1"
+regex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

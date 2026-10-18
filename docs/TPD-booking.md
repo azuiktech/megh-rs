@@ -286,7 +286,7 @@ Each row is its own issue, branch and PR, merged before the next starts (the use
 | 4 | Availability search with parties, service gap and party offset (PR #88, issue #87) | `[x]` |
 | 5 | Appointments: hold, confirm, cancel, payment (PR #90, issue #89) | `[x]` |
 | 6 | Waitlist (PR #92, issue #91) | `[x]` |
-| 7 | AIP-160 filter predicate | `[ ]` |
+| 7 | AIP-160 filter predicate (PR #94, issue #93) | `[x]` |
 | 8 | REST: schedules and blockouts | `[ ]` |
 | 9 | REST: `availability:search` | `[ ]` |
 | 10 | REST: appointments | `[ ]` |
@@ -338,7 +338,7 @@ Decisions that follow from persistence (my reading, to confirm):
 - `service_gap`: the largest gap between one party's consecutive services (0: back to back; 30 minutes: 9:00-9:30 then 10:00-10:30).
 Starts and gaps are tried on a `slot_interval` grid up to the maximum. The response lists the parties with, per service, the start, end and allocations, and `next_available_day` (the first local date with any slot, searched forward up to `horizon_days`, default 180 as NexHealth) when the window has none. This replaces `Layout` and `Line`: one party with several services is the old sequential layout, several parties the old parallel layout.
 
-**R5. Filters.** Conditions (needs, variants, wants, payment eligibility, appointment search) are **AIP-160 filter expressions** over the key/value map, for example `role = "stylist" AND experience_years >= 10`. The built-in predicate stores the expression string (scriptable and storable, as D11 asked); REST payloads carry the plain string. The `aip-160` crate (0.1.5) parses the grammar; its AST and maintenance were not verified at design time.
+**R5. Filters.** Conditions (needs, variants, wants, payment eligibility, appointment search) are **AIP-160 filter expressions** over the key/value map, for example `role = "stylist" AND experience_years >= 10`. The built-in predicate stores the expression string (scriptable and storable, as D11 asked); REST payloads carry the plain string. Crates compared when the filter was built: `bomboni_request` (needs `protoc` to build, and a system dependency is not acceptable), `aip-160` 0.1.5 (strict, but no `.` traversal, no implicit AND, and AND binds tighter than OR, the reverse of the spec) and `aip-filtering` 0.1.0 (follows the spec grammar, but accepts garbage such as `a =`, reads `10.5` as a traversal and panics on an empty filter). **`aip-filtering` is used**, with guards in `Filter::parse`: an empty text is no filter, a panic is caught, and what the parser would mis-read is refused as `Invalid` (functions, a comparator without spaces, a missing right side, decimal numbers). Evaluation against the key/value attributes is ours, since no crate evaluates a filter over JSON. Revisit when either crate matures.
 
 **R6. API conventions: Google AIP, never an invented convention** (user: "ALWAYS keep that in mind"). Resources `/api/v1/org/{org_id}/{collection}` and `.../{collection}/{id}` (the path form is the user's; AIP-122 would say plural `orgs`), standard methods Get, List, Create, Update (PATCH with `update_mask`), Delete (AIP-131 to 135), custom methods `POST ...:action` (AIP-136), `page_size` and `page_token` (AIP-158), `filter` and `order_by` (AIP-132, AIP-160), `request_id` for idempotency (AIP-155), durations as `"1800s"` and timestamps as RFC 3339 (AIP-142), errors as `{"error": {"code", "message", "status"}}` (AIP-193), soft delete with `show_deleted` (AIP-164). Grants come from `request_grants`: one `resource:action[:id]` per resource level.
 

@@ -9,7 +9,8 @@ use itertools::Itertools;
 use sqlx::PgPool;
 
 use super::rules::Rules;
-use super::times::{covers, overlap, Times};
+use super::busy::busy;
+use super::times::{clash, covers, overlap, Times};
 use super::variants::resolve;
 use super::{
     Allocation, Attributes, Axes, BookableId, BookableRow, ClientId, ClientRow, Condition, Engagement, Error, Grouped, Groups, Interval, Need, OccupancyRow, OrgId,
@@ -30,6 +31,7 @@ pub(super) struct Plan {
     pub(super) service: Arc<ServiceRow>,
     pub(super) seats: u32,
     client: Option<Attributes>,
+    client_id: Option<ClientId>,
     need_roles: Vec<Vec<usize>>,
     pub(super) assignments: Vec<Picks>,
 }
@@ -46,6 +48,8 @@ pub(super) struct Market {
     clients: HashMap<ClientId, Attributes>,
     taken: Vec<OccupancyRow>,
     open: HashMap<(BookableId, ServiceId), Times>,
+    /// When the clients of the search are already booked or held.
+    busy: HashMap<ClientId, Times>,
     within: Interval,
 }
 
@@ -116,7 +120,8 @@ impl Market {
             })
             .collect::<Result<_>>()?;
         let (services, clients) = (Self::services(pool, request).await?, Self::clients(pool, request).await?);
-        Ok(Self { bookables, services, clients, taken, open, within: request.within })
+        let named: Vec<ClientId> = request.parties.iter().filter_map(|party| party.client).collect();
+        Ok(Self { bookables, services, clients, taken, open, busy: busy(pool, &named).await?, within: request.within })
     }
 
     /// Occupancies of live appointments and of holds that have not expired.
@@ -146,19 +151,19 @@ impl Market {
             .iter()
             .map(|want| {
                 let service = self.services.get(&want.service).ok_or(Error::NotFound)?;
-                Ok(self.plan(want, party.seats, Arc::clone(service), client.clone()))
+                Ok(self.plan(want, party.seats, Arc::clone(service), (client.clone(), party.client)))
             })
             .collect()
     }
 
-    fn plan(&self, want: &ServiceWant, seats: u32, service: Arc<ServiceRow>, client: Option<Attributes>) -> Plan {
+    fn plan(&self, want: &ServiceWant, seats: u32, service: Arc<ServiceRow>, (client, client_id): (Option<Attributes>, Option<ClientId>)) -> Plan {
         let (roles, need_roles) = roles(&service.data, &self.bookables);
         let wanted = |picks: &Picks| {
             let chosen = picks.iter().flatten().map(|i| &self.bookables[*i].attributes);
             want.wants.iter().all(|filter| chosen.clone().any(|attributes| filter.holds(attributes)))
         };
         let assignments = assignments(&roles).into_iter().filter(wanted).collect();
-        Plan { service, seats, client, need_roles, assignments }
+        Plan { service, seats, client, client_id, need_roles, assignments }
     }
 
     fn in_use(&self, bookable: &BookableRow, during: &Interval, placed: &[Allocation]) -> u32 {
@@ -201,6 +206,7 @@ impl Market {
             Some((during.end, mine))
         })?;
         let inside = self.within.start <= start && end <= self.within.end;
-        inside.then_some(Placed { allocations, price, end })
+        let free = !plan.client_id.and_then(|client| self.busy.get(&client)).is_some_and(|calendar| clash(calendar, &Interval { start, end }));
+        (inside && free).then_some(Placed { allocations, price, end })
     }
 }

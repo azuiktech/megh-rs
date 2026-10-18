@@ -17,6 +17,14 @@ pub(crate) fn times<'a>(intervals: impl IntoIterator<Item = &'a Interval>) -> Ti
     intervals.into_iter().map(range).collect()
 }
 
+pub(crate) fn insert(times: &mut Times, during: &Interval) {
+    times.insert(range(during));
+}
+
+pub(crate) fn clash(times: &Times, during: &Interval) -> bool {
+    times.overlaps(&range(during))
+}
+
 pub(crate) fn intervals(times: &Times) -> Vec<Interval> {
     times.iter().map(|range| Interval { start: range.start, end: range.end }).collect()
 }

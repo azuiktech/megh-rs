@@ -31,6 +31,7 @@ An appointment has three kinds of participant: clients, rooms/resources, provide
 - No `any`-style escape hatches; for Rust this means typed interfaces. Stateful behaviour is encapsulated, not scattered.
 - Memory notes in this project that apply: never decide design myself (ask with my reading); never skip approval checkpoints; no worktrees; no commit before review; never inspect inside a `serde_json::Value` except as explicitly allowed in 10 below.
 - Soft delete: provided by megh-rs `Entity` and `TableEntity::soft_delete` (see `docs/TPD-soft-delete.md`). Every booking table needs `created_at`, `updated_at` and `deleted_at`, and cascades through `ON DELETE CASCADE` foreign keys.
+- **Existing libraries, never hand-written code** (the user, 2026-10-18: "use existing library for all cases, instead of AI generated code, including for aip, rrule or any other case where a library is available"). Before writing any non-trivial helper, search crates.io and use the maintained crate; hand-written code only where no library exists, and then say so. See R9.
 - megh-rs `AGENTS.md`: dependencies always at the latest release in their own `chore(deps)` PR; stage explicit paths only, never untracked user files.
 
 ## 3. Research done
@@ -355,3 +356,5 @@ Bookables, services and clients: whether they get REST CRUD or are created by th
 **R7. Tenancy.** `clients`, `services`, `payment_methods`, `occurrences`, `holds` and `appointments` carry a nullable `org_id`; REST always sets it from the path. Rules owned by an org only match that org and its members, so the existing engine is tenant-safe.
 
 **R8. Review process.** Interfaces, then tests, were approved and frozen before the implementation. One frozen test was fixed with the user's permission (`a_provider_without_an_open_rule_is_never_offered`: its service carried a service-wide Open rule, which by principle 4 opens every bookable). The frozen tests were then renamed mechanically for R1 with the user's approval.
+
+**R9. Libraries** (user, 2026-10-18, binding for every PR). Use the existing crate for: recurrence (`rrule`), AIP-160 filters (`aip-160`), interval sets (`rangemap` instead of the hand-written merge and subtract), combinations and cartesian products (`itertools`), the grouping graph, cycle detection and longest path (`petgraph`), AIP-142 durations (`humantime`), time zones (`chrono-tz`), JSON merge patch for PATCH (`json-patch`, already a dependency), serialization of conditions (`typetag`). A draft of the first PRs was written with hand-written interval, combination and graph code; it is replaced by these crates in the PR that introduces each feature. Before adding any other helper, search crates.io first.

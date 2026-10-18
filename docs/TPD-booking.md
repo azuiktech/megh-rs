@@ -280,7 +280,7 @@ Each row is its own issue, branch and PR, merged before the next starts (the use
 | # | PR | Status |
 |---|---|---|
 | 0 | Design (this document), issue #78 | `[~]` |
-| 1 | Core types, migration `0009_booking.sql`, `Table` mapping test | `[ ]` |
+| 1 | Core types, migration `0009_booking.sql`, `Table` mapping test (PR #82, issue #81) | `[x]` |
 | 2 | Service templates | `[ ]` |
 | 3 | Schedules, blockouts and availability (`Calendar`) | `[ ]` |
 | 4 | Availability search with parties, service gap and party offset | `[ ]` |
@@ -291,7 +291,7 @@ Each row is its own issue, branch and PR, merged before the next starts (the use
 | 9 | REST: `availability:search` | `[ ]` |
 | 10 | REST: appointments | `[ ]` |
 
-## 19. Persistence (migration `0009_booking.sql`, draft awaiting approval)
+## 19. Persistence (migration `0009_booking.sql`, shipped in PR 1)
 
 Every table has `id UUID PRIMARY KEY`, `created_at`, `updated_at`, `deleted_at` (an `Entity<ID, T>` row). `ON DELETE CASCADE` keys are the soft-delete cascade. JSON columns are `JSONB`. The key/value map is the `attributes` column.
 
@@ -301,18 +301,18 @@ Every table has `id UUID PRIMARY KEY`, `created_at`, `updated_at`, `deleted_at` 
 | `clients` | `name`, `attributes` | |
 | `services` | `name`, `mode`, `price`, `steps`, `variants`, `attributes` | `mode` checked against the five Modes |
 | `groupings` | `kind` (`org`, `bookable`, `service`, `client`), `member_id`, `group_id` | unique `(kind, member_id, group_id)` while live; no foreign keys (polymorphic) |
-| `availabilities` | `org_id`, `service_id`, `bookable_id` (NULL = any), `kind` (`open`/`closed`), `recurrence`, `span` | each axis cascades |
+| `schedules` | `org_id`, `service_id`, `bookable_id` (NULL = any), `kind` (`open`/`blockout`), `recurrence`, `span`, `reason`, `notes` | each axis cascades |
 | `occurrences` | `service_id`, `starts_at`, `capacity`, `attributes` | `service_id` cascade |
 | `enrollments` | `client_id`, `service_id`, `occurrences`, `attributes` | both cascade |
 | `payment_methods` | `name`, `owner_id` (NULL = shared), `eligible`, `settlement`, `attributes` | `owner_id` cascade |
-| `holds` | `lines`, `expires_at`, `attributes` | |
-| `bookings` | `lines`, `payer_id`, `payments`, `idempotency_key` (unique), `fingerprint`, `attributes` | `payer_id` → `clients` |
-| `occupancies` | `hold_id` xor `booking_id`, `bookable_id`, `starts_at`, `ends_at > starts_at`, `engagement`, `seats > 0` | owners and `bookable_id` cascade |
+| `holds` | `org_id`, `tz`, `parties`, `expires_at`, `attributes` | |
+| `appointments` | `org_id`, `tz`, `lines`, `payer_id`, `payments`, `idempotency_key` (unique), `fingerprint`, `attributes` | `payer_id` → `clients` |
+| `occupancies` | `hold_id` xor `appointment_id`, `bookable_id`, `starts_at`, `ends_at > starts_at`, `engagement`, `seats > 0` | owners and `bookable_id` cascade |
 | `waitlist_entries` | `client_id`, `target` (JSON), `requested_at`, `attributes` | `client_id` cascade; GIN index on `target` |
 
 Decisions that follow from persistence (my reading, to confirm):
 
-- **Occupancy is the persisted Allocation** and the only thing that blocks time. Cancelling a booking soft-deletes it and the cascade removes its occupancies from blocking; a hold blocks until `expires_at`. `Hold` and `Booking` therefore no longer carry an `allocations` list; they are read from `occupancies`. The `Allocation` struct stays as the search result (`Slot`).
+- **Occupancy is the persisted Allocation** and the only thing that blocks time. Cancelling an appointment soft-deletes it and the cascade removes its occupancies from blocking; a hold blocks until `expires_at`. `Hold` and `Appointment` therefore no longer carry an `allocations` list; they are read from `occupancies`. The `Allocation` struct stays as the search result (`Slot`).
 - **Idempotent confirm**: `bookings.idempotency_key` is unique and `fingerprint` identifies the request; the same key with another fingerprint is `Error::KeyReused`.
 - **Grouping is not generic** any more: one table for all kinds with a `kind` column, the ends are plain `Uuid`.
 - **Conflict checks** read `occupancies` for the bookable and the interval, counting only `engaged` rows against capacity (a `free` provider is released), ignoring expired holds and deleted rows.

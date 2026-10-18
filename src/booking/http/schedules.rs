@@ -14,6 +14,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::error::ApiError;
+use super::common::{seconds, span_of, zone_of};
 use super::page::{page, ListQuery};
 use super::{subtree, BookingState};
 use crate::booking::{BookableId, Kind, OrgId, Recurrence, Schedule, ScheduleId, ScheduleRow, ServiceId};
@@ -74,14 +75,6 @@ pub(super) fn routes(name: &'static str, kind: Kind) -> Router<BookingState> {
         .layer(Extension(Collection { kind, name }))
 }
 
-/// `3600s`, with a fraction when needed (AIP-142).
-fn seconds(duration: Duration) -> String {
-    match duration.subsec_nanos() {
-        0 => format!("{}s", duration.as_secs()),
-        nanos => format!("{}.{:09}s", duration.as_secs(), nanos).trim_end_matches('0').to_string() + "s",
-    }
-}
-
 fn resource(row: &ScheduleRow, collection: Collection, org: Uuid, zone: Tz) -> ScheduleResource {
     let local = |time: DateTime<Utc>| time.with_timezone(&zone);
     ScheduleResource {
@@ -100,18 +93,8 @@ fn resource(row: &ScheduleRow, collection: Collection, org: Uuid, zone: Tz) -> S
     }
 }
 
-async fn zone_of(pool: &PgPool, org: Uuid) -> Result<Tz, ApiError> {
-    let found: Option<Option<String>> = sqlx::query_scalar("SELECT timezone FROM organizations WHERE id = $1").bind(org).fetch_optional(pool).await?;
-    let name = found.ok_or_else(|| ApiError::not_found(format!("org {org} not found")))?;
-    name.map_or(Ok(Tz::UTC), |name| name.parse().map_err(|_| ApiError::invalid(format!("the time zone {name} of the org is not known"))))
-}
-
 fn clock(text: &str) -> Result<NaiveTime, ApiError> {
     NaiveTime::parse_from_str(text, "%H:%M").or_else(|_| NaiveTime::parse_from_str(text, "%H:%M:%S")).map_err(|_| ApiError::invalid(format!("{text:?} is not a time like 15:00")))
-}
-
-fn span_of(text: &str) -> Result<Duration, ApiError> {
-    humantime::parse_duration(text).map_err(|_| ApiError::invalid(format!("{text:?} is not a duration like 3600s")))
 }
 
 fn shorthand(body: &ScheduleBody) -> bool {

@@ -17,14 +17,14 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::common::{instant, zone_of};
+use super::common::{instant, zone_of, MoneyBody};
 use super::error::ApiError;
 use super::page::{page, ListQuery};
 use super::slot::{verified, SlotBody};
 use super::view;
 use super::{subtree, BookingState};
 use crate::booking::{
-    Amount, AppointmentId, AppointmentRow, Appointments, Attributes, ClientId, Confirmation, Error, HoldId, HoldRow, IdempotencyKey, PaymentMethodId, Price, Reservations,
+    Amount, AppointmentId, AppointmentRow, Appointments, Attributes, ClientId, Confirmation, Error, HoldId, HoldRow, IdempotencyKey, PaymentMethodId, Reservations,
 };
 use crate::TableEntity;
 
@@ -36,14 +36,6 @@ const LONGEST_HOLD_HOURS: i64 = 24;
 enum StateBody {
     Held,
     Booked,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MoneyBody {
-    currency_code: String,
-    units: String,
-    nanos: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,12 +85,7 @@ pub(super) fn routes() -> Router<BookingState> {
 fn amount(body: &AmountBody) -> Result<Amount, ApiError> {
     match body {
         AmountBody::Uses(uses) => Ok(Amount::Uses(*uses)),
-        AmountBody::Money(money) => {
-            let bad = || ApiError::invalid("an amount of money is {currency_code, units, nanos} with whole micro-units");
-            let units: i64 = money.units.parse().map_err(|_| bad())?;
-            let micros = units.checked_mul(1_000_000).and_then(|whole| whole.checked_add(money.nanos / 1000)).filter(|_| money.nanos % 1000 == 0).ok_or_else(bad)?;
-            Ok(Amount::Money(Price { micros, currency: money.currency_code.clone() }))
-        }
+        AmountBody::Money(money) => Ok(Amount::Money(money.price()?)),
     }
 }
 

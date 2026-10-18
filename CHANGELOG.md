@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-18
+- REST for services: `/api/v1/orgs/{org_id}/services` (`display_name`, `mode`, `price` as `google.type.Money`, `steps` with their needs written as AIP-160 filters over the bookables' tags and `engaged`, `free` or `on_demand`, `variants` that add to or set the duration or price when a filter holds, `attributes`) with Get, List, Create, Update and soft Delete on the generic CRUD; a service without steps is a menu node (PR #108, issue #107)
 - REST for clients: `/api/v1/orgs/{org_id}/clients` (people, pets and others who are served: `display_name`, `attributes`, `org_id`) with Get, List, Create, Update and soft Delete on the generic CRUD (PR #106, issue #105)
 - REST for bookables: `/api/v1/orgs/{org_id}/bookables` (providers and rooms: `display_name`, `capacity`, `attributes`, `org_id`) with Get, List (`filter` over the fields and the tags, for example `attributes.experience_years >= 10`), Create, Update (`update_mask`) and soft Delete, on a generic `http/crud` that clients, services and payment methods reuse; until now bookables could only be created from Rust (PR #104, issue #103)
 - REST paths use the plural `orgs` (AIP-122): `/api/v1/orgs/{org_id}/...`, resource names `orgs/{org_id}/...`, and the first grant of every route is `orgs:read:{org_id}` (it was `org`) (PR #102, issue #101)

@@ -8,7 +8,9 @@
 
 mod appointments;
 mod availability;
+mod bookables;
 mod common;
+mod crud;
 mod error;
 mod page;
 mod schedules;
@@ -40,6 +42,7 @@ pub fn booking_router(pool: PgPool) -> Router {
 pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
     Router::new()
         .merge(appointments::routes())
+        .merge(crud::routes::<bookables::Bookables>())
         .merge(availability::routes())
         .merge(schedules::routes("schedules", Kind::Open))
         .merge(schedules::routes("blockouts", Kind::Blockout))

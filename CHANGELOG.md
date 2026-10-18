@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-18
+- Design document for a generic booking module (`docs/TPD-booking.md`): services made of steps, bookables, schedules and blockouts, availability search, appointments, payments; research of NexHealth and Mindbody, every decision, and the PR plan (PR #80, issue #79, parent issue #78)
+
 ## 2026-10-13
 - `GET /auth/{p}/connect` (session required, repeated `scope`) adds another account of the signed-in user, `POST /auth/{p}/disconnect` revokes it at the provider (best effort) and marks it disconnected, `POST /auth/{p}/revoke` revokes a token; every route needs a session and the account's email must be the user's; login and connect use `state` and PKCE kept in the session, and the sign-in popup escapes the JSON it embeds (PR #76, issue #40)
 

@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::{DateTime, NaiveDate, Utc};
 use chrono_tz::Tz;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use super::market::{span, Market, Plan};
 use super::{Allocation, Error, Interval, Placement, Price, Result, Search, SearchRequest, Slot, Slots};
@@ -87,8 +88,8 @@ async fn zone(pool: &PgPool, request: &SearchRequest) -> Result<Tz> {
     Ok(name.flatten().and_then(|name| name.parse().ok()).unwrap_or(Tz::UTC))
 }
 
-async fn found(pool: &PgPool, request: &SearchRequest) -> Result<Vec<Slot>> {
-    let market = Market::load(pool, request).await?;
+async fn found(pool: &PgPool, request: &SearchRequest, ignoring: Option<Uuid>) -> Result<Vec<Slot>> {
+    let market = Market::load(pool, request, ignoring).await?;
     let plans: Vec<Vec<Plan>> = request.parties.iter().map(|party| market.plans(party)).collect::<Result<_>>()?;
     let slots = anchors(request).flat_map(|anchor| market.anchor_slots(&plans, request, anchor));
     Ok(slots.take(request.limit.unwrap_or(usize::MAX)).collect())
@@ -103,14 +104,21 @@ fn after_window(request: &SearchRequest, horizon_days: u32) -> Result<SearchRequ
     Ok(later)
 }
 
+impl Slots {
+    /// The slots as `find` gives them, with the time of one appointment or hold counting for nothing: the one being moved.
+    pub async fn find_ignoring(&self, request: &SearchRequest, ignoring: Uuid) -> Result<Vec<Slot>> {
+        found(&self.pool, request, Some(ignoring)).await
+    }
+}
+
 impl Search for Slots {
     async fn find(&self, request: &SearchRequest) -> Result<Vec<Slot>> {
-        found(&self.pool, request).await
+        found(&self.pool, request, None).await
     }
 
     async fn next_day(&self, request: &SearchRequest, horizon_days: u32) -> Result<Option<NaiveDate>> {
         let later = after_window(request, horizon_days)?;
-        let first = found(&self.pool, &later).await?.into_iter().next();
+        let first = found(&self.pool, &later, None).await?.into_iter().next();
         let zone = zone(&self.pool, request).await?;
         Ok(first.and_then(|slot| slot.allocations.iter().map(|a| a.during.start).min()).map(|start| start.with_timezone(&zone).date_naive()))
     }

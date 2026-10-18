@@ -58,6 +58,18 @@ struct CreateBody {
     attributes: Option<Attributes>,
 }
 
+/// A booked or held appointment moves to another slot, found by `availability:search` for the same clients and services.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RescheduleBody {
+    slot: SlotBody,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MaskQuery {
+    update_mask: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfirmBody {
@@ -72,7 +84,7 @@ pub(super) fn routes() -> Router<BookingState> {
     let collection = "/api/v1/orgs/{org_id}/appointments";
     Router::new()
         .route(collection, get(list).post(create))
-        .route(&format!("{collection}/{{id}}"), get(read).delete(cancel).post(custom_method))
+        .route(&format!("{collection}/{{id}}"), get(read).delete(cancel).post(custom_method).patch(reschedule))
 }
 
 fn confirmation(clients: Option<Vec<ClientId>>, payer: ClientId, payments: Option<Vec<PaymentBody>>, attributes: Option<Attributes>) -> Result<Confirmation, ApiError> {
@@ -151,7 +163,7 @@ async fn hold_only(pool: &PgPool, org: Uuid, zone: Tz, scope: &[Uuid], body: Cre
         return Err(ApiError::invalid("a held appointment has no payer, clients, payments or request_id yet; give them when confirming"));
     }
     let until = expiry(&body, zone)?;
-    let (request, slot) = verified(pool, org, zone, &body.slot).await?;
+    let (request, slot) = verified(pool, org, zone, &body.slot, None).await?;
     let hold = Reservations::new(pool.clone()).hold(&request, &slot, until).await?;
     Ok(Json(resource_of(pool, org, scope, hold.id.0).await?))
 }
@@ -167,7 +179,7 @@ async fn book(pool: &PgPool, org: Uuid, zone: Tz, scope: &[Uuid], body: CreateBo
     }
     let confirmed = confirmation(body.clients, payer, body.payments, body.attributes)?;
     check_parties(pool, org, &confirmed).await?;
-    let (request, slot) = verified(pool, org, zone, &body.slot).await?;
+    let (request, slot) = verified(pool, org, zone, &body.slot, None).await?;
     let reservations = Reservations::new(pool.clone());
     let hold = reservations.hold(&request, &slot, Utc::now() + Duration::minutes(1)).await?;
     match reservations.confirm(hold.id, confirmed, key).await {
@@ -219,6 +231,30 @@ async fn read(State(state): State<BookingState>, WithRejection(Path((org, id)), 
     zone_of(&state.pool, org).await?;
     let scope = subtree(&state.pool, org).await?;
     Ok(Json(resource_of(&state.pool, org, &scope, plain_id(&id)?).await?))
+}
+
+async fn reschedule(
+    State(state): State<BookingState>,
+    WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, String)>, ApiError>,
+    WithRejection(Query(query), _): WithRejection<Query<MaskQuery>, ApiError>,
+    WithRejection(Json(body), _): WithRejection<Json<RescheduleBody>, ApiError>,
+) -> Result<Json<Value>, ApiError> {
+    let (pool, id) = (&state.pool, plain_id(&id)?);
+    let zone = zone_of(pool, org).await?;
+    if query.update_mask.as_deref().is_some_and(|mask| mask.trim() != "slot") {
+        return Err(ApiError::invalid("only the slot of an appointment can be updated: update_mask is slot"));
+    }
+    let scope = subtree(pool, org).await?;
+    match appointment_in(pool, &scope, id).await? {
+        Some(row) if row.deleted_at.is_some() => return Err(ApiError::not_found(format!("appointment {id} is cancelled"))),
+        Some(_) => {}
+        None => {
+            live_hold(pool, &scope, id).await?;
+        }
+    }
+    let (request, slot) = verified(pool, org, zone, &body.slot, Some(id)).await?;
+    Reservations::new(pool.clone()).reschedule(AppointmentId(id), &request, &slot).await?;
+    Ok(Json(resource_of(pool, org, &scope, id).await?))
 }
 
 async fn list(

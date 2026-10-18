@@ -182,3 +182,13 @@ async fn the_waitlist_needs_its_own_grants(pool: PgPool) {
     assert_eq!(status(&app, "POST", &collection, &format!("{read} groupings:create"), "{}").await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} waitlistentries:read"), "").await, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn moving_an_appointment_needs_the_update_grant_on_it(pool: PgPool) {
+    let org = org(&pool, "clinic").await;
+    let (app, id) = (app(pool), Uuid::new_v4());
+    let (read, one) = (format!("orgs:read:{org}"), format!("/api/v1/orgs/{org}/appointments/{id}"));
+    assert_eq!(status(&app, "PATCH", &one, &format!("{read} appointments:update:{id}"), "{}").await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(&app, "PATCH", &one, &format!("{read} appointments:update:{}", Uuid::new_v4()), "{}").await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "PATCH", &one, &format!("{read} appointments:delete:{id}"), "{}").await, StatusCode::FORBIDDEN);
+}

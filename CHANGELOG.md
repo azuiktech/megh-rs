@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-18
+- Booking core types and schema: `megh::booking` row and value types (bookable, client, service with steps, needs and variants, schedule and blockout, occurrence, enrollment, hold, appointment, occupancy, payment method, waitlist entry, search request with parties and offsets), the trait signatures `Availability`, `Search`, `Appointments`, `Waitlist` and `Templates`, and migration 0009 (12 tables with the entity stamps, `ON DELETE CASCADE` keys for the soft-delete cascade); no behaviour yet (PR #82, issue #81)
 - Design document for a generic booking module (`docs/TPD-booking.md`): services made of steps, bookables, schedules and blockouts, availability search, appointments, payments; research of NexHealth and Mindbody, every decision, and the PR plan (PR #80, issue #79, parent issue #78)
 
 ## 2026-10-13

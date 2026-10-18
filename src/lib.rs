@@ -5,6 +5,7 @@ pub mod account;
 pub mod audit;
 pub mod auth;
 pub mod billing;
+pub mod booking;
 pub mod entity;
 pub mod event;
 pub mod money;
@@ -75,6 +76,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     sqlx::raw_sql(include_str!("../migrations/0008_soft_delete.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0009_booking.sql"))
         .execute(pool)
         .await?;
     Ok(())

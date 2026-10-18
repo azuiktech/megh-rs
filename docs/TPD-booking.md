@@ -282,7 +282,7 @@ Each row is its own issue, branch and PR, merged before the next starts (the use
 | 0 | Design (this document), issue #78 | `[~]` |
 | 1 | Core types, migration `0009_booking.sql`, `Table` mapping test (PR #82, issue #81) | `[x]` |
 | 2 | Service templates (PR #84, issue #83) | `[x]` |
-| 3 | Schedules, blockouts and availability (`Calendar`) | `[ ]` |
+| 3 | Schedules, blockouts and availability (`Calendar`) (PR #86, issue #85) | `[x]` |
 | 4 | Availability search with parties, service gap and party offset | `[ ]` |
 | 5 | Appointments: hold, confirm, cancel, payment | `[ ]` |
 | 6 | Waitlist | `[ ]` |

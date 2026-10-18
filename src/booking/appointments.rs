@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Attributes, BookableId, AppointmentId, ClientId, Condition, Engagement, HoldId, Interval, OrgId,
-    OccupancyId, OccurrenceId, PaymentMethodId, Price, Result, ServiceId, WaitlistEntryId,
+    OccupancyId, PaymentMethodId, Price, Result, ServiceId, WaitlistEntryId,
 };
 use crate::{Entity, Table};
 
@@ -178,7 +178,6 @@ pub struct PaymentMethod {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Target {
-    Occurrence(OccurrenceId),
     Window(ServiceId, Interval),
 }
 

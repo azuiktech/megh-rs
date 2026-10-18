@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -18,7 +17,7 @@ macro_rules! ids {
 }
 
 ids!(
-    BookableId, ClientId, ServiceId, OccurrenceId, EnrollmentId, ScheduleId,
+    BookableId, ClientId, ServiceId, ScheduleId,
     AppointmentId, HoldId, OccupancyId, PaymentMethodId, WaitlistEntryId
 );
 
@@ -168,42 +167,11 @@ pub struct Variant {
     pub price_micros: Option<Change<i64>>,
 }
 
-/// One dated instance of a class or event with shared capacity.
-#[derive(Debug, Serialize, Deserialize, Table)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "occurrences")]
-pub struct Occurrence {
-    pub org_id: Option<OrgId>,
-    /// IANA zone of the org when the occurrence was made.
-    pub tz: String,
-    pub service_id: ServiceId,
-    pub starts_at: DateTime<Utc>,
-    #[cfg_attr(feature = "postgres", sqlx(try_from = "i32"))]
-    pub capacity: u32,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub attributes: Attributes,
-}
-
-/// A client's fixed series of a recurring class.
-#[derive(Debug, Serialize, Deserialize, Table)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "enrollments")]
-pub struct Enrollment {
-    pub client_id: ClientId,
-    pub service_id: ServiceId,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub occurrences: Vec<OccurrenceId>,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub attributes: Attributes,
-}
-
 /// Persisted forms. Soft delete, `created_at` and `updated_at` come from `Entity`.
 pub type GroupingRow = Entity<Uuid, Grouping>;
 pub type BookableRow = Entity<BookableId, Bookable>;
 pub type ClientRow = Entity<ClientId, Client>;
 pub type ServiceRow = Entity<ServiceId, Service>;
-pub type OccurrenceRow = Entity<OccurrenceId, Occurrence>;
-pub type EnrollmentRow = Entity<EnrollmentId, Enrollment>;
 
 /// Ready-made services. Each returns an ordinary service of ordinary steps.
 pub trait Templates: Sized {

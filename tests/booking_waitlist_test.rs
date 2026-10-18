@@ -4,8 +4,7 @@ mod booking_support;
 
 use booking_support::*;
 use chrono::{Duration, Utc};
-use megh::booking::{ClientRow, OccurrenceId, Queue, Target, Waitlist, WaitlistEntry};
-use uuid::Uuid;
+use megh::booking::{ClientRow, Queue, Target, Waitlist, WaitlistEntry};
 use sqlx::PgPool;
 
 #[sqlx::test]
@@ -27,16 +26,4 @@ async fn the_waitlist_keeps_request_order_per_target(pool: PgPool) {
     queue.join(entry(&first, &elsewhere, 9)).await.unwrap();
     let waiting: Vec<_> = queue.waiting(&target).await.unwrap().into_iter().map(|row| row.client_id).collect();
     assert_eq!(waiting, vec![first.id, later.id]);
-}
-
-#[sqlx::test]
-async fn an_occurrence_has_its_own_queue(pool: PgPool) {
-    let (talk, other) = (Target::Occurrence(OccurrenceId(Uuid::new_v4())), Target::Occurrence(OccurrenceId(Uuid::new_v4())));
-    let guest = client(&pool).await;
-    let queue = Queue::new(pool.clone());
-    let entry = |target: &Target| WaitlistEntry { org_id: None, client_id: guest.id, target: target.clone(), requested_at: Utc::now(), attributes: Default::default() };
-    let joined = queue.join(entry(&talk)).await.unwrap();
-    assert_eq!(joined.client_id, guest.id);
-    assert_eq!(queue.waiting(&talk).await.unwrap().len(), 1);
-    assert!(queue.waiting(&other).await.unwrap().is_empty());
 }

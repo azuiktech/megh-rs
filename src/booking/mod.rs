@@ -3,6 +3,7 @@
 mod appointments;
 mod model;
 mod schedule;
+mod templates;
 
 pub use appointments::*;
 pub use model::*;

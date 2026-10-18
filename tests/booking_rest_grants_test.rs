@@ -116,3 +116,16 @@ async fn appointments_need_create_confirm_and_delete_grants_on_the_instance(pool
     assert_eq!(status(&app, "DELETE", &one, &format!("{read} appointments:read:{id}"), "").await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} appointments:read"), "").await, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn bookables_need_their_own_grants(pool: PgPool) {
+    let org = org(&pool, "clinic").await;
+    let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/bookables"));
+    let read = format!("orgs:read:{org}");
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), r#"{"display_name": "Room 1"}"#).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} schedules:create"), r#"{"display_name": "Room 1"}"#).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "GET", &collection, &format!("{read} bookables:read"), "").await, StatusCode::OK);
+    let id = Uuid::new_v4();
+    assert_eq!(status(&app, "PATCH", &format!("{collection}/{id}"), &format!("{read} bookables:update:{id}"), "{}").await, StatusCode::NOT_FOUND);
+    assert_eq!(status(&app, "PATCH", &format!("{collection}/{id}"), &read, "{}").await, StatusCode::FORBIDDEN);
+}

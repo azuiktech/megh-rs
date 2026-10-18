@@ -1,6 +1,6 @@
 # TPD — Generic Booking
 
-Status: design resolved (issue #78). **Section 20 is the latest revision and supersedes earlier sections where they conflict** (nomenclature, blockouts, time, search, API). Delivered as small separate PRs, see section 18. Written 2026-10-18 so a separate session can pick this up with nothing lost.
+Status: design resolved (issue #78). **Section 20 is the latest revision and supersedes earlier sections where they conflict** (nomenclature, blockouts, time, search, API). Delivered as small separate PRs, all merged (section 18). Written 2026-10-18 so a separate session can pick this up with nothing lost.
 
 **Relocation (2026-10-18).** The design was first drafted in the unrelated `trika-rs` project by mistake. It belongs here, in `megh-rs`. Everything below applies to megh-rs; trika-rs issue #352 and its draft crate are superseded by #78 and `src/booking`.
 
@@ -279,7 +279,7 @@ Each row is its own issue, branch and PR, merged before the next starts (the use
 
 | # | PR | Status |
 |---|---|---|
-| 0 | Design (this document), issue #78 | `[~]` |
+| 0 | Design (this document), issue #78 | `[x]` |
 | 1 | Core types, migration `0009_booking.sql`, `Table` mapping test (PR #82, issue #81) | `[x]` |
 | 2 | Service templates (PR #84, issue #83) | `[x]` |
 | 3 | Schedules, blockouts and availability (`Calendar`) (PR #86, issue #85) | `[x]` |
@@ -289,7 +289,7 @@ Each row is its own issue, branch and PR, merged before the next starts (the use
 | 7 | AIP-160 filter predicate (PR #94, issue #93) | `[x]` |
 | 8 | REST: schedules and blockouts (PR #96, issue #95) | `[x]` |
 | 9 | REST: `availability:search` (PR #98, issue #97) | `[x]` |
-| 10 | REST: appointments | `[ ]` |
+| 10 | REST: appointments (PR #100, issue #99) | `[x]` |
 
 ## 19. Persistence (migration `0009_booking.sql`, shipped in PR 1)
 
@@ -362,3 +362,10 @@ Bookables, services and clients: whether they get REST CRUD or are created by th
 **R10. Conventions of the REST layer as built** (PR 8). `booking_router(pool)` and `booking_router_with_csrf(pool, csrf)` return an axum `Router` with the full paths `/api/v1/org/{org_id}/...`; the application authenticates, puts a `Member` in the request extensions and applies `authorizer`. Writes are CSRF-protected like `events_router` (the stateless `tower-http` check). Per AIP: resource `name` (`org/{org_id}/schedules/{id}`) and `create_time`, `update_time`, `delete_time` (AIP-148), times in the org's zone with the offset, durations as `"3600s"` (AIP-142, parsed with `humantime`), `Get` of a deleted resource returns it with `delete_time` and `List` hides it unless `show_deleted=true` (AIP-164), `update_mask` on `PATCH` (AIP-134; without a mask the fields in the body), `filter` (AIP-160, the `Filter` predicate over the resource's JSON fields), `page_size` (default 50, at most 1000) and an opaque `page_token` (AIP-158), lists named after the collection with `next_page_token`, errors `{"error": {"code", "message", "status"}}` (AIP-193). A schedule or blockout belongs to the org of the path or to an org grouped under it, and its org, bookable and service must too. The time of a schedule is `recurrence` (RFC 5545 with `TZID`) and `span`, or the shorthand `days` or `date` with `start_time` and `end_time` in the org's time zone. Lists read the rows of the org's subtree and filter and page in memory.
 
 **R11. `availability:search` as built** (PR 9). `POST /api/v1/org/{org_id}/availability:search` takes `parties` (each with `client_id`, `seats` and `services`, each service with `service_id` and `wants`, a list of AIP-160 filters), `start_time` and `end_time` (a time with an offset, or local time read in the org's zone, at most 31 days apart), `party_offset`, `service_gap` and `slot_interval` (AIP-142 durations, defaults `0s`, `0s`, `900s`), `page_size` (default 20, at most 100; no page token, ask again from a later `start_time`) and `horizon_days` (default 180, at most 366). It answers `slots`, each with `start_time`, `end_time`, `price` as `google.type.Money`, `parties` (the start, end and price of each service) and `allocations`, and `next_available_day` (a local date, only when there are no slots). Services and clients must belong to the org's subtree or to no org, else `NOT_FOUND`. The grants are `org:read:{org_id}` and `availability:search`.
+
+**R12. Appointments over REST as built** (PR 10). One resource, `/api/v1/org/{org_id}/appointments`, with `state` `held`, `booked` or `cancelled`; the two Rust types (hold and appointment) stay behind it and a confirmed hold keeps its id.
+- `POST` with `state: "booked"` (needs `request_id` and `payer_id`; the same `request_id` returns the same appointment) or `state: "held"` (until `expire_time`, default 10 minutes, at most 24 hours; no payer, clients or payments yet). The body carries the `slot` exactly as `availability:search` returned it. **The server does not trust it**: it searches again for those parties and times and holds the slot it finds, so a crafted slot (another org's bookable, a shorter service, a time that is not open) is refused with `INVALID_ARGUMENT`.
+- `POST .../appointments/{id}:confirm` with `request_id`, `payer_id`, optional `clients`, `payments` (`{"method", "amount": {"uses": n}}` or `{"money": google.type.Money}`) and `attributes`. axum does not match a suffix after a path parameter, so the route is `{id}` and the handler reads the `:verb`; the authorizer reads it from the real path (`appointments:confirm:{id}`).
+- `GET` one (a released hold shows as `cancelled`; a hold that ran out is gone) or a list, which holds booked and held appointments, earliest first. Filter fields (AIP-160): `state`, `start_time`, `end_time` (RFC 3339 with the org's offset), `payer_id`, and the repeated `client_ids`, `service_ids`, `bookable_ids` (use `:`); `show_deleted=true` adds the cancelled ones. An org lists its own appointments and those of the orgs grouped under it.
+- `DELETE` cancels (soft delete) a booked appointment or releases a hold and returns the resource with `delete_time`.
+- Not done: `order_by`; a payment method's `eligible` condition is not checked at confirm; replaying a booked `POST` with the same `request_id` and a different body returns the original instead of an error; `updated` appointments (rescheduling) and `:undelete`.

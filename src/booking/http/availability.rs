@@ -10,12 +10,11 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::common::{instant, money, span_of, zone_of};
+use super::common::{check_scope, instant, money, span_of, zone_of};
 use super::error::ApiError;
-use super::{subtree, BookingState};
+use super::BookingState;
 use crate::booking::{
     ClientId, Condition, Filter, Interval, Party, Search, SearchRequest, ServiceId, ServiceWant, Slot, Slots,
 };
@@ -97,21 +96,6 @@ fn search_request(body: &SearchBody, org: Uuid, zone: Tz) -> Result<SearchReques
     })
 }
 
-/// The services and clients of the request must belong to the org or an org grouped under it, or to no org.
-async fn check_scope(pool: &PgPool, org: Uuid, request: &SearchRequest) -> Result<(), ApiError> {
-    let scope = subtree(pool, org).await?;
-    let services: Vec<Uuid> = request.parties.iter().flat_map(|party| party.services.iter().map(|want| want.service.0)).collect();
-    let clients: Vec<Uuid> = request.parties.iter().filter_map(|party| party.client.map(|client| client.0)).collect();
-    for (table, ids) in [("services", services), ("clients", clients)] {
-        let owners: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(&format!("SELECT id, org_id FROM {table} WHERE id = ANY($1) AND deleted_at IS NULL")).bind(&ids).fetch_all(pool).await?;
-        let missing = ids.iter().find(|id| !owners.iter().any(|(found, owner)| found == *id && owner.is_none_or(|owner| scope.contains(&owner))));
-        if let Some(id) = missing {
-            return Err(ApiError::not_found(format!("{table} {id} not found")));
-        }
-    }
-    Ok(())
-}
-
 fn local(time: DateTime<Utc>, zone: Tz) -> DateTime<Tz> {
     time.with_timezone(&zone)
 }
@@ -123,7 +107,7 @@ fn party_json(index: usize, request: &SearchRequest, slot: &Slot, zone: Tz) -> V
         .filter(|placement| placement.party == index)
         .map(|placement| json!({"service_id": placement.service, "start_time": local(placement.during.start, zone), "end_time": local(placement.during.end, zone), "price": money(&placement.price)}))
         .collect();
-    json!({"client_id": request.parties[index].client, "services": services})
+    json!({"client_id": request.parties[index].client, "seats": request.parties[index].seats, "services": services})
 }
 
 fn slot_json(slot: &Slot, request: &SearchRequest, zone: Tz) -> Value {

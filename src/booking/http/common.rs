@@ -9,7 +9,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::error::ApiError;
-use crate::booking::Price;
+use super::subtree;
+use crate::booking::{Price, SearchRequest};
 
 /// `3600s`, with a fraction when needed (AIP-142).
 pub(super) fn seconds(duration: Duration) -> String {
@@ -43,4 +44,19 @@ pub(super) fn instant(text: &str, zone: Tz) -> Result<DateTime<Utc>, ApiError> {
 pub(super) fn money(price: &Price) -> Value {
     let (units, micros) = (price.micros.div_euclid(1_000_000), price.micros.rem_euclid(1_000_000));
     json!({"currency_code": price.currency, "units": units.to_string(), "nanos": micros * 1000})
+}
+
+/// The services and clients of the request must belong to the org or an org grouped under it, or to no org.
+pub(super) async fn check_scope(pool: &PgPool, org: Uuid, request: &SearchRequest) -> Result<(), ApiError> {
+    let scope = subtree(pool, org).await?;
+    let services: Vec<Uuid> = request.parties.iter().flat_map(|party| party.services.iter().map(|want| want.service.0)).collect();
+    let clients: Vec<Uuid> = request.parties.iter().filter_map(|party| party.client.map(|client| client.0)).collect();
+    for (table, ids) in [("services", services), ("clients", clients)] {
+        let owners: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(&format!("SELECT id, org_id FROM {table} WHERE id = ANY($1) AND deleted_at IS NULL")).bind(&ids).fetch_all(pool).await?;
+        let missing = ids.iter().find(|id| !owners.iter().any(|(found, owner)| found == *id && owner.is_none_or(|owner| scope.contains(&owner))));
+        if let Some(id) = missing {
+            return Err(ApiError::not_found(format!("{table} {id} not found")));
+        }
+    }
+    Ok(())
 }

@@ -98,3 +98,21 @@ async fn searching_the_availability_needs_the_search_grant(pool: PgPool) {
     assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} availability:create"), body).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "POST", &uri, "availability:search", body).await, StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test]
+async fn appointments_need_create_confirm_and_delete_grants_on_the_instance(pool: PgPool) {
+    let org = org(&pool, "clinic").await;
+    let (app, id) = (app(pool), Uuid::new_v4());
+    let collection = format!("/api/v1/org/{org}/appointments");
+    let read = format!("org:read:{org}");
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} appointments:create"), "{}").await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(&app, "POST", &collection, &read, "{}").await, StatusCode::FORBIDDEN);
+    let confirm = format!("{collection}/{id}:confirm");
+    assert_eq!(status(&app, "POST", &confirm, &format!("{read} appointments:confirm:{id}"), "{}").await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(&app, "POST", &confirm, &format!("{read} appointments:confirm:{}", Uuid::new_v4()), "{}").await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "POST", &confirm, &format!("{read} appointments:create"), "{}").await, StatusCode::FORBIDDEN);
+    let one = format!("{collection}/{id}");
+    assert_eq!(status(&app, "DELETE", &one, &format!("{read} appointments:delete:{id}"), "").await, StatusCode::NOT_FOUND);
+    assert_eq!(status(&app, "DELETE", &one, &format!("{read} appointments:read:{id}"), "").await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "GET", &collection, &format!("{read} appointments:read"), "").await, StatusCode::OK);
+}

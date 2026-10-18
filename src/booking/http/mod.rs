@@ -6,11 +6,14 @@
 //! The router assumes the application authenticates the caller and applies [`crate::authorizer`], which derives
 //! the grants from the paths: `org:read:{org_id}` and then the resource and action of the route.
 
+mod appointments;
 mod availability;
 mod common;
 mod error;
 mod page;
 mod schedules;
+mod slot;
+mod view;
 
 use std::collections::HashMap;
 
@@ -36,6 +39,7 @@ pub fn booking_router(pool: PgPool) -> Router {
 
 pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
     Router::new()
+        .merge(appointments::routes())
         .merge(availability::routes())
         .merge(schedules::routes("schedules", Kind::Open))
         .merge(schedules::routes("blockouts", Kind::Blockout))

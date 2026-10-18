@@ -154,7 +154,7 @@ impl Collection for Services {
         Stamps { id: row.id.0, created: row.created_at, updated: row.updated_at, deleted: row.deleted_at }
     }
 
-    fn fields(row: &ServiceRow) -> Value {
+    fn fields(row: &ServiceRow, _: &Context) -> Value {
         let steps: Vec<Value> = row.steps.iter().map(step_json).collect();
         let variants: Vec<Value> = row.variants.iter().map(|v| variant_json(v, &row.price.currency)).collect();
         json!({"org_id": row.org_id, "display_name": row.name, "mode": row.mode, "price": money(&row.price), "steps": steps, "variants": variants, "attributes": row.attributes})

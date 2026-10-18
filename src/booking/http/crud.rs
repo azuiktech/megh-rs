@@ -57,7 +57,7 @@ pub(super) trait Collection: 'static {
 
     fn stamps(row: &Self::Row) -> Stamps;
     /// The fields of the resource other than `name`, `id` and the times.
-    fn fields(row: &Self::Row) -> Value;
+    fn fields(row: &Self::Row, ctx: &Context) -> Value;
     fn create(ctx: &Context, body: Self::Body) -> impl Future<Output = Result<Self::Row, ApiError>> + Send;
     /// The row after the update: same id and `created_at`, new data.
     fn update(ctx: &Context, current: &Self::Row, body: Self::Body, mask: &Mask) -> impl Future<Output = Result<Self::Row, ApiError>> + Send;
@@ -82,7 +82,7 @@ async fn context(state: &BookingState, org: Uuid) -> Result<Context, ApiError> {
 
 fn resource<C: Collection>(row: &C::Row, ctx: &Context) -> Value {
     let (stamps, local) = (C::stamps(row), |time: DateTime<Utc>| time.with_timezone(&ctx.zone));
-    let mut fields = match C::fields(row) {
+    let mut fields = match C::fields(row, ctx) {
         Value::Object(fields) => fields,
         _ => Map::new(),
     };

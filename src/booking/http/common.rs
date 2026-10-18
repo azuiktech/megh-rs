@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::error::ApiError;
 use super::subtree;
-use crate::booking::{Price, SearchRequest};
+use crate::booking::{Amount, Price, SearchRequest};
 
 /// `3600s`, with a fraction when needed (AIP-142).
 pub(super) fn seconds(duration: Duration) -> String {
@@ -77,5 +77,29 @@ impl MoneyBody {
         let units: i64 = self.units.parse().map_err(|_| bad())?;
         let micros = units.checked_mul(1_000_000).and_then(|whole| whole.checked_add(self.nanos / 1000)).filter(|micros| *micros >= 0 && self.nanos % 1000 == 0).ok_or_else(bad)?;
         Ok(Price { micros, currency: self.currency_code.clone() })
+    }
+}
+
+/// What a payment or a balance is: a number of uses, or money.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum AmountBody {
+    Uses(u32),
+    Money(MoneyBody),
+}
+
+impl AmountBody {
+    pub(super) fn amount(&self) -> Result<Amount, ApiError> {
+        match self {
+            Self::Uses(uses) => Ok(Amount::Uses(*uses)),
+            Self::Money(money) => Ok(Amount::Money(money.price()?)),
+        }
+    }
+}
+
+pub(super) fn amount_json(amount: &Amount) -> Value {
+    match amount {
+        Amount::Uses(uses) => json!({"uses": uses}),
+        Amount::Money(price) => json!({"money": money(price)}),
     }
 }

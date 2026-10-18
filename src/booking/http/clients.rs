@@ -43,7 +43,7 @@ impl Collection for Clients {
         Stamps { id: row.id.0, created: row.created_at, updated: row.updated_at, deleted: row.deleted_at }
     }
 
-    fn fields(row: &ClientRow) -> Value {
+    fn fields(row: &ClientRow, _: &Context) -> Value {
         json!({"org_id": row.org_id, "display_name": row.name, "attributes": row.attributes})
     }
 

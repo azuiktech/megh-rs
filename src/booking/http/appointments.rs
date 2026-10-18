@@ -17,14 +17,14 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::common::{instant, zone_of, MoneyBody};
+use super::common::{instant, zone_of, AmountBody};
 use super::error::ApiError;
 use super::page::{page, ListQuery};
 use super::slot::{verified, SlotBody};
 use super::view;
 use super::{subtree, BookingState};
 use crate::booking::{
-    Amount, AppointmentId, AppointmentRow, Appointments, Attributes, ClientId, Confirmation, Error, HoldId, HoldRow, IdempotencyKey, PaymentMethodId, Reservations,
+    AppointmentId, AppointmentRow, Appointments, Attributes, ClientId, Confirmation, Error, HoldId, HoldRow, IdempotencyKey, PaymentMethodId, Reservations,
 };
 use crate::TableEntity;
 
@@ -36,13 +36,6 @@ const LONGEST_HOLD_HOURS: i64 = 24;
 enum StateBody {
     Held,
     Booked,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum AmountBody {
-    Uses(u32),
-    Money(MoneyBody),
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,15 +75,8 @@ pub(super) fn routes() -> Router<BookingState> {
         .route(&format!("{collection}/{{id}}"), get(read).delete(cancel).post(custom_method))
 }
 
-fn amount(body: &AmountBody) -> Result<Amount, ApiError> {
-    match body {
-        AmountBody::Uses(uses) => Ok(Amount::Uses(*uses)),
-        AmountBody::Money(money) => Ok(Amount::Money(money.price()?)),
-    }
-}
-
 fn confirmation(clients: Option<Vec<ClientId>>, payer: ClientId, payments: Option<Vec<PaymentBody>>, attributes: Option<Attributes>) -> Result<Confirmation, ApiError> {
-    let payments = payments.iter().flatten().map(|p| Ok(crate::booking::Payment { method: p.method, amount: amount(&p.amount)? })).collect::<Result<_, ApiError>>()?;
+    let payments = payments.iter().flatten().map(|p| Ok(crate::booking::Payment { method: p.method, amount: p.amount.amount()? })).collect::<Result<_, ApiError>>()?;
     Ok(Confirmation { clients: clients.unwrap_or_default(), payer, payments, attributes: attributes.unwrap_or_default() })
 }
 

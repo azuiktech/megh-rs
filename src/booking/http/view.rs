@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::common::{money, seconds};
+use super::common::{amount_json, money, seconds};
 use super::error::ApiError;
 use crate::booking::{AppointmentRow, HoldRow, OccupancyRow, Payment};
 
@@ -42,10 +42,7 @@ fn ids<T: serde::Serialize>(ids: impl Iterator<Item = T>) -> Vec<Value> {
 }
 
 fn payments(payments: &[Payment]) -> Vec<Value> {
-    payments.iter().map(|payment| json!({"method": payment.method, "amount": match &payment.amount {
-        crate::booking::Amount::Uses(uses) => json!({"uses": uses}),
-        crate::booking::Amount::Money(price) => json!({"money": money(price)}),
-    }})).collect()
+    payments.iter().map(|payment| json!({"method": payment.method, "amount": amount_json(&payment.amount)})).collect()
 }
 
 /// The appointment as a resource: `state` is `booked`, or `cancelled` once deleted.

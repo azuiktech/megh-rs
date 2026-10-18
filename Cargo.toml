@@ -45,6 +45,8 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc"]
 rrule = "0.14"
 rangemap = "1.8"
 petgraph = "0.8"
+itertools = "0.15"
+chrono-tz = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

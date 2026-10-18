@@ -56,7 +56,10 @@ impl From<Error> for ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(error: sqlx::Error) -> Self {
-        Error::Database(error).into()
+        match error.as_database_error().is_some_and(|database| database.is_unique_violation()) {
+            true => Self::new(StatusCode::CONFLICT, "ALREADY_EXISTS", "it exists already"),
+            false => Error::Database(error).into(),
+        }
     }
 }
 

@@ -161,3 +161,14 @@ async fn payment_methods_need_their_own_grants(pool: PgPool) {
     assert_eq!(status(&app, "POST", &collection, &format!("{read} services:create"), body).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} paymentmethods:read"), "").await, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn groupings_need_their_own_grants(pool: PgPool) {
+    let (brand, location) = (org(&pool, "brand").await, org(&pool, "location").await);
+    let (app, collection) = (app(pool), format!("/api/v1/orgs/{location}/groupings"));
+    let read = format!("orgs:read:{location}");
+    let body = format!(r#"{{"kind": "org", "member_id": "{location}", "group_id": "{brand}"}}"#);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} schedules:create"), &body).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} groupings:create"), &body).await, StatusCode::OK);
+    assert_eq!(status(&app, "GET", &collection, &format!("{read} groupings:read"), "").await, StatusCode::OK);
+}

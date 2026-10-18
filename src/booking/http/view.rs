@@ -20,6 +20,12 @@ fn local(time: DateTime<Utc>, zone: Tz) -> DateTime<Tz> {
     time.with_timezone(&zone)
 }
 
+/// The occupancies a resource shows: those it holds now, and, once it is deleted, those deleted with it (not those
+/// left behind when it was moved).
+fn current<'a>(occupancies: &[&'a OccupancyRow], deleted: Option<DateTime<Utc>>) -> Vec<&'a OccupancyRow> {
+    occupancies.iter().copied().filter(|o| o.deleted_at.is_none() || o.deleted_at == deleted).collect()
+}
+
 fn allocations(occupancies: &[&OccupancyRow], zone: Tz) -> Vec<Value> {
     occupancies
         .iter()
@@ -48,6 +54,7 @@ fn payments(payments: &[Payment]) -> Vec<Value> {
 /// The appointment as a resource: `state` is `booked`, or `cancelled` once deleted.
 pub(super) fn appointment(row: &AppointmentRow, occupancies: &[&OccupancyRow], org: Uuid) -> Value {
     let zone = zone_of(&row.tz);
+    let occupancies = &current(occupancies, row.deleted_at)[..];
     let (start, end) = span(occupancies, zone);
     let lines: Vec<Value> = row.lines.iter().map(|l| json!({"client_id": l.client, "service_id": l.service, "seats": l.seats, "duration": seconds(l.duration), "price": money(&l.price)})).collect();
     json!({
@@ -73,6 +80,7 @@ pub(super) fn appointment(row: &AppointmentRow, occupancies: &[&OccupancyRow], o
 /// The hold as a resource: `state` is `held` until it is confirmed (then it is the appointment) or deleted.
 pub(super) fn hold(row: &HoldRow, occupancies: &[&OccupancyRow], org: Uuid) -> Value {
     let zone = zone_of(&row.tz);
+    let occupancies = &current(occupancies, row.deleted_at)[..];
     let (start, end) = span(occupancies, zone);
     let lines: Vec<Value> = row
         .placements

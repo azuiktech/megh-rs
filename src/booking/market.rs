@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use super::rules::Rules;
 use super::busy::busy;
@@ -103,12 +104,13 @@ fn in_scope(orgs: &Groups, root: Option<OrgId>, bookable: &BookableRow) -> Resul
 }
 
 impl Market {
-    pub(super) async fn load(pool: &PgPool, request: &SearchRequest) -> Result<Self> {
+    /// `ignoring` is an appointment or hold whose own time counts for nothing: the one being moved.
+    pub(super) async fn load(pool: &PgPool, request: &SearchRequest, ignoring: Option<Uuid>) -> Result<Self> {
         let all: Vec<BookableRow> = sqlx::query_as("SELECT * FROM bookables WHERE deleted_at IS NULL ORDER BY created_at, id").fetch_all(pool).await?;
         let orgs = Groups::load(pool, Grouped::Org).await?;
         let scoped: Vec<_> = all.into_iter().map(|bookable| Ok((in_scope(&orgs, request.org, &bookable)?, bookable))).collect::<Result<_>>()?;
         let bookables: Vec<BookableRow> = scoped.into_iter().filter(|(inside, _)| *inside).map(|(_, bookable)| bookable).collect();
-        let taken = Self::taken(pool, &request.within).await?;
+        let taken = Self::taken(pool, &request.within, ignoring).await?;
         let rules = Rules::load(pool).await?;
         let services: Vec<ServiceId> = request.parties.iter().flat_map(|party| party.services.iter().map(|want| want.service)).unique().collect();
         let open = bookables
@@ -121,14 +123,15 @@ impl Market {
             .collect::<Result<_>>()?;
         let (services, clients) = (Self::services(pool, request).await?, Self::clients(pool, request).await?);
         let named: Vec<ClientId> = request.parties.iter().filter_map(|party| party.client).collect();
-        Ok(Self { bookables, services, clients, taken, open, busy: busy(pool, &named).await?, within: request.within })
+        Ok(Self { bookables, services, clients, taken, open, busy: busy(pool, &named, ignoring).await?, within: request.within })
     }
 
     /// Occupancies of live appointments and of holds that have not expired.
-    async fn taken(pool: &PgPool, within: &Interval) -> Result<Vec<OccupancyRow>> {
+    async fn taken(pool: &PgPool, within: &Interval, ignoring: Option<Uuid>) -> Result<Vec<OccupancyRow>> {
         let query = "SELECT o.* FROM occupancies o LEFT JOIN holds h ON h.id = o.hold_id
-            WHERE o.deleted_at IS NULL AND o.starts_at < $2 AND o.ends_at > $1 AND (o.appointment_id IS NOT NULL OR (h.deleted_at IS NULL AND h.expires_at > now()))";
-        Ok(sqlx::query_as(query).bind(within.start).bind(within.end).fetch_all(pool).await?)
+            WHERE o.deleted_at IS NULL AND o.starts_at < $2 AND o.ends_at > $1 AND (o.appointment_id IS NOT NULL OR (h.deleted_at IS NULL AND h.expires_at > now()))
+            AND ($3::uuid IS NULL OR COALESCE(o.appointment_id, o.hold_id) <> $3)";
+        Ok(sqlx::query_as(query).bind(within.start).bind(within.end).bind(ignoring).fetch_all(pool).await?)
     }
 
     async fn services(pool: &PgPool, request: &SearchRequest) -> Result<HashMap<ServiceId, Arc<ServiceRow>>> {

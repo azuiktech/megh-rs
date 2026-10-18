@@ -215,6 +215,10 @@ pub trait Appointments {
     async fn hold(&self, request: &SearchRequest, slot: &Slot, until: DateTime<Utc>) -> Result<HoldRow>;
     async fn confirm(&self, hold: HoldId, confirmation: Confirmation, key: IdempotencyKey) -> Result<AppointmentRow>;
     async fn cancel(&self, booking: AppointmentId) -> Result<()>;
+
+    /// Moves a booked or held appointment to another slot for the same clients and services: same id, payer and
+    /// payments; its own time counts for nothing while the new slot is checked, so it may overlap its old time.
+    async fn reschedule(&self, appointment: AppointmentId, request: &SearchRequest, slot: &Slot) -> Result<()>;
 }
 
 #[allow(async_fn_in_trait)]

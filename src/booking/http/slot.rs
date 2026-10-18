@@ -108,12 +108,17 @@ fn same_times(slot: &Slot, claimed: &[Vec<(ServiceId, Interval)>]) -> bool {
 }
 
 /// The search request of the claim, and the server's own slot that matches it, or `Invalid` when there is none.
-pub(super) async fn verified(pool: &PgPool, org: Uuid, zone: Tz, body: &SlotBody) -> Result<(SearchRequest, Slot), ApiError> {
+/// `ignoring` is the appointment being moved, whose own time counts for nothing.
+pub(super) async fn verified(pool: &PgPool, org: Uuid, zone: Tz, body: &SlotBody, ignoring: Option<Uuid>) -> Result<(SearchRequest, Slot), ApiError> {
     let (claimed, allocations) = (claimed_services(body, zone)?, claimed_allocations(body, zone)?);
     let request = request_for(body, &claimed, org)?;
     check_scope(pool, org, &request).await?;
     let wanted = sorted(allocations);
-    let found = Slots::new(pool.clone()).find(&request).await?;
+    let slots = Slots::new(pool.clone());
+    let found = match ignoring {
+        Some(id) => slots.find_ignoring(&request, id).await?,
+        None => slots.find(&request).await?,
+    };
     let slot = found.into_iter().find(|slot| same_times(slot, &claimed) && sorted(slot.allocations.clone()) == wanted);
     slot.map(|slot| (request, slot)).ok_or_else(|| ApiError::invalid("the slot is not available any more; search again"))
 }

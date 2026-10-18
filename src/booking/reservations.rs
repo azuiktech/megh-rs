@@ -12,7 +12,7 @@ use super::times::{clash, covers};
 use super::{
     Allocation, Amount, Appointment, AppointmentId, AppointmentRow, Appointments, Attributes, Axes, BookableId, BookableRow, BookedLine, ClientId,
     Confirmation, Engagement, Error, HoldId, HoldRow, IdempotencyKey, Interval, OrgId, Party, Payment, PaymentMethodId, PaymentMethodRow, Price, Reservations, Result,
-    SearchRequest, ServiceRow, Settlement, Slot,
+    SearchRequest, ServiceId, ServiceRow, Settlement, Slot,
 };
 use crate::TableEntity;
 
@@ -20,7 +20,8 @@ type Tx<'a> = Transaction<'a, Postgres>;
 
 const ACTIVE_SEATS: &str = "SELECT COALESCE(SUM(o.seats), 0)::BIGINT FROM occupancies o LEFT JOIN holds h ON h.id = o.hold_id
     WHERE o.bookable_id = $1 AND o.engagement = 'engaged' AND o.deleted_at IS NULL AND o.starts_at < $3 AND o.ends_at > $2
-    AND (o.appointment_id IS NOT NULL OR (h.deleted_at IS NULL AND h.expires_at > now()))";
+    AND (o.appointment_id IS NOT NULL OR (h.deleted_at IS NULL AND h.expires_at > now()))
+    AND ($4::uuid IS NULL OR COALESCE(o.appointment_id, o.hold_id) <> $4)";
 
 fn invalid(error: serde_json::Error) -> Error {
     Error::Invalid(error.to_string())
@@ -50,8 +51,8 @@ fn is_open(rules: &Rules, bookable: &BookableRow, request: &SearchRequest, alloc
     Ok(opened.collect::<Result<Vec<_>>>()?.into_iter().any(|open| open))
 }
 
-async fn seats_taken(connection: &mut PgConnection, bookable: BookableId, during: &Interval) -> Result<i64> {
-    Ok(sqlx::query_scalar(ACTIVE_SEATS).bind(bookable).bind(during.start).bind(during.end).fetch_one(connection).await?)
+async fn seats_taken(connection: &mut PgConnection, bookable: BookableId, during: &Interval, ignoring: Option<Uuid>) -> Result<i64> {
+    Ok(sqlx::query_scalar(ACTIVE_SEATS).bind(bookable).bind(during.start).bind(during.end).bind(ignoring).fetch_one(connection).await?)
 }
 
 fn overlapping(left: &Allocation, right: &Allocation) -> bool {
@@ -59,9 +60,9 @@ fn overlapping(left: &Allocation, right: &Allocation) -> bool {
 }
 
 /// A client named by the request must be free for the times held for them.
-async fn check_clients(pool: &PgPool, request: &SearchRequest, slot: &Slot) -> Result<()> {
+async fn check_clients(pool: &PgPool, request: &SearchRequest, slot: &Slot, ignoring: Option<Uuid>) -> Result<()> {
     let named: Vec<ClientId> = request.parties.iter().filter_map(|party| party.client).collect();
-    let calendars = busy(pool, &named).await?;
+    let calendars = busy(pool, &named, ignoring).await?;
     let taken = slot.placements.iter().find_map(|placement| {
         let client = request.parties.get(placement.party)?.client?;
         calendars.get(&client).filter(|calendar| clash(calendar, &placement.during)).map(|_| client)
@@ -69,7 +70,7 @@ async fn check_clients(pool: &PgPool, request: &SearchRequest, slot: &Slot) -> R
     taken.map_or(Ok(()), |client| Err(Error::ClientBusy(client)))
 }
 
-async fn admit(tx: &mut Tx<'_>, rules: &Rules, request: &SearchRequest, slot: &Slot, bookables: &[BookableRow]) -> Result<()> {
+async fn admit(tx: &mut Tx<'_>, rules: &Rules, request: &SearchRequest, slot: &Slot, bookables: &[BookableRow], ignoring: Option<Uuid>) -> Result<()> {
     for (index, allocation) in slot.allocations.iter().enumerate().filter(|(_, a)| engaged(a)) {
         let bookable = bookables.iter().find(|b| b.id == allocation.bookable).ok_or(Error::NotFound)?;
         if !is_open(rules, bookable, request, allocation)? {
@@ -77,7 +78,7 @@ async fn admit(tx: &mut Tx<'_>, rules: &Rules, request: &SearchRequest, slot: &S
             return Err(Error::NotOpen(Axes { org: bookable.org_id, service, bookable: bookable.id }));
         }
         let earlier: i64 = slot.allocations[..index].iter().filter(|a| engaged(a) && overlapping(a, allocation)).map(|a| i64::from(a.seats)).sum();
-        if seats_taken(tx.as_mut(), bookable.id, &allocation.during).await? + earlier + i64::from(allocation.seats) > i64::from(bookable.capacity) {
+        if seats_taken(tx.as_mut(), bookable.id, &allocation.during, ignoring).await? + earlier + i64::from(allocation.seats) > i64::from(bookable.capacity) {
             return Err(Error::Occupied(bookable.id));
         }
     }
@@ -220,13 +221,61 @@ async fn hand_over(tx: &mut Tx<'_>, hold: HoldId, appointment: AppointmentId) ->
     Ok(())
 }
 
+/// What can be moved: a booked appointment, or a hold that has not run out.
+enum Movable {
+    Booked(AppointmentRow),
+    Held(HoldRow),
+}
+
+async fn movable(tx: &mut Tx<'_>, id: Uuid) -> Result<Movable> {
+    let booked: Option<AppointmentRow> = sqlx::query_as("SELECT * FROM appointments WHERE id = $1 AND deleted_at IS NULL FOR UPDATE").bind(id).fetch_optional(tx.as_mut()).await?;
+    match booked {
+        Some(row) => Ok(Movable::Booked(row)),
+        None => Ok(Movable::Held(live_hold(tx, HoldId(id)).await?)),
+    }
+}
+
+/// The clients of the new placements, matched with those the appointment has: the same services for the same people.
+fn same_people(old: &[(ClientId, ServiceId)], request: &SearchRequest, slot: &Slot) -> Result<Vec<ClientId>> {
+    let mut unmatched: Vec<(ClientId, ServiceId)> = old.to_vec();
+    let mismatch = || Error::Invalid("the new slot is for other services or clients than the appointment".into());
+    let chosen = slot.placements.iter().map(|placement| {
+        let named = request.parties.get(placement.party).and_then(|party| party.client);
+        let found = unmatched.iter().position(|(client, service)| *service == placement.service && named.is_none_or(|named| named == *client)).ok_or_else(mismatch)?;
+        Ok(unmatched.remove(found).0)
+    });
+    let clients: Vec<ClientId> = chosen.collect::<Result<_>>()?;
+    unmatched.is_empty().then_some(clients).ok_or_else(mismatch)
+}
+
+fn lines_of(request: &SearchRequest, slot: &Slot, clients: &[ClientId]) -> Result<Vec<BookedLine>> {
+    slot.placements
+        .iter()
+        .zip(clients)
+        .map(|(placement, client)| {
+            let seats = request.parties.get(placement.party).map(|party| party.seats).ok_or(Error::NotFound)?;
+            let duration = (placement.during.end - placement.during.start).to_std().map_err(|error| Error::Invalid(error.to_string()))?;
+            Ok(BookedLine { client: *client, service: placement.service, seats, during: placement.during, duration, price: placement.price.clone() })
+        })
+        .collect()
+}
+
+/// The old occupancies are deleted (never removed) and the new ones made, for the same owner.
+async fn move_occupancies(tx: &mut Tx<'_>, id: Uuid, owner: (Option<HoldId>, Option<AppointmentId>), slot: &Slot) -> Result<()> {
+    sqlx::query("UPDATE occupancies SET deleted_at = now(), updated_at = now() WHERE (appointment_id = $1 OR hold_id = $1) AND deleted_at IS NULL").bind(id).execute(tx.as_mut()).await?;
+    for allocation in &slot.allocations {
+        insert_occupancy(tx, owner, allocation).await?;
+    }
+    Ok(())
+}
+
 impl Appointments for Reservations {
     async fn hold(&self, request: &SearchRequest, slot: &Slot, until: DateTime<Utc>) -> Result<HoldRow> {
         let rules = Rules::load(&self.pool).await?;
         let mut tx = self.pool.begin().await?;
         let bookables = lock_bookables(&mut tx, slot).await?;
-        check_clients(&self.pool, request, slot).await?;
-        admit(&mut tx, &rules, request, slot, &bookables).await?;
+        check_clients(&self.pool, request, slot, None).await?;
+        admit(&mut tx, &rules, request, slot, &bookables, None).await?;
         let id = insert_hold(&mut tx, request, slot, until, bookables.first().map(|b| b.org_id)).await?;
         let row: HoldRow = sqlx::query_as("SELECT * FROM holds WHERE id = $1").bind(id).fetch_one(tx.as_mut()).await?;
         tx.commit().await?;
@@ -266,5 +315,36 @@ impl Appointments for Reservations {
         let row: Option<AppointmentRow> = sqlx::query_as("SELECT * FROM appointments WHERE id = $1 AND deleted_at IS NULL").bind(appointment).fetch_optional(&self.pool).await?;
         let deleted = row.ok_or(Error::NotFound)?.soft_delete(&self.pool).await?;
         deleted.map(|_| ()).ok_or(Error::NotFound)
+    }
+
+    async fn reschedule(&self, appointment: AppointmentId, request: &SearchRequest, slot: &Slot) -> Result<()> {
+        let (id, rules) = (appointment.0, Rules::load(&self.pool).await?);
+        let mut tx = self.pool.begin().await?;
+        let target = movable(&mut tx, id).await?;
+        let bookables = lock_bookables(&mut tx, slot).await?;
+        check_clients(&self.pool, request, slot, Some(id)).await?;
+        admit(&mut tx, &rules, request, slot, &bookables, Some(id)).await?;
+        match target {
+            Movable::Booked(row) => {
+                let old: Vec<_> = row.lines.iter().map(|line| (line.client, line.service)).collect();
+                let lines = lines_of(request, slot, &same_people(&old, request, slot)?)?;
+                move_occupancies(&mut tx, id, (None, Some(appointment)), slot).await?;
+                sqlx::query("UPDATE appointments SET lines = $2, updated_at = now() WHERE id = $1").bind(id).bind(Json(lines)).execute(tx.as_mut()).await?;
+            }
+            Movable::Held(row) => {
+                let services = |placements: &[crate::booking::Placement]| -> Vec<ServiceId> {
+                    let mut found: Vec<ServiceId> = placements.iter().map(|placement| placement.service).collect();
+                    found.sort();
+                    found
+                };
+                if services(&row.placements) != services(&slot.placements) {
+                    return Err(Error::Invalid("the new slot is for other services than the held appointment".into()));
+                }
+                move_occupancies(&mut tx, id, (Some(HoldId(id)), None), slot).await?;
+                sqlx::query("UPDATE holds SET placements = $2, updated_at = now() WHERE id = $1").bind(id).bind(Json(&slot.placements)).execute(tx.as_mut()).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(())
     }
 }

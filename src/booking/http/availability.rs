@@ -33,6 +33,8 @@ struct SearchBody {
     slot_interval: Option<String>,
     page_size: Option<u32>,
     horizon_days: Option<u32>,
+    /// The appointment (or held appointment) being moved: its own time counts for nothing in this search.
+    reschedule: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,7 +138,10 @@ async fn search(
     let request = search_request(&body, org, zone)?;
     check_scope(&state.pool, org, &request).await?;
     let slots = Slots::new(state.pool.clone());
-    let found = slots.find(&request).await?;
+    let found = match body.reschedule {
+        Some(id) => slots.find_ignoring(&request, id).await?,
+        None => slots.find(&request).await?,
+    };
     let next = match found.is_empty() {
         true => slots.next_day(&request, body.horizon_days.unwrap_or(180).min(366)).await?,
         false => None,

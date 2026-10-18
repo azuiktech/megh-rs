@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use super::times::{insert, Times};
 use super::{AppointmentRow, ClientId, HoldRow, Result};
@@ -12,13 +13,13 @@ fn add(calendars: &mut HashMap<ClientId, Times>, client: ClientId, during: &supe
 }
 
 /// When each of the clients is booked, by a live appointment, or held, by a hold that has not expired.
-pub(super) async fn busy(pool: &PgPool, clients: &[ClientId]) -> Result<HashMap<ClientId, Times>> {
+pub(super) async fn busy(pool: &PgPool, clients: &[ClientId], ignoring: Option<Uuid>) -> Result<HashMap<ClientId, Times>> {
     if clients.is_empty() {
         return Ok(HashMap::new());
     }
     let names: Vec<String> = clients.iter().map(|client| client.0.to_string()).collect();
-    let booked: Vec<AppointmentRow> = sqlx::query_as("SELECT * FROM appointments a WHERE a.deleted_at IS NULL AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.lines) l WHERE l->>'client' = ANY($1))").bind(&names).fetch_all(pool).await?;
-    let held: Vec<HoldRow> = sqlx::query_as("SELECT * FROM holds h WHERE h.deleted_at IS NULL AND h.expires_at > now() AND EXISTS (SELECT 1 FROM jsonb_array_elements(h.parties) p WHERE p->>'client' = ANY($1))").bind(&names).fetch_all(pool).await?;
+    let booked: Vec<AppointmentRow> = sqlx::query_as("SELECT * FROM appointments a WHERE a.deleted_at IS NULL AND ($2::uuid IS NULL OR a.id <> $2) AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.lines) l WHERE l->>'client' = ANY($1))").bind(&names).bind(ignoring).fetch_all(pool).await?;
+    let held: Vec<HoldRow> = sqlx::query_as("SELECT * FROM holds h WHERE h.deleted_at IS NULL AND h.expires_at > now() AND ($2::uuid IS NULL OR h.id <> $2) AND EXISTS (SELECT 1 FROM jsonb_array_elements(h.parties) p WHERE p->>'client' = ANY($1))").bind(&names).bind(ignoring).fetch_all(pool).await?;
     let mut calendars = HashMap::new();
     booked.iter().flat_map(|row| row.lines.iter()).filter(|line| clients.contains(&line.client)).for_each(|line| add(&mut calendars, line.client, &line.during));
     for hold in &held {

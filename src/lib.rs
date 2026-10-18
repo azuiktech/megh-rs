@@ -84,5 +84,8 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(include_str!("../migrations/0010_holds_placements.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!("../migrations/0011_groupings_org.sql"))
+        .execute(pool)
+        .await?;
     Ok(())
 }

@@ -13,6 +13,7 @@ mod clients;
 mod common;
 mod crud;
 mod error;
+mod groupings;
 mod page;
 mod payment_methods;
 mod schedules;
@@ -49,6 +50,7 @@ pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
         .merge(crud::routes::<clients::Clients>())
         .merge(crud::routes::<services::Services>())
         .merge(crud::routes::<payment_methods::PaymentMethods>())
+        .merge(crud::routes_unchangeable::<groupings::Groupings>())
         .merge(availability::routes())
         .merge(schedules::routes("schedules", Kind::Open))
         .merge(schedules::routes("blockouts", Kind::Blockout))

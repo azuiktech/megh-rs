@@ -54,6 +54,7 @@ pub enum Grouped {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "groupings")]
 pub struct Grouping {
+    pub org_id: Option<OrgId>,
     pub kind: Grouped,
     pub member_id: Uuid,
     pub group_id: Uuid,

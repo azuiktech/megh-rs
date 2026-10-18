@@ -84,7 +84,7 @@ pub async fn org(pool: &PgPool, name: &str) -> Uuid {
 }
 
 pub async fn group(pool: &PgPool, kind: Grouped, member: Uuid, group: Uuid) {
-    GroupingRow::new(Uuid::new_v4(), Grouping { kind, member_id: member, group_id: group }).insert(pool).await.unwrap();
+    GroupingRow::new(Uuid::new_v4(), Grouping { org_id: None, kind, member_id: member, group_id: group }).insert(pool).await.unwrap();
 }
 
 pub async fn bookable(pool: &PgPool, org: Uuid, name: &str, capacity: u32, tags: &[(&str, &str)]) -> BookableRow {

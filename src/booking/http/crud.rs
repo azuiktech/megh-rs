@@ -71,9 +71,16 @@ struct UpdateQuery {
     update_mask: Option<String>,
 }
 
+/// Get, List, Create, Update and Delete.
 pub(super) fn routes<C: Collection>() -> Router<BookingState> {
     let collection = format!("/api/v1/orgs/{{org_id}}/{}", C::NAME);
     Router::new().route(&collection, get(list::<C>).post(create::<C>)).route(&format!("{collection}/{{id}}"), get(read::<C>).patch(update::<C>).delete(remove::<C>))
+}
+
+/// Get, List, Create and Delete, for rows that are made and unmade, never changed.
+pub(super) fn routes_unchangeable<C: Collection>() -> Router<BookingState> {
+    let collection = format!("/api/v1/orgs/{{org_id}}/{}", C::NAME);
+    Router::new().route(&collection, get(list::<C>).post(create::<C>)).route(&format!("{collection}/{{id}}"), get(read::<C>).delete(remove::<C>))
 }
 
 async fn context(state: &BookingState, org: Uuid) -> Result<Context, ApiError> {

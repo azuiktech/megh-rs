@@ -52,7 +52,7 @@ async fn bookables_clients_and_services_round_trip(pool: PgPool) {
 async fn schedules_and_groupings_round_trip(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
     let org = org(&pool).await;
-    GroupingRow::new(Uuid::new_v4(), Grouping { kind: Grouped::Org, member_id: org, group_id: Uuid::new_v4() }).insert(&pool).await.unwrap();
+    GroupingRow::new(Uuid::new_v4(), Grouping { org_id: Some(org), kind: Grouped::Org, member_id: org, group_id: Uuid::new_v4() }).insert(&pool).await.unwrap();
     let schedule = Schedule {
         org_id: Some(org),
         service_id: None,

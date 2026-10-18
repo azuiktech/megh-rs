@@ -20,3 +20,11 @@ pub(crate) fn times<'a>(intervals: impl IntoIterator<Item = &'a Interval>) -> Ti
 pub(crate) fn intervals(times: &Times) -> Vec<Interval> {
     times.iter().map(|range| Interval { start: range.start, end: range.end }).collect()
 }
+
+pub(crate) fn covers(times: &Times, needed: &Interval) -> bool {
+    times.gaps(&range(needed)).next().is_none()
+}
+
+pub(crate) fn overlap(left: &Interval, right: &Interval) -> bool {
+    times([left]).overlaps(&range(right))
+}

@@ -3,11 +3,12 @@
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::types::Json;
-use sqlx::{PgConnection, Postgres, Transaction};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use super::busy::busy;
 use super::rules::Rules;
-use super::times::covers;
+use super::times::{clash, covers};
 use super::{
     Allocation, Amount, Appointment, AppointmentId, AppointmentRow, Appointments, Attributes, Axes, BookableId, BookableRow, BookedLine, ClientId,
     Confirmation, Engagement, Error, HoldId, HoldRow, IdempotencyKey, Interval, OrgId, Party, Payment, PaymentMethodRow, Price, Reservations, Result,
@@ -55,6 +56,17 @@ async fn seats_taken(connection: &mut PgConnection, bookable: BookableId, during
 
 fn overlapping(left: &Allocation, right: &Allocation) -> bool {
     left.bookable == right.bookable && left.during.start < right.during.end && right.during.start < left.during.end
+}
+
+/// A client named by the request must be free for the times held for them.
+async fn check_clients(pool: &PgPool, request: &SearchRequest, slot: &Slot) -> Result<()> {
+    let named: Vec<ClientId> = request.parties.iter().filter_map(|party| party.client).collect();
+    let calendars = busy(pool, &named).await?;
+    let taken = slot.placements.iter().find_map(|placement| {
+        let client = request.parties.get(placement.party)?.client?;
+        calendars.get(&client).filter(|calendar| clash(calendar, &placement.during)).map(|_| client)
+    });
+    taken.map_or(Ok(()), |client| Err(Error::ClientBusy(client)))
 }
 
 async fn admit(tx: &mut Tx<'_>, rules: &Rules, request: &SearchRequest, slot: &Slot, bookables: &[BookableRow]) -> Result<()> {
@@ -133,7 +145,7 @@ fn booked_lines(hold: &HoldRow, clients: &[ClientId]) -> Result<Vec<BookedLine>>
             let party = hold.parties.get(placement.party).ok_or(Error::NotFound)?;
             let client = clients.get(placement.party).copied().or(party.client).ok_or(Error::NotFound)?;
             let duration = (placement.during.end - placement.during.start).to_std().map_err(|error| Error::Invalid(error.to_string()))?;
-            Ok(BookedLine { client, service: placement.service, seats: party.seats, duration, price: placement.price.clone() })
+            Ok(BookedLine { client, service: placement.service, seats: party.seats, during: placement.during, duration, price: placement.price.clone() })
         })
         .collect()
 }
@@ -188,6 +200,7 @@ impl Appointments for Reservations {
         let rules = Rules::load(&self.pool).await?;
         let mut tx = self.pool.begin().await?;
         let bookables = lock_bookables(&mut tx, slot).await?;
+        check_clients(&self.pool, request, slot).await?;
         admit(&mut tx, &rules, request, slot, &bookables).await?;
         let id = insert_hold(&mut tx, request, slot, until, bookables.first().map(|b| b.org_id)).await?;
         let row: HoldRow = sqlx::query_as("SELECT * FROM holds WHERE id = $1").bind(id).fetch_one(tx.as_mut()).await?;

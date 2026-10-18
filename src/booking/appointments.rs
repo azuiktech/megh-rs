@@ -102,6 +102,8 @@ pub struct BookedLine {
     pub client: ClientId,
     pub service: ServiceId,
     pub seats: u32,
+    /// When the service takes place.
+    pub during: Interval,
     pub duration: Duration,
     pub price: Price,
 }

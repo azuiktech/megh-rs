@@ -2,6 +2,8 @@
 
 mod appointments;
 #[cfg(feature = "postgres")]
+mod busy;
+#[cfg(feature = "postgres")]
 mod calendar;
 #[cfg(feature = "postgres")]
 mod groups;

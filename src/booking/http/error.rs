@@ -47,7 +47,7 @@ impl From<Error> for ApiError {
         match error {
             Error::NotFound => Self::new(StatusCode::NOT_FOUND, "NOT_FOUND", message),
             Error::Invalid(_) | Error::Recurrence(_) => Self::invalid(message),
-            Error::NotOpen(_) | Error::HoldExpired(_) | Error::Insufficient(_) | Error::Cycle => Self::new(StatusCode::BAD_REQUEST, "FAILED_PRECONDITION", message),
+            Error::NotOpen(_) | Error::HoldExpired(_) | Error::Insufficient(_) | Error::Expired(_) | Error::NotEligible(_) | Error::Cycle => Self::new(StatusCode::BAD_REQUEST, "FAILED_PRECONDITION", message),
             Error::Occupied(_) | Error::ClientBusy(_) => Self::new(StatusCode::CONFLICT, "ABORTED", message),
             Error::KeyReused => Self::new(StatusCode::CONFLICT, "ALREADY_EXISTS", message),
             Error::Database(error) => {

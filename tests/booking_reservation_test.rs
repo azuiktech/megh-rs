@@ -143,7 +143,7 @@ async fn a_prepaid_method_is_debited_by_the_booking(pool: PgPool) {
         org_id: None,
         name: "30-visit pass".into(),
         owner_id: Some(w.client.id),
-        eligible: is("kind", "any"),
+        eligible: is("mode", "appointment"),
         settlement: Settlement::Prepaid { balance: Amount::Uses(30), valid: None },
         attributes: Default::default(),
     };

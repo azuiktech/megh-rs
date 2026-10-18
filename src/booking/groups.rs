@@ -24,10 +24,10 @@ impl Groups {
         let order = toposort(&self.0, None).map_err(|_| Error::Cycle)?;
         Ok(order.into_iter().fold(HashMap::from([(id, 0)]), |mut reach, node| {
             if let Some(&distance) = reach.get(&node) {
-                for group in self.0.neighbors(node) {
+                self.0.neighbors(node).for_each(|group| {
                     let longest = reach.entry(group).or_insert(0);
                     *longest = (*longest).max(distance + 1);
-                }
+                });
             }
             reach
         }))

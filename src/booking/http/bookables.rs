@@ -49,7 +49,7 @@ impl Collection for Bookables {
         Stamps { id: row.id.0, created: row.created_at, updated: row.updated_at, deleted: row.deleted_at }
     }
 
-    fn fields(row: &BookableRow) -> Value {
+    fn fields(row: &BookableRow, _: &Context) -> Value {
         json!({"org_id": row.org_id, "display_name": row.name, "capacity": row.capacity, "attributes": row.attributes})
     }
 

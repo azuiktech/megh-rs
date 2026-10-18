@@ -172,3 +172,13 @@ async fn groupings_need_their_own_grants(pool: PgPool) {
     assert_eq!(status(&app, "POST", &collection, &format!("{read} groupings:create"), &body).await, StatusCode::OK);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} groupings:read"), "").await, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn the_waitlist_needs_its_own_grants(pool: PgPool) {
+    let org = org(&pool, "clinic").await;
+    let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/waitlistEntries"));
+    let read = format!("orgs:read:{org}");
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} waitlistentries:create"), "{}").await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} groupings:create"), "{}").await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "GET", &collection, &format!("{read} waitlistentries:read"), "").await, StatusCode::OK);
+}

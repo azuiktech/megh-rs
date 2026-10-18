@@ -20,6 +20,7 @@ mod schedules;
 mod services;
 mod slot;
 mod view;
+mod waitlist_entries;
 
 use std::collections::HashMap;
 
@@ -51,6 +52,7 @@ pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
         .merge(crud::routes::<services::Services>())
         .merge(crud::routes::<payment_methods::PaymentMethods>())
         .merge(crud::routes_unchangeable::<groupings::Groupings>())
+        .merge(crud::routes_unchangeable::<waitlist_entries::WaitlistEntries>())
         .merge(availability::routes())
         .merge(schedules::routes("schedules", Kind::Open))
         .merge(schedules::routes("blockouts", Kind::Blockout))

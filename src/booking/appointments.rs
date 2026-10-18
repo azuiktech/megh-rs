@@ -184,6 +184,7 @@ pub enum Target {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "waitlist_entries")]
 pub struct WaitlistEntry {
+    pub org_id: Option<OrgId>,
     pub client_id: ClientId,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     pub target: Target,

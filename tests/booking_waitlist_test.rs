@@ -16,6 +16,7 @@ async fn the_waitlist_keeps_request_order_per_target(pool: PgPool) {
     let queue = Queue::new(pool.clone());
     let later = client(&pool).await;
     let entry = |client: &ClientRow, target: &Target, minutes_ago: i64| WaitlistEntry {
+        org_id: None,
         client_id: client.id,
         target: target.clone(),
         requested_at: Utc::now() - Duration::minutes(minutes_ago),
@@ -33,7 +34,7 @@ async fn an_occurrence_has_its_own_queue(pool: PgPool) {
     let (talk, other) = (Target::Occurrence(OccurrenceId(Uuid::new_v4())), Target::Occurrence(OccurrenceId(Uuid::new_v4())));
     let guest = client(&pool).await;
     let queue = Queue::new(pool.clone());
-    let entry = |target: &Target| WaitlistEntry { client_id: guest.id, target: target.clone(), requested_at: Utc::now(), attributes: Default::default() };
+    let entry = |target: &Target| WaitlistEntry { org_id: None, client_id: guest.id, target: target.clone(), requested_at: Utc::now(), attributes: Default::default() };
     let joined = queue.join(entry(&talk)).await.unwrap();
     assert_eq!(joined.client_id, guest.id);
     assert_eq!(queue.waiting(&talk).await.unwrap().len(), 1);

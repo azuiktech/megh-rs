@@ -12,6 +12,8 @@ mod model;
 mod postgres;
 mod recurrence;
 #[cfg(feature = "postgres")]
+mod reservations;
+#[cfg(feature = "postgres")]
 mod rules;
 mod schedule;
 #[cfg(feature = "postgres")]
@@ -23,7 +25,7 @@ mod variants;
 pub use appointments::*;
 pub use model::*;
 #[cfg(feature = "postgres")]
-pub use postgres::{Calendar, Slots};
+pub use postgres::{Calendar, Reservations, Slots};
 #[cfg(feature = "postgres")]
 use groups::Groups;
 pub use schedule::*;

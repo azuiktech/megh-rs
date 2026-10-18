@@ -54,6 +54,7 @@ pub struct Placement {
     pub party: usize,
     pub service: ServiceId,
     pub during: Interval,
+    pub price: Price,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +73,9 @@ pub struct Hold {
     pub tz: String,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     pub parties: Vec<Party>,
+    /// When each party's service takes place, from the slot that was held.
+    #[cfg_attr(feature = "postgres", sqlx(json))]
+    pub placements: Vec<Placement>,
     pub expires_at: DateTime<Utc>,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     pub attributes: Attributes,

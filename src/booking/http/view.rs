@@ -54,7 +54,7 @@ pub(super) fn appointment(row: &AppointmentRow, occupancies: &[&OccupancyRow], o
     let (start, end) = span(occupancies, zone);
     let lines: Vec<Value> = row.lines.iter().map(|l| json!({"client_id": l.client, "service_id": l.service, "seats": l.seats, "duration": seconds(l.duration), "price": money(&l.price)})).collect();
     json!({
-        "name": format!("org/{org}/appointments/{}", row.id.0),
+        "name": format!("orgs/{org}/appointments/{}", row.id.0),
         "id": row.id,
         "state": if row.deleted_at.is_some() { "cancelled" } else { "booked" },
         "start_time": start,
@@ -86,7 +86,7 @@ pub(super) fn hold(row: &HoldRow, occupancies: &[&OccupancyRow], org: Uuid) -> V
         })
         .collect();
     json!({
-        "name": format!("org/{org}/appointments/{}", row.id.0),
+        "name": format!("orgs/{org}/appointments/{}", row.id.0),
         "id": row.id,
         "state": if row.deleted_at.is_some() { "cancelled" } else { "held" },
         "start_time": start,

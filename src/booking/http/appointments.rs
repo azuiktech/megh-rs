@@ -1,4 +1,4 @@
-//! `/api/v1/org/{org_id}/appointments`: held and booked appointments, as one resource with a `state`.
+//! `/api/v1/orgs/{org_id}/appointments`: held and booked appointments, as one resource with a `state`.
 //!
 //! - `POST .../appointments` with `state` `held` (blocks the slot until `expire_time`) or `booked` (needs a `request_id`,
 //!   AIP-155, so a retry returns the same appointment);
@@ -84,7 +84,7 @@ struct ConfirmBody {
 }
 
 pub(super) fn routes() -> Router<BookingState> {
-    let collection = "/api/v1/org/{org_id}/appointments";
+    let collection = "/api/v1/orgs/{org_id}/appointments";
     Router::new()
         .route(collection, get(list).post(create))
         .route(&format!("{collection}/{{id}}"), get(read).delete(cancel).post(custom_method))

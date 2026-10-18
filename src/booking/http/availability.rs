@@ -1,4 +1,4 @@
-//! `POST /api/v1/org/{org_id}/availability:search`, a custom method (AIP-136): the slots where parties can be served.
+//! `POST /api/v1/orgs/{org_id}/availability:search`, a custom method (AIP-136): the slots where parties can be served.
 
 use std::time::Duration;
 
@@ -52,7 +52,7 @@ struct ServiceBody {
 }
 
 pub(super) fn routes() -> Router<BookingState> {
-    Router::new().route("/api/v1/org/{org_id}/availability:search", post(search))
+    Router::new().route("/api/v1/orgs/{org_id}/availability:search", post(search))
 }
 
 fn duration(text: &Option<String>, default: Duration) -> Result<Duration, ApiError> {

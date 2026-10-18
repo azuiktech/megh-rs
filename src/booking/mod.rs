@@ -47,6 +47,8 @@ pub enum Error {
     KeyReused,
     #[error("grouping cycle")]
     Cycle,
+    #[error("invalid: {0}")]
+    Invalid(String),
     #[error("recurrence: {0}")]
     Recurrence(String),
     #[error("insufficient balance on {0:?}")]

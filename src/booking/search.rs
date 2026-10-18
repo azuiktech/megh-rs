@@ -9,7 +9,7 @@ use chrono_tz::Tz;
 use sqlx::PgPool;
 
 use super::market::{span, Market, Plan};
-use super::{Allocation, Interval, Placement, Price, Result, Search, SearchRequest, Slot, Slots};
+use super::{Allocation, Error, Interval, Placement, Price, Result, Search, SearchRequest, Slot, Slots};
 
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
@@ -95,7 +95,8 @@ async fn found(pool: &PgPool, request: &SearchRequest) -> Result<Vec<Slot>> {
 
 /// The request again, asking for the first slot between the end of its window and `horizon_days` later.
 fn after_window(request: &SearchRequest, horizon_days: u32) -> Result<SearchRequest> {
-    let mut later: SearchRequest = serde_json::from_value(serde_json::to_value(request).map_err(|e| super::Error::Recurrence(e.to_string()))?).map_err(|e| super::Error::Recurrence(e.to_string()))?;
+    let invalid = |error: serde_json::Error| Error::Invalid(error.to_string());
+    let mut later: SearchRequest = serde_json::from_value(serde_json::to_value(request).map_err(invalid)?).map_err(invalid)?;
     later.within = Interval { start: request.within.end, end: request.within.end + chrono::Duration::days(i64::from(horizon_days)) };
     later.limit = Some(1);
     Ok(later)

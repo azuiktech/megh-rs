@@ -87,7 +87,7 @@ async fn an_empty_prepaid_method_refuses_the_payment_and_books_nothing(pool: PgP
         org_id: Some(w.org),
         name: "empty pass".into(),
         owner_id: Some(w.client.id),
-        eligible: is("kind", "any"),
+        eligible: is("mode", "appointment"),
         settlement: Settlement::Prepaid { balance: Amount::Uses(0), valid: None },
         attributes: Default::default(),
     };

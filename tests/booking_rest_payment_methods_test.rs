@@ -119,9 +119,9 @@ async fn a_pass_made_over_rest_pays_for_an_appointment_made_over_rest(pool: PgPo
     for bookable in [&room, &therapist] {
         created(&app, org, "schedules", json!({"bookable_id": bookable["id"], "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"})).await;
     }
-    let massage = created(&app, org, "services", json!({"display_name": "Massage", "price": {"currency_code": "USD", "units": "90", "nanos": 0}, "steps": [{"duration": "3600s", "needs": [{"who": "role = \"therapist\""}, {"who": "kind = \"room\""}]}]})).await;
+    let massage = created(&app, org, "services", json!({"display_name": "Massage", "price": {"currency_code": "USD", "units": "90", "nanos": 0}, "attributes": {"category": "massage"}, "steps": [{"duration": "3600s", "needs": [{"who": "role = \"therapist\""}, {"who": "kind = \"room\""}]}]})).await;
     let client = created(&app, org, "clients", json!({"display_name": "Sam"})).await;
-    let method = created(&app, org, "paymentMethods", json!({"display_name": "10 massages", "owner_id": client["id"], "eligible": "kind = \"massage\"", "settlement": {"prepaid": {"balance": {"uses": 10}}}})).await;
+    let method = created(&app, org, "paymentMethods", json!({"display_name": "10 massages", "owner_id": client["id"], "eligible": "attributes.category = \"massage\"", "settlement": {"prepaid": {"balance": {"uses": 10}}}})).await;
     let search = json!({"parties": [{"client_id": client["id"], "services": [{"service_id": massage["id"]}]}], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T10:00:00"});
     let (_, found) = call(&app, "POST", &format!("/api/v1/orgs/{org}/availability:search"), Some(search)).await;
     let booking = json!({"state": "booked", "slot": found["slots"][0], "request_id": "massage-1", "payer_id": client["id"], "payments": [{"method": method["id"], "amount": {"uses": 1}}]});

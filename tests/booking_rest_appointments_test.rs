@@ -233,7 +233,7 @@ async fn a_prepaid_method_pays_and_an_empty_one_leaves_the_slot_free(pool: PgPoo
         org_id: Some(salon.org),
         name: "pass".into(),
         owner_id: Some(salon.client.id),
-        eligible: is("kind", "any"),
+        eligible: is("mode", "appointment"),
         settlement: Settlement::Prepaid { balance: Amount::Uses(uses), valid: None },
         attributes: Default::default(),
     };

@@ -11,8 +11,8 @@ use super::rules::Rules;
 use super::times::{clash, covers};
 use super::{
     Allocation, Amount, Appointment, AppointmentId, AppointmentRow, Appointments, Attributes, Axes, BookableId, BookableRow, BookedLine, ClientId,
-    Confirmation, Engagement, Error, HoldId, HoldRow, IdempotencyKey, Interval, OrgId, Party, Payment, PaymentMethodRow, Price, Reservations, Result,
-    SearchRequest, Settlement, Slot,
+    Confirmation, Engagement, Error, HoldId, HoldRow, IdempotencyKey, Interval, OrgId, Party, Payment, PaymentMethodId, PaymentMethodRow, Price, Reservations, Result,
+    SearchRequest, ServiceRow, Settlement, Slot,
 };
 use crate::TableEntity;
 
@@ -150,25 +150,50 @@ fn booked_lines(hold: &HoldRow, clients: &[ClientId]) -> Result<Vec<BookedLine>>
         .collect()
 }
 
-fn debit(settlement: Settlement, amount: &Amount, now: DateTime<Utc>) -> Option<Settlement> {
+/// What the services look like to a payment method's `eligible` filter: `display_name`, `mode` and `attributes`.
+fn subject(service: &ServiceRow) -> Attributes {
+    let mode = serde_json::to_value(service.mode).unwrap_or_default();
+    Attributes::from([("display_name".to_string(), service.name.clone().into()), ("mode".to_string(), mode), ("attributes".to_string(), serde_json::json!(service.attributes))])
+}
+
+/// The time the appointment takes, from its first line to its last.
+fn span_of(lines: &[BookedLine]) -> Option<Interval> {
+    let start = lines.iter().map(|line| line.during.start).min()?;
+    let end = lines.iter().map(|line| line.during.end).max()?;
+    Some(Interval { start, end })
+}
+
+/// The settlement after paying, or why not: the window of a pass is judged on the time of the appointment.
+fn debit(method: PaymentMethodId, settlement: Settlement, amount: &Amount, appointment: Option<Interval>) -> Result<Settlement> {
+    let outside = |valid: &Interval| appointment.is_some_and(|during| during.start < valid.start || valid.end < during.end);
     match (settlement, amount) {
-        (Settlement::OnSpot, _) => Some(Settlement::OnSpot),
-        (Settlement::Prepaid { valid: Some(valid), .. }, _) if now < valid.start || valid.end < now => None,
-        (Settlement::Prepaid { balance: Amount::Uses(have), valid }, Amount::Uses(used)) => have.checked_sub(*used).map(|left| Settlement::Prepaid { balance: Amount::Uses(left), valid }),
-        (Settlement::Prepaid { balance: Amount::Money(have), valid }, Amount::Money(used)) if have.currency == used.currency => {
-            let left = Price { micros: have.micros.checked_sub(used.micros).filter(|left| *left >= 0)?, currency: have.currency };
-            Some(Settlement::Prepaid { balance: Amount::Money(left), valid })
+        (Settlement::OnSpot, _) => Ok(Settlement::OnSpot),
+        (Settlement::Prepaid { valid: Some(valid), .. }, _) if outside(&valid) => Err(Error::Expired(method)),
+        (Settlement::Prepaid { balance: Amount::Uses(have), valid }, Amount::Uses(used)) => {
+            have.checked_sub(*used).map(|left| Settlement::Prepaid { balance: Amount::Uses(left), valid }).ok_or(Error::Insufficient(method))
         }
-        _ => None,
+        (Settlement::Prepaid { balance: Amount::Money(have), valid }, Amount::Money(used)) if have.currency == used.currency => {
+            let left = have.micros.checked_sub(used.micros).filter(|left| *left >= 0).ok_or(Error::Insufficient(method))?;
+            Ok(Settlement::Prepaid { balance: Amount::Money(Price { micros: left, currency: have.currency }), valid })
+        }
+        _ => Err(Error::Insufficient(method)),
     }
 }
 
-async fn pay(tx: &mut Tx<'_>, payment: &Payment) -> Result<()> {
+async fn pay(tx: &mut Tx<'_>, payment: &Payment, services: &[ServiceRow], lines: &[BookedLine]) -> Result<()> {
     let query = "SELECT * FROM payment_methods WHERE id = $1 AND deleted_at IS NULL FOR UPDATE";
     let method: PaymentMethodRow = sqlx::query_as(query).bind(payment.method).fetch_optional(tx.as_mut()).await?.ok_or(Error::NotFound)?;
-    let settled = debit(method.settlement.clone(), &payment.amount, Utc::now()).ok_or(Error::Insufficient(payment.method))?;
+    if !services.iter().all(|service| method.eligible.holds(&subject(service))) {
+        return Err(Error::NotEligible(payment.method));
+    }
+    let settled = debit(payment.method, method.settlement.clone(), &payment.amount, span_of(lines))?;
     sqlx::query("UPDATE payment_methods SET settlement = $2, updated_at = now() WHERE id = $1").bind(payment.method).bind(Json(settled)).execute(tx.as_mut()).await?;
     Ok(())
+}
+
+async fn services_of(tx: &mut Tx<'_>, lines: &[BookedLine]) -> Result<Vec<ServiceRow>> {
+    let ids: Vec<Uuid> = lines.iter().map(|line| line.service.0).collect();
+    Ok(sqlx::query_as("SELECT * FROM services WHERE id = ANY($1)").bind(ids).fetch_all(tx.as_mut()).await?)
 }
 
 async fn insert_appointment(tx: &mut Tx<'_>, appointment: &AppointmentRow) -> Result<()> {
@@ -216,8 +241,9 @@ impl Appointments for Reservations {
         }
         let held = live_hold(&mut tx, hold).await?;
         let lines = booked_lines(&held, &confirmation.clients)?;
+        let services = services_of(&mut tx, &lines).await?;
         for payment in &confirmation.payments {
-            pay(&mut tx, payment).await?;
+            pay(&mut tx, payment, &services, &lines).await?;
         }
         let data = Appointment {
             org_id: held.org_id,

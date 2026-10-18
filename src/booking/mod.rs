@@ -65,6 +65,10 @@ pub enum Error {
     Recurrence(String),
     #[error("insufficient balance on {0:?}")]
     Insufficient(PaymentMethodId),
+    #[error("{0:?} is not valid at the time of the appointment")]
+    Expired(PaymentMethodId),
+    #[error("{0:?} does not cover the services booked")]
+    NotEligible(PaymentMethodId),
     #[cfg(feature = "postgres")]
     #[error(transparent)]
     Database(#[from] sqlx::Error),

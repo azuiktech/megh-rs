@@ -26,3 +26,10 @@ impl Recurrence {
         Ok(times(&occurrences).intersection(&window).collect())
     }
 }
+
+impl Recurrence {
+    /// `Invalid` unless the text is an RFC 5545 recurrence the engine can read.
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.0.parse::<RRuleSet>().map(|_| ()).map_err(|error: RRuleError| invalid(error))
+    }
+}

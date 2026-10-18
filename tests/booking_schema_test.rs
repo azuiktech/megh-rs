@@ -86,7 +86,7 @@ async fn appointments_holds_and_the_rest_round_trip(pool: PgPool) {
     let hold = Hold { org_id: Some(org), tz: "UTC".into(), parties: vec![], placements: vec![], expires_at: now + Duration::minutes(5), attributes: attributes() };
     HoldRow::new(HoldId(Uuid::new_v4()), hold).insert(&pool).await.unwrap();
     let target = Target::Window(ServiceId(Uuid::new_v4()), Interval { start: now, end: now + Duration::days(1) });
-    let entry = WaitlistEntry { client_id: client.id, target, requested_at: now, attributes: attributes() };
+    let entry = WaitlistEntry { org_id: Some(org), client_id: client.id, target, requested_at: now, attributes: attributes() };
     WaitlistEntryRow::new(WaitlistEntryId(Uuid::new_v4()), entry).insert(&pool).await.unwrap();
 }
 

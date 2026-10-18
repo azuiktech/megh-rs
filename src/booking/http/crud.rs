@@ -54,6 +54,8 @@ pub(super) trait Collection: 'static {
     /// The path segment, in the lowerCamelCase of AIP-122, such as `bookables`.
     const NAME: &'static str;
     const TABLE: &'static str;
+    /// The order of a list, a SQL `ORDER BY` list.
+    const ORDER: &'static str = "created_at, id";
 
     fn stamps(row: &Self::Row) -> Stamps;
     /// The fields of the resource other than `name`, `id` and the times.
@@ -137,7 +139,7 @@ async fn list<C: Collection>(
 ) -> Result<Json<Value>, ApiError> {
     let ctx = context(&state, org).await?;
     let shown = if query.show_deleted == Some(true) { "" } else { " AND deleted_at IS NULL" };
-    let sql = format!("SELECT * FROM {} WHERE org_id = ANY($1){shown} ORDER BY created_at, id", C::TABLE);
+    let sql = format!("SELECT * FROM {} WHERE org_id = ANY($1){shown} ORDER BY {}", C::TABLE, C::ORDER);
     let rows = sqlx::query_as::<_, C::Row>(&sql).bind(&ctx.scope).fetch_all(&ctx.pool).await?;
     let items = rows.iter().map(|row| resource::<C>(row, &ctx)).collect();
     Ok(Json(page(C::NAME, items, &query)?))

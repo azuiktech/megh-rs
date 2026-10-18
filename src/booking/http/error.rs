@@ -25,6 +25,10 @@ impl ApiError {
         Self::new(StatusCode::BAD_REQUEST, "INVALID_ARGUMENT", message)
     }
 
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "ALREADY_EXISTS", message)
+    }
+
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "NOT_FOUND", message)
     }

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -59,4 +60,22 @@ pub(super) async fn check_scope(pool: &PgPool, org: Uuid, request: &SearchReques
         }
     }
     Ok(())
+}
+
+/// `google.type.Money` as a client writes it: whole `units` (a string), and `nanos` that are whole thousands.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MoneyBody {
+    currency_code: String,
+    units: String,
+    nanos: i64,
+}
+
+impl MoneyBody {
+    pub(super) fn price(&self) -> Result<Price, ApiError> {
+        let bad = || ApiError::invalid("an amount of money is {currency_code, units, nanos}, not negative, with nanos in whole thousands");
+        let units: i64 = self.units.parse().map_err(|_| bad())?;
+        let micros = units.checked_mul(1_000_000).and_then(|whole| whole.checked_add(self.nanos / 1000)).filter(|micros| *micros >= 0 && self.nanos % 1000 == 0).ok_or_else(bad)?;
+        Ok(Price { micros, currency: self.currency_code.clone() })
+    }
 }

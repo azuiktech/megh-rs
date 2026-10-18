@@ -139,3 +139,14 @@ async fn clients_need_their_own_grants(pool: PgPool) {
     assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), r#"{"display_name": "Rex"}"#).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} clients:read"), "").await, StatusCode::OK);
 }
+
+#[sqlx::test]
+async fn services_need_their_own_grants(pool: PgPool) {
+    let org = org(&pool, "clinic").await;
+    let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/services"));
+    let read = format!("orgs:read:{org}");
+    let body = r#"{"display_name": "Cut", "price": {"currency_code": "USD", "units": "20", "nanos": 0}}"#;
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} services:create"), body).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} clients:create"), body).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "GET", &collection, &format!("{read} services:read"), "").await, StatusCode::OK);
+}

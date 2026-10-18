@@ -1,4 +1,4 @@
-//! `/api/v1/orgs/{org_id}/waitlistEntries`: a client waits for an occurrence, or for a service in a window of time.
+//! `/api/v1/orgs/{org_id}/waitlistEntries`: a client waits for a service in a window of time.
 //! Joining is a create, leaving a delete; an entry is not changed. Entries are listed in the order they were requested.
 
 use std::future::Future;
@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::common::instant;
 use super::crud::{Collection, Context, Mask, Stamps};
 use super::error::ApiError;
-use crate::booking::{Attributes, ClientId, Interval, OccurrenceId, ServiceId, Target, WaitlistEntry, WaitlistEntryId, WaitlistEntryRow};
+use crate::booking::{Attributes, ClientId, Interval, ServiceId, Target, WaitlistEntry, WaitlistEntryId, WaitlistEntryRow};
 use crate::TableEntity;
 
 pub(super) struct WaitlistEntries;
@@ -29,7 +29,6 @@ pub(super) struct WaitlistEntryBody {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TargetBody {
-    Occurrence(OccurrenceId),
     Window(WindowBody),
 }
 
@@ -43,7 +42,6 @@ struct WindowBody {
 
 fn target(body: &TargetBody, ctx: &Context) -> Result<Target, ApiError> {
     match body {
-        TargetBody::Occurrence(id) => Ok(Target::Occurrence(*id)),
         TargetBody::Window(window) => {
             let during = Interval { start: instant(&window.start_time, ctx.zone)?, end: instant(&window.end_time, ctx.zone)? };
             (during.end > during.start).then_some(Target::Window(window.service_id, during)).ok_or_else(|| ApiError::invalid("end_time must be after start_time"))
@@ -53,17 +51,14 @@ fn target(body: &TargetBody, ctx: &Context) -> Result<Target, ApiError> {
 
 fn target_json(target: &Target, ctx: &Context) -> Value {
     match target {
-        Target::Occurrence(id) => json!({"occurrence": id}),
         Target::Window(service, during) => json!({"window": {"service_id": service, "start_time": during.start.with_timezone(&ctx.zone), "end_time": during.end.with_timezone(&ctx.zone)}}),
     }
 }
 
-/// The client, and the occurrence or service waited for, must be covered by the org of the path.
+/// The client, and the service waited for, must be covered by the org of the path.
 async fn check_scope(ctx: &Context, client: ClientId, target: &Target) -> Result<(), ApiError> {
-    let (table, id) = match target {
-        Target::Occurrence(id) => ("occurrences", id.0),
-        Target::Window(service, _) => ("services", service.0),
-    };
+    let Target::Window(service, _) = target;
+    let (table, id) = ("services", service.0);
     for (table, id) in [("clients", client.0), (table, id)] {
         let found: Option<Option<Uuid>> = sqlx::query_scalar(&format!("SELECT org_id FROM {table} WHERE id = $1 AND deleted_at IS NULL")).bind(id).fetch_optional(&ctx.pool).await?;
         match found.flatten() {

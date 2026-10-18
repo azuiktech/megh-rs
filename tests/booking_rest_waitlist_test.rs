@@ -43,18 +43,6 @@ async fn a_client_joins_the_wait_for_a_service_in_a_window(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn a_client_joins_the_wait_for_an_occurrence(pool: PgPool) {
-    let studio = studio(pool.clone()).await;
-    let occurrence = Uuid::new_v4();
-    sqlx::query("INSERT INTO occurrences (id, org_id, tz, service_id, starts_at, capacity, attributes, created_at, updated_at) VALUES ($1, $2, 'UTC', $3, now(), 20, '{}', now(), now())")
-        .bind(occurrence).bind(studio.org).bind(Uuid::parse_str(studio.class["id"].as_str().unwrap()).unwrap()).execute(&pool).await.unwrap();
-    let entry = created(&studio.app, studio.org, "waitlistEntries", json!({"client_id": studio.ann["id"], "target": {"occurrence": occurrence}})).await;
-    assert_eq!(entry["target"], json!({"occurrence": occurrence}));
-    let missing = json!({"client_id": studio.ann["id"], "target": {"occurrence": Uuid::new_v4()}});
-    assert_eq!(call(&studio.app, "POST", &format!("/api/v1/orgs/{}/waitlistEntries", studio.org), Some(missing)).await.0, StatusCode::NOT_FOUND);
-}
-
-#[sqlx::test]
 async fn the_entries_are_listed_in_the_order_they_were_requested(pool: PgPool) {
     let studio = studio(pool).await;
     let mut later = window(&studio, &studio.ann, "2026-11-05T18:00:00", "2026-11-05T19:00:00");
@@ -92,7 +80,7 @@ async fn bad_input_is_refused(pool: PgPool) {
         (window(&studio, &studio.ann, "2026-11-05T19:00:00", "2026-11-05T18:00:00"), StatusCode::BAD_REQUEST),
         (json!({"client_id": studio.ann["id"], "target": {"somewhere": 1}}), StatusCode::BAD_REQUEST),
         (json!({"client_id": studio.ann["id"], "target": {"window": {"service_id": studio.class["id"], "start_time": "2026-11-05T18:00:00"}}}), StatusCode::BAD_REQUEST),
-        (json!({"client_id": Uuid::new_v4(), "target": {"occurrence": Uuid::new_v4()}}), StatusCode::NOT_FOUND),
+        (json!({"client_id": Uuid::new_v4(), "target": {"window": {"service_id": Uuid::new_v4(), "start_time": "2026-11-05T18:00:00", "end_time": "2026-11-05T19:00:00"}}}), StatusCode::NOT_FOUND),
         (json!({"client_id": studio.ann["id"], "target": {"window": {"service_id": Uuid::new_v4(), "start_time": "2026-11-05T18:00:00", "end_time": "2026-11-05T19:00:00"}}}), StatusCode::NOT_FOUND),
     ];
     for (body, expected) in cases {

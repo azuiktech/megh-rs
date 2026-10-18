@@ -129,3 +129,13 @@ async fn bookables_need_their_own_grants(pool: PgPool) {
     assert_eq!(status(&app, "PATCH", &format!("{collection}/{id}"), &format!("{read} bookables:update:{id}"), "{}").await, StatusCode::NOT_FOUND);
     assert_eq!(status(&app, "PATCH", &format!("{collection}/{id}"), &read, "{}").await, StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test]
+async fn clients_need_their_own_grants(pool: PgPool) {
+    let org = org(&pool, "clinic").await;
+    let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/clients"));
+    let read = format!("orgs:read:{org}");
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} clients:create"), r#"{"display_name": "Rex"}"#).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), r#"{"display_name": "Rex"}"#).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "GET", &collection, &format!("{read} clients:read"), "").await, StatusCode::OK);
+}

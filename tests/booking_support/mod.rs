@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+pub mod rest;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Is {
     pub key: String,

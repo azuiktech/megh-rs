@@ -1,4 +1,4 @@
-//! Specification: the permissions of the booking routes come from their paths (`request_grants`): `org:read:{org_id}`
+//! Specification: the permissions of the booking routes come from their paths (`request_grants`): `orgs:read:{org_id}`
 //! and then the resource and the action of the route, with the id when the path has one.
 
 mod booking_support;
@@ -50,52 +50,52 @@ const WEEKLY: &str = r#"{"days": ["MO"], "start_time": "09:00", "end_time": "12:
 #[sqlx::test]
 async fn nobody_is_let_in_without_a_member(pool: PgPool) {
     let org = org(&pool, "clinic").await;
-    let request = Request::get(format!("/api/v1/org/{org}/schedules")).body(Body::empty()).unwrap();
+    let request = Request::get(format!("/api/v1/orgs/{org}/schedules")).body(Body::empty()).unwrap();
     assert_eq!(app(pool).oneshot(request).await.unwrap().status(), StatusCode::UNAUTHORIZED);
 }
 
 #[sqlx::test]
 async fn creating_needs_the_org_and_the_create_grant(pool: PgPool) {
     let org = org(&pool, "clinic").await;
-    let (app, uri) = (app(pool), format!("/api/v1/org/{org}/schedules"));
-    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} schedules:create"), WEEKLY).await, StatusCode::OK);
-    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org}"), WEEKLY).await, StatusCode::FORBIDDEN);
+    let (app, uri) = (app(pool), format!("/api/v1/orgs/{org}/schedules"));
+    assert_eq!(status(&app, "POST", &uri, &format!("orgs:read:{org} schedules:create"), WEEKLY).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &uri, &format!("orgs:read:{org}"), WEEKLY).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "POST", &uri, "schedules:create", WEEKLY).await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{} schedules:create", Uuid::new_v4()), WEEKLY).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "POST", &uri, &format!("orgs:read:{} schedules:create", Uuid::new_v4()), WEEKLY).await, StatusCode::FORBIDDEN);
 }
 
 #[sqlx::test]
 async fn a_blockout_is_its_own_resource_for_permissions(pool: PgPool) {
     let org = org(&pool, "clinic").await;
-    let (app, uri) = (app(pool), format!("/api/v1/org/{org}/blockouts"));
+    let (app, uri) = (app(pool), format!("/api/v1/orgs/{org}/blockouts"));
     let body = r#"{"date": "2026-11-26", "start_time": "09:00", "end_time": "10:00", "reason": "meeting"}"#;
-    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} schedules:create"), body).await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} blockouts:create"), body).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &uri, &format!("orgs:read:{org} schedules:create"), body).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "POST", &uri, &format!("orgs:read:{org} blockouts:create"), body).await, StatusCode::OK);
 }
 
 #[sqlx::test]
 async fn reading_deleting_and_listing_need_their_own_grants_on_the_instance(pool: PgPool) {
     let org = org(&pool, "clinic").await;
     let app = app(pool);
-    let everything = format!("org:read:{org} schedules:*");
-    let request = Request::post(format!("/api/v1/org/{org}/schedules")).header("x-grants", &everything).header("content-type", "application/json").header("sec-fetch-site", "same-origin").body(Body::from(WEEKLY)).unwrap();
+    let everything = format!("orgs:read:{org} schedules:*");
+    let request = Request::post(format!("/api/v1/orgs/{org}/schedules")).header("x-grants", &everything).header("content-type", "application/json").header("sec-fetch-site", "same-origin").body(Body::from(WEEKLY)).unwrap();
     let bytes = axum::body::to_bytes(app.clone().oneshot(request).await.unwrap().into_body(), usize::MAX).await.unwrap();
     let id = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["id"].as_str().unwrap().to_string();
-    let one = format!("/api/v1/org/{org}/schedules/{id}");
-    assert_eq!(status(&app, "GET", &one, &format!("org:read:{org} schedules:read:{id}"), "").await, StatusCode::OK);
-    assert_eq!(status(&app, "GET", &one, &format!("org:read:{org} schedules:read:{}", Uuid::new_v4()), "").await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "GET", &format!("/api/v1/org/{org}/schedules"), &format!("org:read:{org} schedules:read"), "").await, StatusCode::OK);
-    assert_eq!(status(&app, "DELETE", &one, &format!("org:read:{org} schedules:read:{id}"), "").await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "DELETE", &one, &format!("org:read:{org} schedules:delete:{id}"), "").await, StatusCode::OK);
+    let one = format!("/api/v1/orgs/{org}/schedules/{id}");
+    assert_eq!(status(&app, "GET", &one, &format!("orgs:read:{org} schedules:read:{id}"), "").await, StatusCode::OK);
+    assert_eq!(status(&app, "GET", &one, &format!("orgs:read:{org} schedules:read:{}", Uuid::new_v4()), "").await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "GET", &format!("/api/v1/orgs/{org}/schedules"), &format!("orgs:read:{org} schedules:read"), "").await, StatusCode::OK);
+    assert_eq!(status(&app, "DELETE", &one, &format!("orgs:read:{org} schedules:read:{id}"), "").await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "DELETE", &one, &format!("orgs:read:{org} schedules:delete:{id}"), "").await, StatusCode::OK);
 }
 
 #[sqlx::test]
 async fn searching_the_availability_needs_the_search_grant(pool: PgPool) {
     let org = org(&pool, "clinic").await;
-    let (app, uri) = (app(pool), format!("/api/v1/org/{org}/availability:search"));
+    let (app, uri) = (app(pool), format!("/api/v1/orgs/{org}/availability:search"));
     let body = r#"{"parties": [], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T11:00:00"}"#;
-    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} availability:search"), body).await, StatusCode::BAD_REQUEST);
-    assert_eq!(status(&app, "POST", &uri, &format!("org:read:{org} availability:create"), body).await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "POST", &uri, &format!("orgs:read:{org} availability:search"), body).await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(&app, "POST", &uri, &format!("orgs:read:{org} availability:create"), body).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "POST", &uri, "availability:search", body).await, StatusCode::FORBIDDEN);
 }
 
@@ -103,8 +103,8 @@ async fn searching_the_availability_needs_the_search_grant(pool: PgPool) {
 async fn appointments_need_create_confirm_and_delete_grants_on_the_instance(pool: PgPool) {
     let org = org(&pool, "clinic").await;
     let (app, id) = (app(pool), Uuid::new_v4());
-    let collection = format!("/api/v1/org/{org}/appointments");
-    let read = format!("org:read:{org}");
+    let collection = format!("/api/v1/orgs/{org}/appointments");
+    let read = format!("orgs:read:{org}");
     assert_eq!(status(&app, "POST", &collection, &format!("{read} appointments:create"), "{}").await, StatusCode::BAD_REQUEST);
     assert_eq!(status(&app, "POST", &collection, &read, "{}").await, StatusCode::FORBIDDEN);
     let confirm = format!("{collection}/{id}:confirm");

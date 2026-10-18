@@ -1,4 +1,4 @@
-//! Specification: docs/TPD-booking.md, R4 and R6: `POST /api/v1/org/{org_id}/availability:search`, a custom method
+//! Specification: docs/TPD-booking.md, R4 and R6: `POST /api/v1/orgs/{org_id}/availability:search`, a custom method
 //! (AIP-136) taking parties, a window in the org's local time, `party_offset` and `service_gap` as AIP-142 durations.
 
 mod booking_support;
@@ -38,7 +38,7 @@ async fn salon(pool: PgPool) -> Salon {
     let app = booking_router(pool);
     for bookable in [&room, &stylist] {
         let body = json!({"bookable_id": bookable.id, "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"});
-        let (status, _) = call(&app, &format!("/api/v1/org/{org}/schedules"), body).await;
+        let (status, _) = call(&app, &format!("/api/v1/orgs/{org}/schedules"), body).await;
         assert_eq!(status, StatusCode::OK);
     }
     Salon { app, org, room, stylist, haircut }
@@ -49,7 +49,7 @@ fn search(salon: &Salon, start: &str, end: &str) -> Value {
 }
 
 fn uri(salon: &Salon) -> String {
-    format!("/api/v1/org/{}/availability:search", salon.org)
+    format!("/api/v1/orgs/{}/availability:search", salon.org)
 }
 
 #[sqlx::test]
@@ -105,7 +105,7 @@ async fn with_nothing_open_the_next_day_with_a_slot_is_given(pool: PgPool) {
     let salon = salon(pool.clone()).await;
     for bookable in [&salon.room, &salon.stylist] {
         let body = json!({"bookable_id": bookable.id, "date": "2026-11-11", "start_time": "10:00", "end_time": "12:00"});
-        assert_eq!(call(&salon.app, &format!("/api/v1/org/{}/schedules", salon.org), body).await.0, StatusCode::OK);
+        assert_eq!(call(&salon.app, &format!("/api/v1/orgs/{}/schedules", salon.org), body).await.0, StatusCode::OK);
     }
     let mut body = search(&salon, "2026-11-05T09:00:00", "2026-11-05T17:00:00");
     let (_, found) = call(&salon.app, &uri(&salon), body.clone()).await;
@@ -121,7 +121,7 @@ async fn parties_may_start_apart_by_the_party_offset(pool: PgPool) {
     let suite = bookable(&pool, salon.org, "suite", 2, &[("kind", "room")]).await;
     for bookable in [&second, &suite] {
         let body = json!({"bookable_id": bookable.id, "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"});
-        assert_eq!(call(&salon.app, &format!("/api/v1/org/{}/schedules", salon.org), body).await.0, StatusCode::OK);
+        assert_eq!(call(&salon.app, &format!("/api/v1/orgs/{}/schedules", salon.org), body).await.0, StatusCode::OK);
     }
     let party = json!({"services": [{"service_id": salon.haircut.id}]});
     let mut body = json!({"parties": [party.clone(), party], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T10:30:00"});
@@ -157,5 +157,5 @@ async fn a_bad_request_is_an_aip_193_error(pool: PgPool) {
         assert_eq!(status, expected, "{body}");
         assert_eq!(error["error"]["code"], json!(expected.as_u16()), "{body}");
     }
-    assert_eq!(call(&salon.app, &format!("/api/v1/org/{}/availability:search", Uuid::new_v4()), search(&salon, window.0, window.1)).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(call(&salon.app, &format!("/api/v1/orgs/{}/availability:search", Uuid::new_v4()), search(&salon, window.0, window.1)).await.0, StatusCode::NOT_FOUND);
 }

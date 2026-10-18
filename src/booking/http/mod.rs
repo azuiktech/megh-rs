@@ -1,10 +1,10 @@
 //! REST for the booking module, following the Google API Improvement Proposals: resources under
-//! `/api/v1/org/{org_id}/...`, the standard methods Get, List, Create, Update and Delete (AIP-131 to 135), custom
+//! `/api/v1/orgs/{org_id}/...`, the standard methods Get, List, Create, Update and Delete (AIP-131 to 135), custom
 //! methods as `:verb` (AIP-136), lists with `filter`, `page_size` and `page_token` (AIP-132, 158, 160), soft delete
 //! with `show_deleted` (AIP-164), field names of AIP-148, durations as `"3600s"` (AIP-142) and errors of AIP-193.
 //!
 //! The router assumes the application authenticates the caller and applies [`crate::authorizer`], which derives
-//! the grants from the paths: `org:read:{org_id}` and then the resource and action of the route.
+//! the grants from the paths: `orgs:read:{org_id}` and then the resource and action of the route.
 
 mod appointments;
 mod availability;

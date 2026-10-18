@@ -1,4 +1,4 @@
-//! `/api/v1/org/{org_id}/schedules` (times open for work) and `.../blockouts` (closed times, with a reason).
+//! `/api/v1/orgs/{org_id}/schedules` (times open for work) and `.../blockouts` (closed times, with a reason).
 
 use std::time::Duration;
 
@@ -67,7 +67,7 @@ struct UpdateQuery {
 }
 
 pub(super) fn routes(name: &'static str, kind: Kind) -> Router<BookingState> {
-    let collection = format!("/api/v1/org/{{org_id}}/{name}");
+    let collection = format!("/api/v1/orgs/{{org_id}}/{name}");
     let one = format!("{collection}/{{id}}");
     Router::new()
         .route(&collection, get(list).post(create))
@@ -78,7 +78,7 @@ pub(super) fn routes(name: &'static str, kind: Kind) -> Router<BookingState> {
 fn resource(row: &ScheduleRow, collection: Collection, org: Uuid, zone: Tz) -> ScheduleResource {
     let local = |time: DateTime<Utc>| time.with_timezone(&zone);
     ScheduleResource {
-        name: format!("org/{org}/{}/{}", collection.name, row.id.0),
+        name: format!("orgs/{org}/{}/{}", collection.name, row.id.0),
         id: row.id,
         org_id: row.org_id,
         service_id: row.service_id,

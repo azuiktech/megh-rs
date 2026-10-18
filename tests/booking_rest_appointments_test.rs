@@ -46,14 +46,14 @@ async fn open_in(pool: &PgPool, org: Uuid) -> Salon {
     let app = booking_router(pool.clone());
     for bookable in [&room, &stylist] {
         let body = json!({"bookable_id": bookable.id, "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"});
-        assert_eq!(call(&app, "POST", &format!("/api/v1/org/{org}/schedules"), Some(body)).await.0, StatusCode::OK);
+        assert_eq!(call(&app, "POST", &format!("/api/v1/orgs/{org}/schedules"), Some(body)).await.0, StatusCode::OK);
     }
     Salon { app, org, stylist, haircut, client }
 }
 
 impl Salon {
     fn uri(&self, path: &str) -> String {
-        format!("/api/v1/org/{}/{path}", self.org)
+        format!("/api/v1/orgs/{}/{path}", self.org)
     }
 
     async fn slots(&self, from: &str, to: &str) -> Vec<Value> {
@@ -95,7 +95,7 @@ async fn an_appointment_is_booked_in_one_call_from_a_slot(pool: PgPool) {
     let appointment = salon.book(&slot, "request-1").await;
     assert_eq!(appointment["state"], json!("booked"));
     assert_eq!((appointment["start_time"].clone(), appointment["end_time"].clone()), (json!("2026-11-04T09:00:00-05:00"), json!("2026-11-04T10:00:00-05:00")));
-    assert_eq!(appointment["name"], json!(format!("org/{}/appointments/{}", salon.org, appointment["id"].as_str().unwrap())));
+    assert_eq!(appointment["name"], json!(format!("orgs/{}/appointments/{}", salon.org, appointment["id"].as_str().unwrap())));
     assert_eq!(appointment["payer_id"], json!(salon.client.id));
     let line = &appointment["lines"][0];
     assert_eq!((line["client_id"].clone(), line["service_id"].clone(), line["duration"].clone()), (json!(salon.client.id), json!(salon.haircut.id), json!("3600s")));
@@ -286,14 +286,14 @@ async fn a_brand_sees_the_appointments_of_its_locations_and_not_the_reverse(pool
     group(&pool, Grouped::Org, location, brand).await;
     let salon = open_in(&pool, location).await;
     let booked = salon.book(&salon.first_slot().await, "request-1").await;
-    let (_, from_brand) = call(&salon.app, "GET", &format!("/api/v1/org/{brand}/appointments"), None).await;
+    let (_, from_brand) = call(&salon.app, "GET", &format!("/api/v1/orgs/{brand}/appointments"), None).await;
     assert_eq!(from_brand["appointments"].as_array().unwrap().len(), 1);
     let (_, own) = call(&salon.app, "GET", &salon.uri("appointments"), None).await;
     assert_eq!(own["appointments"][0]["id"], booked["id"]);
     let other = org(&pool, "other").await;
-    let (_, from_other) = call(&salon.app, "GET", &format!("/api/v1/org/{other}/appointments"), None).await;
+    let (_, from_other) = call(&salon.app, "GET", &format!("/api/v1/orgs/{other}/appointments"), None).await;
     assert!(from_other["appointments"].as_array().unwrap().is_empty());
-    assert_eq!(call(&salon.app, "GET", &format!("/api/v1/org/{other}/appointments/{}", booked["id"].as_str().unwrap()), None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(call(&salon.app, "GET", &format!("/api/v1/orgs/{other}/appointments/{}", booked["id"].as_str().unwrap()), None).await.0, StatusCode::NOT_FOUND);
 }
 
 #[sqlx::test]

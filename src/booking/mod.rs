@@ -16,7 +16,6 @@ mod model;
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(feature = "postgres")]
-mod queue;
 mod recurrence;
 #[cfg(feature = "postgres")]
 mod reservations;
@@ -32,10 +31,12 @@ mod variants;
 pub use appointments::*;
 pub use filter::Filter;
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub use http::{booking_router, booking_router_with_csrf, openapi, ApiError};
+pub use http::{booking_router, booking_router_with_csrf, openapi};
 pub use model::*;
 #[cfg(feature = "postgres")]
-pub use postgres::{Calendar, Queue, Reservations, Slots};
+pub use postgres::{Calendar, Reservations, Slots};
+#[cfg(feature = "postgres")]
+pub use reservations::booking_print;
 #[cfg(feature = "postgres")]
 use groups::Groups;
 pub use schedule::*;
@@ -51,8 +52,10 @@ pub enum Error {
     Occupied(BookableId),
     #[error("client busy: {0:?}")]
     ClientBusy(ClientId),
+    #[error("an appointment cannot go from {0:?} to {1:?}")]
+    Transition(Status, Status),
     #[error("hold expired: {0:?}")]
-    HoldExpired(HoldId),
+    HoldExpired(AppointmentId),
     #[error("not found")]
     NotFound,
     #[error("idempotency key reused with a different request")]

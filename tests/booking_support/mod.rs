@@ -89,7 +89,11 @@ pub async fn group(pool: &PgPool, kind: Grouped, member: Uuid, group: Uuid) {
 }
 
 pub async fn bookable(pool: &PgPool, org: Uuid, name: &str, capacity: u32, tags: &[(&str, &str)]) -> BookableRow {
-    let data = Bookable { org_id: org, name: name.into(), capacity, attributes: attributes(tags) };
+    bookable_with_waitlist(pool, org, name, capacity, 0, tags).await
+}
+
+pub async fn bookable_with_waitlist(pool: &PgPool, org: Uuid, name: &str, capacity: u32, waitlist: u32, tags: &[(&str, &str)]) -> BookableRow {
+    let data = Bookable { org_id: org, name: name.into(), capacity, waitlist, attributes: attributes(tags) };
     BookableRow::new(BookableId(Uuid::new_v4()), data).insert(pool).await.unwrap()
 }
 
@@ -112,7 +116,11 @@ fn step(duration: Duration, needs: Vec<Need>) -> Step {
 }
 
 pub fn need(who: Condition, engagement: Engagement) -> Need {
-    Need { who, count: 1, engagement }
+    Need { who, count: 1, engagement, role: Role::Provider }
+}
+
+pub fn room_need(who: Condition, engagement: Engagement) -> Need {
+    Need { who, count: 1, engagement, role: Role::Room }
 }
 
 pub async fn insert_service(pool: &PgPool, org: Uuid, name: &str, steps: Vec<Step>, variants: Vec<Variant>) -> ServiceRow {
@@ -122,7 +130,7 @@ pub async fn insert_service(pool: &PgPool, org: Uuid, name: &str, steps: Vec<Ste
 
 /// One step of `length` minutes engaging the provider (when given) and one room.
 pub async fn service(pool: &PgPool, org: Uuid, name: &str, length: u64, provider: Option<Condition>, room: Condition) -> ServiceRow {
-    let needs = provider.into_iter().map(|who| need(who, Engagement::Engaged)).chain([need(room, Engagement::Engaged)]).collect();
+    let needs = provider.into_iter().map(|who| need(who, Engagement::Engaged)).chain([room_need(room, Engagement::Engaged)]).collect();
     insert_service(pool, org, name, vec![step(minutes(length), needs)], vec![]).await
 }
 
@@ -156,33 +164,66 @@ pub async fn blockout_rule(pool: &PgPool, axes: Where, recurrence: Recurrence, l
     rule(pool, Kind::Blockout, axes, recurrence, minutes(length)).await;
 }
 
-async fn occupy(pool: &PgPool, hold: Option<HoldId>, booking: Option<AppointmentId>, bookable: BookableId, during: Interval, engagement: Engagement, seats: u32) {
-    let data = Occupancy { hold_id: hold, appointment_id: booking, bookable_id: bookable, starts_at: during.start, ends_at: during.end, engagement, seats };
+async fn occupy(pool: &PgPool, appointment: AppointmentId, bookable: BookableId, during: Interval, engagement: Engagement, status: Status) {
+    let data = Occupancy { appointment_id: appointment, bookable_id: Some(bookable), client_id: None, starts_at: during.start, ends_at: during.end, engagement, status };
     OccupancyRow::new(OccupancyId(Uuid::new_v4()), data).insert(pool).await.unwrap();
+}
+
+/// An appointment in `room`, for a client of its org and a service made for it.
+async fn appointment(pool: &PgPool, room: BookableId, during: Interval, status: Status, expires_at: Option<DateTime<Utc>>) -> AppointmentRow {
+    let org: Uuid = sqlx::query_scalar("SELECT org_id FROM bookables WHERE id = $1").bind(room).fetch_one(pool).await.unwrap();
+    let client = client_of(pool, org).await;
+    let service = service(pool, org, "seed", 30, None, is("kind", "seed")).await;
+    let data = Appointment {
+        org_id: org,
+        client_id: client.id,
+        service_id: service.id,
+        provider_ids: vec![],
+        room_id: room,
+        starts_at: during.start,
+        ends_at: during.end,
+        status,
+        expires_at,
+        payment: None,
+        attributes: serde_json::json!({}),
+    };
+    AppointmentRow::new(AppointmentId(Uuid::new_v4()), data).insert(pool).await.unwrap()
 }
 
 /// An existing booking occupying `bookable`.
 pub async fn booked(pool: &PgPool, bookable: BookableId, during: Interval, engagement: Engagement) -> AppointmentRow {
-    let org: Uuid = sqlx::query_scalar("SELECT org_id FROM bookables WHERE id = $1").bind(bookable).fetch_one(pool).await.unwrap();
-    let payer = client_of(pool, org).await;
-    let data = Appointment { org_id: org, tz: "UTC".into(), lines: vec![], payer_id: payer.id, payments: vec![], idempotency_key: IdempotencyKey(Uuid::new_v4().to_string()), fingerprint: "seed".into(), attributes: serde_json::json!({}) };
-    let booking = AppointmentRow::new(AppointmentId(Uuid::new_v4()), data).insert(pool).await.unwrap();
-    occupy(pool, None, Some(booking.id), bookable, during, engagement, 1).await;
+    let booking = appointment(pool, bookable, during, Status::Booked, None).await;
+    occupy(pool, booking.id, bookable, during, engagement, Status::Booked).await;
     booking
 }
 
 /// An existing hold on `bookable` that expires at `expires_at`.
-pub async fn held(pool: &PgPool, bookable: BookableId, during: Interval, expires_at: DateTime<Utc>) -> HoldRow {
-    let org: Uuid = sqlx::query_scalar("SELECT org_id FROM bookables WHERE id = $1").bind(bookable).fetch_one(pool).await.unwrap();
-    let data = Hold { org_id: org, tz: "UTC".into(), parties: vec![], placements: vec![], expires_at, attributes: serde_json::json!({}) };
-    let hold = HoldRow::new(HoldId(Uuid::new_v4()), data).insert(pool).await.unwrap();
-    occupy(pool, Some(hold.id), None, bookable, during, Engagement::Engaged, 1).await;
+pub async fn held(pool: &PgPool, bookable: BookableId, during: Interval, expires_at: DateTime<Utc>) -> AppointmentRow {
+    let hold = appointment(pool, bookable, during, Status::Held, Some(expires_at)).await;
+    occupy(pool, hold.id, bookable, during, Engagement::Engaged, Status::Held).await;
     hold
 }
 
 pub fn request(service: ServiceId, within: Interval) -> SearchRequest {
-    let party = Party { client: None, seats: 1, services: vec![ServiceWant { service, wants: vec![] }] };
+    let party = Party { client: None, services: vec![ServiceWant { service, wants: vec![] }] };
     SearchRequest { org: None, parties: vec![party], within, party_offset: Duration::ZERO, service_gap: Duration::ZERO, slot_interval: minutes(15), limit: None }
+}
+
+/// A method that takes any payment on the spot: nothing is debited.
+pub async fn on_spot(pool: &PgPool, org: Uuid) -> PaymentMethodRow {
+    let method = PaymentMethod { org_id: org, name: "on the spot".into(), owner_id: None, eligible: Box::new(Filter::parse("").unwrap()), settlement: Settlement::OnSpot, attributes: serde_json::json!({}) };
+    PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), method).insert(pool).await.unwrap()
+}
+
+pub fn pays(client: &ClientRow, method: &PaymentMethodRow) -> Payment {
+    Payment { payer_id: client.id, method: method.id, amount: Amount::Uses(0) }
+}
+
+/// A search for this client.
+pub fn request_for(client: ClientId, service: ServiceId, within: Interval) -> SearchRequest {
+    let mut search = request(service, within);
+    search.parties[0].client = Some(client);
+    search
 }
 
 pub fn allocation_of(slot: &Slot, bookable: BookableId) -> Vec<&Allocation> {

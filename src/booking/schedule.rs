@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::{ScheduleId, BookableId, OrgId, Result, ServiceId};
 use crate::{Entity, Table};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Interval {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,

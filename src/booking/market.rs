@@ -15,14 +15,14 @@ use super::times::{clash, covers, overlap, Times};
 use super::variants::resolve;
 use super::{
     Allocation, Attributes, Axes, BookableId, BookableRow, ClientId, ClientRow, Condition, Engagement, Error, Grouped, Groups, Interval, Need, OccupancyRow, OrgId,
-    Party, Result, SearchRequest, Service, ServiceId, ServiceRow, ServiceWant,
+    Party, Presence, Result, SearchRequest, Service, ServiceId, ServiceRow, ServiceWant, Status,
 };
 
 /// The bookables picked for each role of a service.
 pub(super) type Picks = Vec<Vec<usize>>;
 
 /// One kind of bookable a service needs, shared by every step that asks for the same thing.
-struct Role {
+struct Pool {
     candidates: Vec<usize>,
     count: usize,
 }
@@ -30,7 +30,6 @@ struct Role {
 /// A service wanted by a party, with every way its roles can be filled.
 pub(super) struct Plan {
     pub(super) service: Arc<ServiceRow>,
-    pub(super) seats: u32,
     client: Option<Attributes>,
     client_id: Option<ClientId>,
     need_roles: Vec<Vec<usize>>,
@@ -41,6 +40,8 @@ pub(super) struct Placed {
     pub(super) allocations: Vec<Allocation>,
     pub(super) price: i64,
     pub(super) end: DateTime<Utc>,
+    /// When the client is there: from the first step they are present to the last.
+    pub(super) client: Interval,
 }
 
 pub(super) struct Market {
@@ -63,9 +64,9 @@ fn role_key(who: &Condition) -> String {
 }
 
 /// The roles of a service (needs with the same condition are one role) and which role each need is.
-fn roles(service: &Service, bookables: &[BookableRow]) -> (Vec<Role>, Vec<Vec<usize>>) {
+fn roles(service: &Service, bookables: &[BookableRow]) -> (Vec<Pool>, Vec<Vec<usize>>) {
     let mut keys: Vec<String> = vec![];
-    let mut roles: Vec<Role> = vec![];
+    let mut roles: Vec<Pool> = vec![];
     let need_roles = service
         .steps
         .iter()
@@ -77,7 +78,7 @@ fn roles(service: &Service, bookables: &[BookableRow]) -> (Vec<Role>, Vec<Vec<us
                     let index = keys.iter().position(|known| *known == key).unwrap_or_else(|| {
                         keys.push(key);
                         let candidates = (0..bookables.len()).filter(|i| need.who.holds(&bookables[*i].attributes)).collect();
-                        roles.push(Role { candidates, count: 0 });
+                        roles.push(Pool { candidates, count: 0 });
                         roles.len() - 1
                     });
                     roles[index].count = roles[index].count.max(need.count as usize);
@@ -89,7 +90,7 @@ fn roles(service: &Service, bookables: &[BookableRow]) -> (Vec<Role>, Vec<Vec<us
     (roles, need_roles)
 }
 
-fn assignments(roles: &[Role]) -> Vec<Picks> {
+fn assignments(roles: &[Pool]) -> Vec<Picks> {
     match roles.is_empty() {
         true => vec![vec![]],
         false => roles.iter().map(|role| role.candidates.iter().copied().combinations(role.count).collect::<Vec<_>>()).multi_cartesian_product().collect(),
@@ -123,14 +124,14 @@ impl Market {
             .collect::<Result<_>>()?;
         let (services, clients) = (Self::services(pool, request).await?, Self::clients(pool, request).await?);
         let named: Vec<ClientId> = request.parties.iter().filter_map(|party| party.client).collect();
-        Ok(Self { bookables, services, clients, taken, open, busy: busy(pool, &named, ignoring).await?, within: request.within })
+        Ok(Self { bookables, services, clients, taken, open, busy: busy(pool, &named, &request.within, ignoring).await?, within: request.within })
     }
 
-    /// Occupancies of live appointments and of holds that have not expired.
+    /// Occupancies of live appointments, among them holds that have not expired.
     async fn taken(pool: &PgPool, within: &Interval, ignoring: Option<Uuid>) -> Result<Vec<OccupancyRow>> {
-        let query = "SELECT o.* FROM occupancies o LEFT JOIN holds h ON h.id = o.hold_id
-            WHERE o.deleted_at IS NULL AND o.starts_at < $2 AND o.ends_at > $1 AND (o.appointment_id IS NOT NULL OR (h.deleted_at IS NULL AND h.expires_at > now()))
-            AND ($3::uuid IS NULL OR COALESCE(o.appointment_id, o.hold_id) <> $3)";
+        let query = "SELECT o.* FROM occupancies o JOIN appointments a ON a.id = o.appointment_id
+            WHERE o.bookable_id IS NOT NULL AND o.deleted_at IS NULL AND o.starts_at < $2 AND o.ends_at > $1
+            AND a.deleted_at IS NULL AND (a.status <> 'held' OR a.expires_at > now()) AND ($3::uuid IS NULL OR o.appointment_id <> $3)";
         Ok(sqlx::query_as(query).bind(within.start).bind(within.end).bind(ignoring).fetch_all(pool).await?)
     }
 
@@ -154,38 +155,50 @@ impl Market {
             .iter()
             .map(|want| {
                 let service = self.services.get(&want.service).ok_or(Error::NotFound)?;
-                Ok(self.plan(want, party.seats, Arc::clone(service), (client.clone(), party.client)))
+                Ok(self.plan(want, Arc::clone(service), (client.clone(), party.client)))
             })
             .collect()
     }
 
-    fn plan(&self, want: &ServiceWant, seats: u32, service: Arc<ServiceRow>, (client, client_id): (Option<Attributes>, Option<ClientId>)) -> Plan {
+    fn plan(&self, want: &ServiceWant, service: Arc<ServiceRow>, (client, client_id): (Option<Attributes>, Option<ClientId>)) -> Plan {
         let (roles, need_roles) = roles(&service.data, &self.bookables);
         let wanted = |picks: &Picks| {
             let chosen = picks.iter().flatten().map(|i| &self.bookables[*i].attributes);
             want.wants.iter().all(|filter| chosen.clone().any(|attributes| filter.holds(attributes)))
         };
         let assignments = assignments(&roles).into_iter().filter(wanted).collect();
-        Plan { service, seats, client, client_id, need_roles, assignments }
+        Plan { service, client, client_id, need_roles, assignments }
     }
 
-    fn in_use(&self, bookable: &BookableRow, during: &Interval, placed: &[Allocation]) -> u32 {
-        let existing = self.taken.iter().filter(|row| row.bookable_id == bookable.id && row.engagement == Engagement::Engaged);
-        let existing = existing.filter(|row| overlap(&Interval { start: row.starts_at, end: row.ends_at }, during)).map(|row| row.seats);
-        let ours = placed.iter().filter(|a| a.bookable == bookable.id && a.engagement == Engagement::Engaged && overlap(&a.during, during));
-        existing.chain(ours.map(|a| a.seats)).sum()
+    /// The seats of the bookable used in the time by engaged rows with one of these statuses, already taken or placed.
+    fn in_use(&self, bookable: &BookableRow, during: &Interval, placed: &[Allocation], statuses: &[Status]) -> u32 {
+        let existing = self.taken.iter().filter(|row| row.bookable_id == Some(bookable.id) && row.engagement == Engagement::Engaged && statuses.contains(&row.status));
+        let existing = existing.filter(|row| overlap(&Interval { start: row.starts_at, end: row.ends_at }, during)).map(|_| 1);
+        let ours = placed.iter().filter(|a| a.bookable == bookable.id && a.engagement == Engagement::Engaged && statuses.contains(&a.status) && overlap(&a.during, during));
+        existing.chain(ours.map(|_| 1)).sum()
     }
 
-    fn fits(&self, bookable: &BookableRow, service: ServiceId, allocation: &Allocation, placed: &[Allocation]) -> bool {
-        let open = self.open.get(&(bookable.id, service));
-        open.is_some_and(|open| covers(open, &allocation.during)) && self.in_use(bookable, &allocation.during, placed) + allocation.seats <= bookable.capacity
+    /// `booked` while the room has capacity, `waitlist` while it has a place, otherwise `None`; `None` too when closed.
+    fn status_in(&self, bookable: &BookableRow, service: ServiceId, allocation: &Allocation, placed: &[Allocation]) -> Option<Status> {
+        let open = self.open.get(&(bookable.id, service)).is_some_and(|open| covers(open, &allocation.during));
+        let used = |statuses: &[Status]| self.in_use(bookable, &allocation.during, placed, statuses);
+        let seats = 1;
+        if !open {
+            None
+        } else if used(&[Status::Held, Status::Booked, Status::Confirmed]) + seats <= bookable.capacity {
+            Some(Status::Booked)
+        } else {
+            (used(&[Status::Waitlist]) + seats <= bookable.waitlist).then_some(Status::Waitlist)
+        }
     }
 
     fn allocate(&self, plan: &Plan, need: &Need, pick: usize, during: Interval, placed: &[Allocation]) -> Option<Allocation> {
         let bookable = &self.bookables[pick];
-        let allocation = Allocation { bookable: bookable.id, during, engagement: need.engagement, seats: plan.seats };
-        let blocking = need.engagement == Engagement::Engaged;
-        (!blocking || self.fits(bookable, plan.service.id, &allocation, placed)).then_some(allocation)
+        let allocation = Allocation { bookable: bookable.id, during, engagement: need.engagement, role: need.role, placement: 0, status: Status::Booked };
+        match need.engagement {
+            Engagement::Engaged => self.status_in(bookable, plan.service.id, &allocation, placed).map(|status| Allocation { status, ..allocation }),
+            _ => Some(allocation),
+        }
     }
 
     /// The allocations of one step, or `None` when a need cannot be met.
@@ -203,13 +216,17 @@ impl Market {
     pub(super) fn place(&self, plan: &Plan, picks: &Picks, start: DateTime<Utc>, before: &[Allocation]) -> Option<Placed> {
         let people = picks.iter().flatten().map(|i| &self.bookables[*i].attributes).chain(plan.client.iter());
         let (durations, price) = resolve(&plan.service, &people.collect::<Vec<_>>());
-        let (end, allocations) = durations.iter().enumerate().try_fold((start, vec![]), |(cursor, mut mine), (index, duration)| {
+        let (end, allocations, present) = durations.iter().enumerate().try_fold((start, vec![], vec![]), |(cursor, mut mine, mut present), (index, duration)| {
             let during = Interval { start: cursor, end: cursor + span(*duration) };
             mine.extend(self.step(plan, picks, index, during, &[before, &mine].concat())?);
-            Some((during.end, mine))
+            if plan.service.steps[index].client == Presence::Present {
+                present.push(during);
+            }
+            Some((during.end, mine, present))
         })?;
+        let client = Interval { start: present.iter().map(|during| during.start).min().unwrap_or(start), end: present.iter().map(|during| during.end).max().unwrap_or(end) };
         let inside = self.within.start <= start && end <= self.within.end;
-        let free = !plan.client_id.and_then(|client| self.busy.get(&client)).is_some_and(|calendar| clash(calendar, &Interval { start, end }));
-        (inside && free).then_some(Placed { allocations, price, end })
+        let free = !plan.client_id.and_then(|client_id| self.busy.get(&client_id)).is_some_and(|calendar| clash(calendar, &client));
+        (inside && free).then_some(Placed { allocations, price, end, client })
     }
 }

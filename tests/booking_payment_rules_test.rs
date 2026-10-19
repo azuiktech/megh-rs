@@ -7,7 +7,7 @@ mod booking_support;
 use booking_support::*;
 use chrono::{Duration, Utc};
 use megh::booking::{
-    Amount, Appointments, AppointmentRow, Confirmation, Error, Filter, IdempotencyKey, Interval, Payment, PaymentMethod, PaymentMethodId, PaymentMethodRow, Price, Reservations,
+    Amount, Appointments, AppointmentRow, Error, Filter, IdempotencyKey, Interval, Payment, PaymentMethod, PaymentMethodId, PaymentMethodRow, Price, Reservations,
     Search, ServiceRow, Settlement, Slots,
 };
 use sqlx::PgPool;
@@ -28,7 +28,7 @@ async fn world(pool: PgPool) -> World {
     }
     let massage = service(&pool, org, "massage", 60, Some(is("role", "therapist")), is("kind", "room")).await;
     sqlx::query("UPDATE services SET attributes = '{\"category\": \"massage\"}' WHERE id = $1").bind(massage.id).execute(&pool).await.unwrap();
-    let client = client(&pool).await;
+    let client = client_of(&pool, org).await;
     World { pool, org, massage, client }
 }
 
@@ -40,13 +40,12 @@ impl World {
 
     /// Books the hour of day 1 that starts at `hour` and pays with the method.
     async fn pay_with(&self, method: &PaymentMethodRow, amount: Amount, hour: u32) -> Result<AppointmentRow, Error> {
-        let (request, key) = (request(self.massage.id, between(1, hour, hour + 1)), format!("hour-{hour}"));
+        let (request, key) = (request_for(self.client.id, self.massage.id, between(1, hour, hour + 1)), format!("hour-{hour}"));
         let slot = Slots::new(self.pool.clone()).find(&request).await.unwrap().remove(0);
         let reservations = Reservations::new(self.pool.clone());
-        let hold = reservations.hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap();
-        let payments = vec![Payment { method: method.id, amount }];
-        let confirmation = Confirmation { clients: vec![self.client.id], payer: self.client.id, payments, attributes: serde_json::json!({}) };
-        reservations.confirm(hold.id, confirmation, IdempotencyKey(key)).await
+        let hold = reservations.hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap().remove(0);
+        let payment = Payment { payer_id: self.client.id, method: method.id, amount };
+        reservations.book_held(hold.id, payment, IdempotencyKey(key)).await
     }
 
     async fn uses_left(&self, method: &PaymentMethodRow) -> Amount {
@@ -77,7 +76,7 @@ async fn a_method_whose_filter_fails_for_the_service_does_not_pay_and_nothing_is
     let result = w.pay_with(&method, Amount::Uses(1), 9).await;
     assert!(matches!(result, Err(Error::NotEligible(id)) if id == method.id));
     assert_eq!(w.uses_left(&method).await, Amount::Uses(10));
-    let booked: i64 = sqlx::query_scalar("SELECT count(*) FROM appointments").fetch_one(&pool).await.unwrap();
+    let booked: i64 = sqlx::query_scalar("SELECT count(*) FROM appointments WHERE status = 'booked'").fetch_one(&pool).await.unwrap();
     assert_eq!(booked, 0);
 }
 

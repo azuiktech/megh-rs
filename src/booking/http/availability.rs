@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::common::{check_scope, instant, money, span_of, zone_of};
-use super::error::ApiError;
+use crate::auth::api::ApiError;
 use super::AppContext;
 use crate::booking::{
     ClientId, Condition, Filter, Interval, Party, Search, SearchRequest, ServiceId, ServiceWant, Slot, Slots,
@@ -41,7 +41,6 @@ struct SearchBody {
 #[serde(deny_unknown_fields)]
 struct PartyBody {
     client_id: Option<ClientId>,
-    seats: Option<u32>,
     services: Vec<ServiceBody>,
 }
 
@@ -67,10 +66,9 @@ fn service_want(body: &ServiceBody) -> Result<ServiceWant, ApiError> {
 }
 
 fn party(body: &PartyBody) -> Result<Party, ApiError> {
-    match (body.seats.unwrap_or(1), body.services.is_empty()) {
-        (0, _) => Err(ApiError::invalid("seats must be at least 1")),
-        (_, true) => Err(ApiError::invalid("a party needs at least one service")),
-        (seats, false) => Ok(Party { client: body.client_id, seats, services: body.services.iter().map(service_want).collect::<Result<_, _>>()? }),
+    match body.services.is_empty() {
+        true => Err(ApiError::invalid("a party needs at least one service")),
+        false => Ok(Party { client: body.client_id, services: body.services.iter().map(service_want).collect::<Result<_, _>>()? }),
     }
 }
 
@@ -109,7 +107,7 @@ fn party_json(index: usize, request: &SearchRequest, slot: &Slot, zone: Tz) -> V
         .filter(|placement| placement.party == index)
         .map(|placement| json!({"service_id": placement.service, "start_time": local(placement.during.start, zone), "end_time": local(placement.during.end, zone), "price": money(&placement.price)}))
         .collect();
-    json!({"client_id": request.parties[index].client, "seats": request.parties[index].seats, "services": services})
+    json!({"client_id": request.parties[index].client, "services": services})
 }
 
 fn slot_json(slot: &Slot, request: &SearchRequest, zone: Tz) -> Value {
@@ -118,7 +116,7 @@ fn slot_json(slot: &Slot, request: &SearchRequest, zone: Tz) -> Value {
     let allocations: Vec<Value> = slot
         .allocations
         .iter()
-        .map(|a| json!({"bookable_id": a.bookable, "start_time": local(a.during.start, zone), "end_time": local(a.during.end, zone), "engagement": a.engagement, "seats": a.seats}))
+        .map(|a| json!({"bookable_id": a.bookable, "start_time": local(a.during.start, zone), "end_time": local(a.during.end, zone), "engagement": a.engagement, "role": a.role, "placement": a.placement}))
         .collect();
     json!({
         "start_time": starts.map(|time| local(time, zone)),

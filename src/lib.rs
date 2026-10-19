@@ -96,5 +96,20 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(include_str!("../migrations/0014_org_required.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!("../migrations/0015_drop_waitlist_entries.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0016_waitlist_status.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0017_client_occupancies.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0018_holds_are_appointments.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0019_flat_appointments.sql"))
+        .execute(pool)
+        .await?;
     Ok(())
 }

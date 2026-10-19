@@ -1,29 +1,24 @@
-//! A client's own calendar: the times they are already booked or held.
+//! A client's own calendar: the times they are already booked, waitlisted or held.
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::times::{insert, Times};
-use super::{AppointmentRow, ClientId, HoldRow, Result};
+use super::{ClientId, Interval, Result};
 
-fn add(calendars: &mut HashMap<ClientId, Times>, client: ClientId, during: &super::Interval) {
-    insert(calendars.entry(client).or_default(), during);
-}
+const BUSY: &str = "SELECT o.client_id, o.starts_at, o.ends_at FROM occupancies o JOIN appointments a ON a.id = o.appointment_id
+    WHERE o.client_id = ANY($1) AND o.deleted_at IS NULL AND o.status <> 'cancelled' AND o.starts_at < $3 AND o.ends_at > $2
+    AND a.deleted_at IS NULL AND (a.status <> 'held' OR a.expires_at > now())
+    AND ($4::uuid IS NULL OR o.appointment_id <> $4)";
 
-/// When each of the clients is booked, by a live appointment, or held, by a hold that has not expired.
-pub(super) async fn busy(pool: &PgPool, clients: &[ClientId], ignoring: Option<Uuid>) -> Result<HashMap<ClientId, Times>> {
-    if clients.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let names: Vec<String> = clients.iter().map(|client| client.0.to_string()).collect();
-    let booked: Vec<AppointmentRow> = sqlx::query_as("SELECT * FROM appointments a WHERE a.deleted_at IS NULL AND ($2::uuid IS NULL OR a.id <> $2) AND EXISTS (SELECT 1 FROM jsonb_array_elements(a.lines) l WHERE l->>'client' = ANY($1))").bind(&names).bind(ignoring).fetch_all(pool).await?;
-    let held: Vec<HoldRow> = sqlx::query_as("SELECT * FROM holds h WHERE h.deleted_at IS NULL AND h.expires_at > now() AND ($2::uuid IS NULL OR h.id <> $2) AND EXISTS (SELECT 1 FROM jsonb_array_elements(h.parties) p WHERE p->>'client' = ANY($1))").bind(&names).bind(ignoring).fetch_all(pool).await?;
-    let mut calendars = HashMap::new();
-    booked.iter().flat_map(|row| row.lines.iter()).filter(|line| clients.contains(&line.client)).for_each(|line| add(&mut calendars, line.client, &line.during));
-    for hold in &held {
-        hold.placements.iter().filter_map(|placement| Some((hold.parties.get(placement.party)?.client?, placement))).filter(|(client, _)| clients.contains(client)).for_each(|(client, placement)| add(&mut calendars, client, &placement.during));
-    }
-    Ok(calendars)
+/// When each of the clients is busy within the window: by a live appointment of any status but cancelled, a hold that has not expired included, found by one range scan on the clients' own rows.
+pub(super) async fn busy(pool: &PgPool, clients: &[ClientId], within: &Interval, ignoring: Option<Uuid>) -> Result<HashMap<ClientId, Times>> {
+    let rows: Vec<(ClientId, DateTime<Utc>, DateTime<Utc>)> = sqlx::query_as(BUSY).bind(clients).bind(within.start).bind(within.end).bind(ignoring).fetch_all(pool).await?;
+    Ok(rows.into_iter().fold(HashMap::new(), |mut calendars, (client, start, end)| {
+        insert(calendars.entry(client).or_default(), &Interval { start, end });
+        calendars
+    }))
 }

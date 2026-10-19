@@ -18,12 +18,13 @@ macro_rules! ids {
 
 ids!(
     BookableId, ClientId, ServiceId, ScheduleId,
-    AppointmentId, HoldId, OccupancyId, PaymentMethodId, WaitlistEntryId, GroupingId
+    AppointmentId, OccupancyId, PaymentMethodId, GroupingId
 );
 
 /// A location, brand or franchise is an `Org`; its id is the org's `Uuid`.
 pub type OrgId = Uuid;
 
+/// Tags and metadata are this one map.
 /// Assorted fields of an entity: any JSON, usually an object.
 pub type Attributes = serde_json::Value;
 
@@ -84,6 +85,10 @@ pub struct Bookable {
     #[cfg_attr(feature = "postgres", sqlx(try_from = "i32"))]
     #[validate(range(min = 1))]
     pub capacity: u32,
+    /// Places for appointments beyond `capacity`; they are `waitlist` appointments.
+    #[cfg_attr(feature = "postgres", sqlx(try_from = "i32"))]
+    #[serde(default)]
+    pub waitlist: u32,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     #[schema(value_type = Object)]
     pub attributes: Attributes,
@@ -176,11 +181,22 @@ pub enum Engagement {
     OnDemand,
 }
 
+/// What a need is for: the room of an appointment, or a provider.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    #[default]
+    Provider,
+    Room,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Need {
     pub who: Condition,
     pub count: u32,
     pub engagement: Engagement,
+    #[serde(default)]
+    pub role: Role,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

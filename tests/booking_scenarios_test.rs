@@ -35,7 +35,7 @@ impl Place {
     }
 
     async fn client(&self, name: &str, tags: Value) -> Value {
-        self.make("clients", json!({"display_name": name, "attributes": tags})).await
+        self.make("clients", json!({"display_name": name, "first_name": name, "last_name": "Client", "attributes": tags})).await
     }
 
     async fn service(&self, name: &str, steps: Value) -> Value {

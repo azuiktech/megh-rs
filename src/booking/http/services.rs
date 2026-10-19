@@ -85,7 +85,7 @@ fn positive(text: &str) -> Result<Duration, ApiError> {
 
 fn step(body: &StepBody) -> Result<Step, ApiError> {
     let needs = body.needs.iter().flatten().map(need).collect::<Result<_, _>>()?;
-    Ok(Step { duration: positive(&body.duration)?, client: body.client.unwrap_or(Presence::Present), needs, attributes: body.attributes.clone().unwrap_or_default() })
+    Ok(Step { duration: positive(&body.duration)?, client: body.client.unwrap_or(Presence::Present), needs, attributes: body.attributes.clone().unwrap_or_else(|| serde_json::json!({})) })
 }
 
 fn variant(body: &VariantBody) -> Result<Variant, ApiError> {
@@ -134,13 +134,13 @@ fn owner(ctx: &Context, org: Option<OrgId>) -> Result<OrgId, ApiError> {
 
 fn built(ctx: &Context, body: ServiceBody) -> Result<Service, ApiError> {
     Ok(Service {
-        org_id: Some(owner(ctx, body.org_id)?),
+        org_id: owner(ctx, body.org_id)?,
         name: named(body.display_name)?,
         mode: body.mode.unwrap_or(Mode::Appointment),
         price: body.price.ok_or_else(|| ApiError::invalid("price is required"))?.price()?,
         steps: body.steps.iter().flatten().map(step).collect::<Result<_, _>>()?,
         variants: body.variants.iter().flatten().map(variant).collect::<Result<_, _>>()?,
-        attributes: body.attributes.unwrap_or_default(),
+        attributes: body.attributes.unwrap_or_else(|| serde_json::json!({})),
     })
 }
 
@@ -167,13 +167,13 @@ impl Collection for Services {
     async fn update(ctx: &Context, current: &ServiceRow, body: ServiceBody, mask: &Mask) -> Result<ServiceRow, ApiError> {
         let given = |field: &str, present: bool| updates(mask, field, present);
         let data = Service {
-            org_id: if given("org_id", body.org_id.is_some()) { Some(owner(ctx, body.org_id)?) } else { current.org_id },
+            org_id: if given("org_id", body.org_id.is_some()) { owner(ctx, body.org_id)? } else { current.org_id },
             name: if given("display_name", body.display_name.is_some()) { named(body.display_name)? } else { current.name.clone() },
             mode: if given("mode", body.mode.is_some()) { body.mode.unwrap_or(Mode::Appointment) } else { current.mode },
             price: if given("price", body.price.is_some()) { body.price.ok_or_else(|| ApiError::invalid("price is required"))?.price()? } else { current.price.clone() },
             steps: if given("steps", body.steps.is_some()) { body.steps.iter().flatten().map(step).collect::<Result<_, _>>()? } else { reparsed(&current.steps)? },
             variants: if given("variants", body.variants.is_some()) { body.variants.iter().flatten().map(variant).collect::<Result<_, _>>()? } else { reparsed(&current.variants)? },
-            attributes: if given("attributes", body.attributes.is_some()) { body.attributes.unwrap_or_default() } else { current.attributes.clone() },
+            attributes: if given("attributes", body.attributes.is_some()) { body.attributes.unwrap_or_else(|| serde_json::json!({})) } else { current.attributes.clone() },
         };
         Ok(ServiceRow::with_timestamps(current.id, data, current.created_at, Utc::now()))
     }

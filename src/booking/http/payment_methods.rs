@@ -117,12 +117,12 @@ impl Collection for PaymentMethods {
     async fn create(ctx: &Context, body: PaymentMethodBody) -> Result<PaymentMethodRow, ApiError> {
         check_owner(ctx, body.owner_id).await?;
         let data = PaymentMethod {
-            org_id: Some(owner(ctx, body.org_id)?),
+            org_id: owner(ctx, body.org_id)?,
             name: named(body.display_name)?,
             owner_id: body.owner_id,
             eligible: eligibility(&body.eligible)?,
             settlement: settlement(body.settlement.as_ref().ok_or_else(|| ApiError::invalid("settlement is required"))?, ctx.zone)?,
-            attributes: body.attributes.unwrap_or_default(),
+            attributes: body.attributes.unwrap_or_else(|| serde_json::json!({})),
         };
         Ok(PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), data))
     }
@@ -133,12 +133,12 @@ impl Collection for PaymentMethods {
             check_owner(ctx, body.owner_id).await?;
         }
         let data = PaymentMethod {
-            org_id: if given("org_id", body.org_id.is_some()) { Some(owner(ctx, body.org_id)?) } else { current.org_id },
+            org_id: if given("org_id", body.org_id.is_some()) { owner(ctx, body.org_id)? } else { current.org_id },
             name: if given("display_name", body.display_name.is_some()) { named(body.display_name)? } else { current.name.clone() },
             owner_id: if given("owner_id", body.owner_id.is_some()) { body.owner_id } else { current.owner_id },
             eligible: if given("eligible", body.eligible.is_some()) { eligibility(&body.eligible)? } else { reparsed(&current.eligible)? },
             settlement: if given("settlement", body.settlement.is_some()) { settlement(body.settlement.as_ref().ok_or_else(|| ApiError::invalid("settlement is required"))?, ctx.zone)? } else { current.settlement.clone() },
-            attributes: if given("attributes", body.attributes.is_some()) { body.attributes.unwrap_or_default() } else { current.attributes.clone() },
+            attributes: if given("attributes", body.attributes.is_some()) { body.attributes.unwrap_or_else(|| serde_json::json!({})) } else { current.attributes.clone() },
         };
         Ok(PaymentMethodRow::with_timestamps(current.id, data, current.created_at, Utc::now()))
     }

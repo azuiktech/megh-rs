@@ -36,8 +36,8 @@ async fn bookables_services_and_clients_are_grouped_too(pool: PgPool) {
     let room = created(&app, org, "bookables", json!({"display_name": "Room 1"})).await;
     let hair = created(&app, org, "services", json!({"display_name": "Hair", "price": {"currency_code": "USD", "units": "0", "nanos": 0}})).await;
     let colour = created(&app, org, "services", json!({"display_name": "Colour", "price": {"currency_code": "USD", "units": "9", "nanos": 0}})).await;
-    let vips = created(&app, org, "clients", json!({"display_name": "VIPs"})).await;
-    let sam = created(&app, org, "clients", json!({"display_name": "Sam"})).await;
+    let vips = created(&app, org, "clients", json!({"display_name": "VIPs", "first_name": "VIPs", "last_name": "Client"})).await;
+    let sam = created(&app, org, "clients", json!({"display_name": "Sam", "first_name": "Sam", "last_name": "Client"})).await;
     let rooms = created(&app, org, "groupings", edge("bookable", &room["id"], &lobby["id"])).await;
     let menu = created(&app, org, "groupings", edge("service", &colour["id"], &hair["id"])).await;
     let people = created(&app, org, "groupings", edge("client", &sam["id"], &vips["id"])).await;
@@ -49,7 +49,7 @@ async fn bookables_services_and_clients_are_grouped_too(pool: PgPool) {
 async fn an_edge_made_over_rest_changes_what_the_calendar_gives_and_a_delete_undoes_it(pool: PgPool) {
     let (brand, location) = (clinic(&pool).await, clinic(&pool).await);
     let room = bookable(&pool, location, "room", 1, &[]).await;
-    let cleaning = service(&pool, "cleaning", 30, None, is("kind", "room")).await;
+    let cleaning = service(&pool, brand, "cleaning", 30, None, is("kind", "room")).await;
     let app = booking_router(pool.clone());
     let hours = json!({"org_id": brand, "date": "2026-11-12", "start_time": "09:00", "end_time": "10:00"});
     created(&app, brand, "schedules", hours).await;

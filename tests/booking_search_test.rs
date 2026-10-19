@@ -33,7 +33,7 @@ impl World {
     }
 
     async fn haircut(&self, length: u64) -> ServiceRow {
-        let service = service(&self.pool, "haircut", length, Some(is("role", "stylist")), is("kind", "room")).await;
+        let service = service(&self.pool, self.org, "haircut", length, Some(is("role", "stylist")), is("kind", "room")).await;
         open_rule(&self.pool, Where { service: Some(service.id), ..Where::default() }, 9, 8).await;
         service
     }
@@ -83,7 +83,7 @@ async fn no_slot_overlaps_closed_time(pool: PgPool) {
 async fn a_provider_without_an_open_rule_is_never_offered(pool: PgPool) {
     let w = world(pool).await;
     let room = w.room(1).await;
-    let haircut = service(&w.pool, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&w.pool, w.org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     let eligible = w.stylist(&[]).await;
     let ineligible = bookable(&w.pool, w.org, "unscheduled", 1, &[("role", "stylist")]).await;
     let slots = w.find(&request(haircut.id, whole_day(1))).await;
@@ -169,7 +169,7 @@ async fn a_variant_changes_duration_and_price_for_the_matching_provider(pool: Pg
     let (master, junior) = (w.stylist(&[("level", "master")]).await, w.stylist(&[("level", "junior")]).await);
     let step = step_of(60, Some(is("role", "stylist")), is("kind", "room"));
     let master_pays_more = Variant { when: is("level", "master"), duration: Some(Change::Add(minutes(15))), price_micros: Some(Change::Add(50_000_000)) };
-    let colour = insert_service(&w.pool, "colour", vec![step], vec![master_pays_more]).await;
+    let colour = insert_service(&w.pool, w.org, "colour", vec![step], vec![master_pays_more]).await;
     open_rule(&w.pool, Where { service: Some(colour.id), ..Where::default() }, 9, 8).await;
     let slots = w.find(&request(colour.id, whole_day(1))).await;
     let master_slot = slots.iter().find(|slot| !allocation_of(slot, master.id).is_empty()).unwrap();
@@ -183,11 +183,11 @@ async fn a_variant_changes_duration_and_price_for_the_matching_provider(pool: Pg
 
 fn step_of(length: u64, provider: Option<megh::booking::Condition>, room: megh::booking::Condition) -> megh::booking::Step {
     let needs = provider.into_iter().map(|who| need(who, Engagement::Engaged)).chain([need(room, Engagement::Engaged)]).collect();
-    megh::booking::Step { duration: minutes(length), client: megh::booking::Presence::Present, needs, attributes: Default::default() }
+    megh::booking::Step { duration: minutes(length), client: megh::booking::Presence::Present, needs, attributes: serde_json::json!({}) }
 }
 
 fn timed(length: u64, client: megh::booking::Presence, needs: Vec<megh::booking::Need>) -> megh::booking::Step {
-    megh::booking::Step { duration: minutes(length), client, needs, attributes: Default::default() }
+    megh::booking::Step { duration: minutes(length), client, needs, attributes: serde_json::json!({}) }
 }
 
 #[sqlx::test]
@@ -202,7 +202,7 @@ async fn hair_colour_frees_the_stylist_between_prep_and_finish(pool: PgPool) {
         timed(30, present, vec![need(who(), Engagement::Free), need(chair(), Engagement::Engaged)]),
         timed(20, present, vec![need(who(), Engagement::Engaged), need(chair(), Engagement::Engaged)]),
     ];
-    let colour = insert_service(&w.pool, "colour", steps, vec![]).await;
+    let colour = insert_service(&w.pool, w.org, "colour", steps, vec![]).await;
     open_rule(&w.pool, Where { service: Some(colour.id), ..Where::default() }, 9, 8).await;
     let slot = w.find(&request(colour.id, whole_day(1))).await.remove(0);
     let mut turns = allocation_of(&slot, stylist.id);
@@ -221,7 +221,7 @@ async fn cleanup_holds_the_room_after_the_client_and_provider_are_done(pool: PgP
         timed(50, megh::booking::Presence::Present, vec![need(is("role", "stylist"), Engagement::Engaged), need(is("kind", "room"), Engagement::Engaged)]),
         timed(10, megh::booking::Presence::Absent, vec![need(is("kind", "room"), Engagement::Engaged)]),
     ];
-    let therapy = insert_service(&w.pool, "therapy", steps, vec![]).await;
+    let therapy = insert_service(&w.pool, w.org, "therapy", steps, vec![]).await;
     open_rule(&w.pool, Where { service: Some(therapy.id), ..Where::default() }, 9, 8).await;
     let slot = w.find(&request(therapy.id, whole_day(1))).await.remove(0);
     assert_eq!(covered(&allocation_of(&slot, stylist.id)), minutes(50));
@@ -233,8 +233,8 @@ async fn a_partys_services_follow_each_other_back_to_back(pool: PgPool) {
     let w = world(pool).await;
     let _room = w.room(1).await;
     let (cutter, colourist) = (w.stylist(&[("skill", "cut")]).await, w.stylist(&[("skill", "colour")]).await);
-    let cut = service(&w.pool, "cut", 30, Some(is("skill", "cut")), is("kind", "room")).await;
-    let colour = service(&w.pool, "colour", 60, Some(is("skill", "colour")), is("kind", "room")).await;
+    let cut = service(&w.pool, w.org, "cut", 30, Some(is("skill", "cut")), is("kind", "room")).await;
+    let colour = service(&w.pool, w.org, "colour", 60, Some(is("skill", "colour")), is("kind", "room")).await;
     for service in [&cut, &colour] {
         open_rule(&w.pool, Where { service: Some(service.id), ..Where::default() }, 9, 8).await;
     }

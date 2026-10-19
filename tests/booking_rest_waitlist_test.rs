@@ -23,7 +23,7 @@ async fn studio(pool: PgPool) -> Studio {
     let org = clinic(&pool).await;
     let app = booking_router(pool.clone());
     let class = created(&app, org, "services", json!({"display_name": "Music class", "mode": "class", "price": {"currency_code": "USD", "units": "20", "nanos": 0}})).await;
-    let (ann, ben) = (created(&app, org, "clients", json!({"display_name": "Ann"})).await, created(&app, org, "clients", json!({"display_name": "Ben"})).await);
+    let (ann, ben) = (created(&app, org, "clients", json!({"display_name": "Ann", "first_name": "Ann", "last_name": "Client"})).await, created(&app, org, "clients", json!({"display_name": "Ben", "first_name": "Ben", "last_name": "Client"})).await);
     Studio { app, org, class, ann, ben }
 }
 
@@ -97,7 +97,7 @@ async fn an_org_sees_the_waits_of_the_orgs_grouped_under_it_and_not_those_of_oth
         let app = app.clone();
         async move {
             let class = created(&app, org, "services", json!({"display_name": name, "price": {"currency_code": "USD", "units": "1", "nanos": 0}})).await;
-            let client = created(&app, org, "clients", json!({"display_name": name})).await;
+            let client = created(&app, org, "clients", json!({"display_name": name, "first_name": name, "last_name": "Client"})).await;
             let body = json!({"client_id": client["id"], "target": {"window": {"service_id": class["id"], "start_time": "2026-11-05T18:00:00", "end_time": "2026-11-05T19:00:00"}}});
             created(&app, org, "waitlistEntries", body).await
         }

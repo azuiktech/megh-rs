@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
@@ -25,7 +24,8 @@ ids!(
 pub type OrgId = Uuid;
 
 /// Tags and metadata are this one map.
-pub type Attributes = BTreeMap<String, serde_json::Value>;
+/// Assorted fields of an entity: any JSON, usually an object.
+pub type Attributes = serde_json::Value;
 
 /// A condition over the key/value map of an entity. Scriptable implementations come later.
 #[typetag::serde]
@@ -53,7 +53,7 @@ pub enum Grouped {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "groupings")]
 pub struct Grouping {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub kind: Grouped,
     pub member_id: Uuid,
     pub group_id: Uuid,
@@ -77,8 +77,14 @@ pub struct Bookable {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "clients")]
 pub struct Client {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub name: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: Option<String>,
+    pub home_phone: Option<String>,
+    pub work_phone: Option<String>,
+    pub mobile_phone: Option<String>,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     pub attributes: Attributes,
 }
@@ -107,7 +113,7 @@ pub struct Price {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "services")]
 pub struct Service {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub name: String,
     pub mode: Mode,
     #[cfg_attr(feature = "postgres", sqlx(json))]
@@ -175,9 +181,10 @@ pub type ServiceRow = Entity<ServiceId, Service>;
 
 /// Ready-made services. Each returns an ordinary service of ordinary steps.
 pub trait Templates: Sized {
-    fn simple(name: &str, duration: Duration, provider: Condition, room: Condition) -> Self;
+    fn simple(org: OrgId, name: &str, duration: Duration, provider: Condition, room: Condition) -> Self;
     fn with_cleanup(self, cleanup: Duration, room: Condition) -> Self;
     fn processed(
+        org: OrgId,
         name: &str,
         prep: Duration,
         wait: Duration,
@@ -185,7 +192,7 @@ pub trait Templates: Sized {
         provider: Condition,
         room: Condition,
     ) -> Self;
-    fn handoff(name: &str, turns: Vec<(Condition, Duration)>, room: Condition) -> Self;
-    fn room_only(name: &str, duration: Duration, room: Condition) -> Self;
-    fn session(name: &str, duration: Duration, capacity: u32, room: Condition) -> Self;
+    fn handoff(org: OrgId, name: &str, turns: Vec<(Condition, Duration)>, room: Condition) -> Self;
+    fn room_only(org: OrgId, name: &str, duration: Duration, room: Condition) -> Self;
+    fn session(org: OrgId, name: &str, duration: Duration, capacity: u32, room: Condition) -> Self;
 }

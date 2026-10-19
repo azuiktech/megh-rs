@@ -101,20 +101,17 @@ async fn insert_occupancy(tx: &mut Tx<'_>, owner: (Option<HoldId>, Option<Appoin
     Ok(())
 }
 
-async fn zone(tx: &mut Tx<'_>, org: Option<OrgId>) -> Result<String> {
-    let found: Option<Option<String>> = match org {
-        Some(org) => sqlx::query_scalar("SELECT timezone FROM organizations WHERE id = $1").bind(org).fetch_optional(tx.as_mut()).await?,
-        None => None,
-    };
+async fn zone(tx: &mut Tx<'_>, org: OrgId) -> Result<String> {
+    let found: Option<Option<String>> = sqlx::query_scalar("SELECT timezone FROM organizations WHERE id = $1").bind(org).fetch_optional(tx.as_mut()).await?;
     Ok(found.flatten().unwrap_or_else(|| "UTC".into()))
 }
 
-async fn insert_hold(tx: &mut Tx<'_>, request: &SearchRequest, slot: &Slot, until: DateTime<Utc>, org: Option<OrgId>) -> Result<HoldId> {
+async fn insert_hold(tx: &mut Tx<'_>, request: &SearchRequest, slot: &Slot, until: DateTime<Utc>, org: OrgId) -> Result<HoldId> {
     let id = HoldId(Uuid::new_v4());
     let tz = zone(tx, org).await?;
     let query = "INSERT INTO holds (id, org_id, tz, parties, placements, expires_at, attributes, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())";
     let parties = Json(copy_parties(&request.parties)?);
-    sqlx::query(query).bind(id).bind(org).bind(tz).bind(parties).bind(Json(&slot.placements)).bind(until).bind(Json(Attributes::new())).execute(tx.as_mut()).await?;
+    sqlx::query(query).bind(id).bind(org).bind(tz).bind(parties).bind(Json(&slot.placements)).bind(until).bind(Json(serde_json::json!({}))).execute(tx.as_mut()).await?;
     for allocation in &slot.allocations {
         insert_occupancy(tx, (Some(id), None), allocation).await?;
     }
@@ -153,8 +150,7 @@ fn booked_lines(hold: &HoldRow, clients: &[ClientId]) -> Result<Vec<BookedLine>>
 
 /// What the services look like to a payment method's `eligible` filter: `display_name`, `mode` and `attributes`.
 fn subject(service: &ServiceRow) -> Attributes {
-    let mode = serde_json::to_value(service.mode).unwrap_or_default();
-    Attributes::from([("display_name".to_string(), service.name.clone().into()), ("mode".to_string(), mode), ("attributes".to_string(), serde_json::json!(service.attributes))])
+    serde_json::json!({"display_name": service.name, "mode": service.mode, "attributes": service.attributes})
 }
 
 /// The time the appointment takes, from its first line to its last.
@@ -276,7 +272,7 @@ impl Appointments for Reservations {
         let bookables = lock_bookables(&mut tx, slot).await?;
         check_clients(&self.pool, request, slot, None).await?;
         admit(&mut tx, &rules, request, slot, &bookables, None).await?;
-        let id = insert_hold(&mut tx, request, slot, until, bookables.first().map(|b| b.org_id)).await?;
+        let id = insert_hold(&mut tx, request, slot, until, bookables.first().ok_or(Error::NotFound)?.org_id).await?;
         let row: HoldRow = sqlx::query_as("SELECT * FROM holds WHERE id = $1").bind(id).fetch_one(tx.as_mut()).await?;
         tx.commit().await?;
         Ok(row)

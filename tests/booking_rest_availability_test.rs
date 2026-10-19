@@ -34,7 +34,7 @@ async fn salon(pool: PgPool) -> Salon {
     sqlx::query("UPDATE organizations SET timezone = 'America/New_York' WHERE id = $1").bind(org).execute(&pool).await.unwrap();
     let room = bookable(&pool, org, "room", 1, &[("kind", "room")]).await;
     let stylist = bookable(&pool, org, "stylist", 1, &[("role", "stylist"), ("gender", "female")]).await;
-    let haircut = service(&pool, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&pool, org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     let app = booking_router(pool);
     for bookable in [&room, &stylist] {
         let body = json!({"bookable_id": bookable.id, "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"});
@@ -135,7 +135,7 @@ async fn parties_may_start_apart_by_the_party_offset(pool: PgPool) {
 async fn a_bad_request_is_an_aip_193_error(pool: PgPool) {
     let salon = salon(pool.clone()).await;
     let elsewhere = org(&pool, "elsewhere").await;
-    let foreign = service(&pool, "foreign", 30, None, is("kind", "room")).await;
+    let foreign = service(&pool, elsewhere, "foreign", 30, None, is("kind", "room")).await;
     sqlx::query("UPDATE services SET org_id = $1 WHERE id = $2").bind(elsewhere).bind(foreign.id).execute(&pool).await.unwrap();
     let window = ("2026-11-04T09:00:00", "2026-11-04T11:00:00");
     let one = |party: Value| json!({"parties": [party], "start_time": window.0, "end_time": window.1});

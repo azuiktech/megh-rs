@@ -171,5 +171,5 @@ fn mentioned(wanted: &Literal, subject: &Attributes) -> bool {
         Value::Array(items) => items.iter().any(|item| equals(item, wanted)),
         scalar => equals(scalar, wanted),
     };
-    subject.values().any(anywhere)
+    subject.as_object().is_some_and(|fields| fields.values().any(anywhere))
 }

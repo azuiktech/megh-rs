@@ -92,7 +92,7 @@ impl Collection for Groupings {
         check_member(ctx, kind, member).await?;
         check_group(ctx, kind, group).await?;
         check_loop(ctx, kind, member, group).await?;
-        Ok(GroupingRow::new(Uuid::new_v4(), Grouping { org_id: Some(ctx.org), kind, member_id: member, group_id: group }))
+        Ok(GroupingRow::new(Uuid::new_v4(), Grouping { org_id: ctx.org, kind, member_id: member, group_id: group }))
     }
 
     async fn update(_: &Context, _: &GroupingRow, _: GroupingBody, _: &Mask) -> Result<GroupingRow, ApiError> {

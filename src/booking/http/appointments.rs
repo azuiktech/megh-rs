@@ -89,7 +89,7 @@ pub(super) fn routes() -> Router<BookingState> {
 
 fn confirmation(clients: Option<Vec<ClientId>>, payer: ClientId, payments: Option<Vec<PaymentBody>>, attributes: Option<Attributes>) -> Result<Confirmation, ApiError> {
     let payments = payments.iter().flatten().map(|p| Ok(crate::booking::Payment { method: p.method, amount: p.amount.amount()? })).collect::<Result<_, ApiError>>()?;
-    Ok(Confirmation { clients: clients.unwrap_or_default(), payer, payments, attributes: attributes.unwrap_or_default() })
+    Ok(Confirmation { clients: clients.unwrap_or_default(), payer, payments, attributes: attributes.unwrap_or_else(|| serde_json::json!({})) })
 }
 
 /// The payer, the clients and the payment methods must belong to the org's subtree or to no org.

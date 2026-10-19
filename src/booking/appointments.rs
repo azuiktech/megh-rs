@@ -69,7 +69,7 @@ pub struct Slot {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "holds")]
 pub struct Hold {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub tz: String,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     pub parties: Vec<Party>,
@@ -126,7 +126,7 @@ pub struct Payment {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "appointments")]
 pub struct Appointment {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub tz: String,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     pub lines: Vec<BookedLine>,
@@ -164,7 +164,7 @@ pub enum Settlement {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "payment_methods")]
 pub struct PaymentMethod {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub name: String,
     pub owner_id: Option<ClientId>,
     #[cfg_attr(feature = "postgres", sqlx(json))]
@@ -185,7 +185,7 @@ pub enum Target {
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "waitlist_entries")]
 pub struct WaitlistEntry {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub client_id: ClientId,
     #[cfg_attr(feature = "postgres", sqlx(json))]
     pub target: Target,

@@ -27,7 +27,7 @@ async fn world(pool: PgPool) -> World {
         open_rule(&pool, Where { bookable: Some(stylist.id), ..Where::default() }, 9, 8).await;
     }
     open_rule(&pool, Where { bookable: Some(room.id), ..Where::default() }, 9, 8).await;
-    let haircut = service(&pool, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&pool, org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     let (ann, ben) = (client(&pool).await, client(&pool).await);
     World { pool, haircut, ann, ben, _room: room }
 }
@@ -54,7 +54,7 @@ impl World {
         let slot = Slots::new(self.pool.clone()).find(&request).await.unwrap().remove(0);
         let reservations = Reservations::new(self.pool.clone());
         let hold = reservations.hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap();
-        let confirmation = Confirmation { clients: vec![client.id], payer: client.id, payments: vec![], attributes: Default::default() };
+        let confirmation = Confirmation { clients: vec![client.id], payer: client.id, payments: vec![], attributes: serde_json::json!({}) };
         reservations.confirm(hold.id, confirmation, IdempotencyKey(key.into())).await.unwrap()
     }
 }
@@ -108,7 +108,7 @@ async fn a_hold_over_a_time_the_client_already_has_is_refused(pool: PgPool) {
 #[sqlx::test]
 async fn each_service_of_a_party_keeps_clear_of_the_clients_time(pool: PgPool) {
     let w = world(pool.clone()).await;
-    let colour = service(&pool, "colour", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let colour = service(&pool, w.haircut.org_id, "colour", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     open_rule(&pool, Where { service: Some(colour.id), ..Where::default() }, 9, 8).await;
     w.book(&w.ann, "ann-9").await;
     let mut request = w.request_for(Some(&w.ann), 8, 13);

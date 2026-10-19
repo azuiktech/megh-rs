@@ -18,7 +18,7 @@ struct World {
 async fn world(pool: PgPool) -> World {
     let org = org(&pool, "clinic").await;
     let room = bookable(&pool, org, "room", 1, &[("kind", "room")]).await;
-    let service = service(&pool, "cleaning", 60, None, is("kind", "room")).await;
+    let service = service(&pool, org, "cleaning", 60, None, is("kind", "room")).await;
     World { pool, org, room, service }
 }
 
@@ -53,7 +53,7 @@ async fn open_time_is_clipped_to_the_window(pool: PgPool) {
 #[sqlx::test]
 async fn a_combination_with_no_matching_open_rule_has_no_time(pool: PgPool) {
     let w = world(pool).await;
-    let other = service(&w.pool, "other", 30, None, is("kind", "room")).await;
+    let other = service(&w.pool, w.org, "other", 30, None, is("kind", "room")).await;
     open_rule(&w.pool, Where { service: Some(other.id), bookable: Some(w.room.id), ..Where::default() }, 9, 8).await;
     assert_eq!(w.open(&whole_day(1)).await, vec![]);
 }

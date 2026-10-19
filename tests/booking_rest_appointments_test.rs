@@ -39,7 +39,7 @@ async fn salon(pool: PgPool) -> Salon {
 async fn open_in(pool: &PgPool, org: Uuid) -> Salon {
     let room = bookable(pool, org, "room", 1, &[("kind", "room")]).await;
     let stylist = bookable(pool, org, "stylist", 1, &[("role", "stylist")]).await;
-    let haircut = service(pool, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(pool, org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     sqlx::query("UPDATE services SET org_id = $1 WHERE id = $2").bind(org).bind(haircut.id).execute(pool).await.unwrap();
     let client = client(pool).await;
     sqlx::query("UPDATE clients SET org_id = $1 WHERE id = $2").bind(org).bind(client.id).execute(pool).await.unwrap();
@@ -230,12 +230,12 @@ async fn a_slot_taken_in_the_meantime_is_refused(pool: PgPool) {
 async fn a_prepaid_method_pays_and_an_empty_one_leaves_the_slot_free(pool: PgPool) {
     let salon = salon(pool.clone()).await;
     let pass = |uses| PaymentMethod {
-        org_id: Some(salon.org),
+        org_id: salon.org,
         name: "pass".into(),
         owner_id: Some(salon.client.id),
         eligible: is("mode", "appointment"),
         settlement: Settlement::Prepaid { balance: Amount::Uses(uses), valid: None },
-        attributes: Default::default(),
+        attributes: serde_json::json!({}),
     };
     let (full, empty) = (PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), pass(5)).insert(&pool).await.unwrap(), PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), pass(0)).insert(&pool).await.unwrap());
     let slot = salon.first_slot().await;

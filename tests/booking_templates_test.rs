@@ -23,13 +23,17 @@ fn is(key: &str, value: &str) -> Condition {
 }
 
 fn attributes(key: &str, value: &str) -> Attributes {
-    Attributes::from([(key.to_string(), serde_json::json!(value))])
+    serde_json::json!({ key: value })
 }
 
 fn stylist() -> Attributes { attributes("role", "stylist") }
 fn hygienist() -> Attributes { attributes("role", "hygienist") }
 fn dentist() -> Attributes { attributes("role", "dentist") }
 fn chair() -> Attributes { attributes("kind", "chair") }
+
+fn org() -> uuid::Uuid {
+    uuid::Uuid::nil()
+}
 
 fn minutes(count: u64) -> Duration {
     Duration::from_secs(count * 60)
@@ -50,15 +54,15 @@ fn durations(service: &Service) -> Vec<Duration> {
 }
 
 fn simple() -> Service {
-    Service::simple("Consultation", minutes(60), is("role", "stylist"), is("kind", "chair"))
+    Service::simple(org(), "Consultation", minutes(60), is("role", "stylist"), is("kind", "chair"))
 }
 
 fn colour() -> Service {
-    Service::processed("Hair colour", minutes(10), minutes(30), minutes(20), is("role", "stylist"), is("kind", "chair"))
+    Service::processed(org(), "Hair colour", minutes(10), minutes(30), minutes(20), is("role", "stylist"), is("kind", "chair"))
 }
 
 fn dental() -> Service {
-    Service::handoff(
+    Service::handoff(org(), 
         "Dental procedure",
         vec![
             (is("role", "hygienist"), minutes(15)),
@@ -153,7 +157,7 @@ fn handoff_keeps_the_client_and_the_room_throughout() {
 
 #[test]
 fn room_only_needs_no_provider() {
-    let service = Service::room_only("Float", minutes(60), is("kind", "chair"));
+    let service = Service::room_only(org(), "Float", minutes(60), is("kind", "chair"));
     assert_eq!(durations(&service), vec![minutes(60)]);
     assert_eq!(service.steps[0].needs.len(), 1);
     assert_eq!(engagement(&service.steps[0], &chair()), Some(Engagement::Engaged));
@@ -161,7 +165,7 @@ fn room_only_needs_no_provider() {
 
 #[test]
 fn session_is_a_class_of_one_step_in_a_room() {
-    let service = Service::session("Music class", minutes(60), 20, is("kind", "chair"));
+    let service = Service::session(org(), "Music class", minutes(60), 20, is("kind", "chair"));
     assert_eq!(service.mode, Mode::Class);
     assert_eq!(durations(&service), vec![minutes(60)]);
     assert_eq!(engagement(&service.steps[0], &chair()), Some(Engagement::Engaged));

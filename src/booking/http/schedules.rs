@@ -80,7 +80,7 @@ fn resource(row: &ScheduleRow, collection: Collection, org: Uuid, zone: Tz) -> S
     ScheduleResource {
         name: format!("orgs/{org}/{}/{}", collection.name, row.id.0),
         id: row.id,
-        org_id: row.org_id,
+        org_id: Some(row.org_id),
         service_id: row.service_id,
         bookable_id: row.bookable_id,
         recurrence: row.recurrence.0.clone(),
@@ -138,7 +138,7 @@ fn timing(body: &ScheduleBody, zone: Tz) -> Result<(Recurrence, Duration), ApiEr
 async fn check_axes(pool: &PgPool, org: Uuid, schedule: &Schedule) -> Result<(), ApiError> {
     let scope = subtree(pool, org).await?;
     let outside = || ApiError::invalid("an org, bookable or service of another org cannot be used");
-    if schedule.org_id.is_some_and(|axis| !scope.contains(&axis)) {
+    if !scope.contains(&schedule.org_id) {
         return Err(outside());
     }
     if let Some(bookable) = schedule.bookable_id {
@@ -179,7 +179,7 @@ async fn create(
     let zone = zone_of(&state.pool, org).await?;
     let (recurrence, span) = timing(&body, zone)?;
     let data = Schedule {
-        org_id: Some(body.org_id.unwrap_or(org)),
+        org_id: body.org_id.unwrap_or(org),
         service_id: body.service_id,
         bookable_id: body.bookable_id,
         kind: collection.kind,
@@ -234,7 +234,7 @@ fn changed(current: &Schedule, body: ScheduleBody, mask: &Option<Vec<String>>, o
         }
     };
     Ok(Schedule {
-        org_id: if updates(mask, "org_id", body.org_id.is_some()) { Some(body.org_id.unwrap_or(org)) } else { current.org_id },
+        org_id: if updates(mask, "org_id", body.org_id.is_some()) { body.org_id.unwrap_or(org) } else { current.org_id },
         service_id: if updates(mask, "service_id", body.service_id.is_some()) { body.service_id } else { current.service_id },
         bookable_id: if updates(mask, "bookable_id", body.bookable_id.is_some()) { body.bookable_id } else { current.bookable_id },
         kind: current.kind,

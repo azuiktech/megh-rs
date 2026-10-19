@@ -109,24 +109,3 @@ async fn an_org_sees_its_own_methods_and_those_of_the_orgs_grouped_under_it(pool
     assert_eq!(ids(&app, location, "paymentMethods", "").await, vec![below["id"].clone()]);
     assert_eq!(call(&app, "GET", &path(brand, "paymentMethods", &elsewhere), None).await.0, StatusCode::NOT_FOUND);
 }
-
-#[sqlx::test]
-async fn a_pass_made_over_rest_pays_for_an_appointment_made_over_rest(pool: PgPool) {
-    let org = clinic(&pool).await;
-    let app = booking_router(pool);
-    let room = rest_bookable(&app, org, "Suite", 1, json!({"kind": "room"})).await;
-    let therapist = rest_bookable(&app, org, "Tess", 1, json!({"role": "therapist"})).await;
-    for bookable in [&room, &therapist] {
-        created(&app, org, "schedules", json!({"bookable_id": bookable["id"], "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"})).await;
-    }
-    let massage = created(&app, org, "services", json!({"display_name": "Massage", "price": {"currency_code": "USD", "units": "90", "nanos": 0}, "attributes": {"category": "massage"}, "steps": [{"duration": "3600s", "needs": [{"who": "role = \"therapist\""}, {"who": "kind = \"room\""}]}]})).await;
-    let client = rest_client(&app, org, "Sam", json!({})).await;
-    let method = created(&app, org, "paymentMethods", json!({"display_name": "10 massages", "owner_id": client["id"], "eligible": "attributes.category = \"massage\"", "settlement": {"prepaid": {"balance": {"uses": 10}}}})).await;
-    let search = json!({"parties": [{"client_id": client["id"], "services": [{"service_id": massage["id"]}]}], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T10:00:00"});
-    let (_, found) = call(&app, "POST", &format!("/api/v1/orgs/{org}/availability:search"), Some(search)).await;
-    let booking = json!({"state": "booked", "slot": found["slots"][0], "request_id": "massage-1", "payer_id": client["id"], "payments": [{"method": method["id"], "amount": {"uses": 1}}]});
-    let (status, appointment) = call(&app, "POST", &format!("/api/v1/orgs/{org}/appointments"), Some(booking)).await;
-    assert_eq!(status, StatusCode::OK, "{appointment}");
-    let (_, after) = call(&app, "GET", &path(org, "paymentMethods", &method), None).await;
-    assert_eq!(after["settlement"], json!({"prepaid": {"balance": {"uses": 9}, "valid": null}}));
-}

@@ -7,13 +7,14 @@ mod booking_support;
 use booking_support::*;
 use chrono::{Duration, Utc};
 use megh::booking::{
-    Appointments, BookableRow, ClientRow, Confirmation, Error, IdempotencyKey, Party, Reservations, Search, SearchRequest, ServiceRow, ServiceWant, Slot, Slots,
+    Appointments, BookableRow, ClientRow, Error, IdempotencyKey, Party, PaymentMethodRow, Reservations, Search, SearchRequest, ServiceRow, ServiceWant, Slot, Slots,
 };
 use sqlx::PgPool;
 
 struct World {
     pool: PgPool,
     haircut: ServiceRow,
+    on_spot: PaymentMethodRow,
     ann: ClientRow,
     ben: ClientRow,
     _room: BookableRow,
@@ -29,13 +30,14 @@ async fn world(pool: PgPool) -> World {
     open_rule(&pool, Where { bookable: Some(room.id), ..Where::default() }, 9, 8).await;
     let haircut = service(&pool, org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     let (ann, ben) = (client(&pool).await, client(&pool).await);
-    World { pool, haircut, ann, ben, _room: room }
+    let on_spot = on_spot(&pool, org).await;
+    World { pool, haircut, on_spot, ann, ben, _room: room }
 }
 
 impl World {
     fn request_for(&self, client: Option<&ClientRow>, from_hour: u32, to_hour: u32) -> SearchRequest {
         let mut request = request(self.haircut.id, between(1, from_hour, to_hour));
-        request.parties = vec![Party { client: client.map(|c| c.id), seats: 1, services: vec![ServiceWant { service: self.haircut.id, wants: vec![] }] }];
+        request.parties = vec![Party { client: client.map(|c| c.id), services: vec![ServiceWant { service: self.haircut.id, wants: vec![] }] }];
         request
     }
 
@@ -53,9 +55,8 @@ impl World {
         let request = self.request_for(Some(client), 9, 10);
         let slot = Slots::new(self.pool.clone()).find(&request).await.unwrap().remove(0);
         let reservations = Reservations::new(self.pool.clone());
-        let hold = reservations.hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap();
-        let confirmation = Confirmation { clients: vec![client.id], payer: client.id, payments: vec![], attributes: serde_json::json!({}) };
-        reservations.confirm(hold.id, confirmation, IdempotencyKey(key.into())).await.unwrap()
+        let hold = reservations.hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap().remove(0);
+        reservations.book_held(hold.id, pays(client, &self.on_spot), IdempotencyKey(key.into())).await.unwrap()
     }
 }
 
@@ -82,9 +83,9 @@ async fn a_hold_blocks_the_clients_time_until_it_expires(pool: PgPool) {
     let w = world(pool.clone()).await;
     let request = w.request_for(Some(&w.ann), 9, 10);
     let slot = Slots::new(pool.clone()).find(&request).await.unwrap().remove(0);
-    let hold = Reservations::new(pool.clone()).hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap();
+    let hold = Reservations::new(pool.clone()).hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap().remove(0);
     assert_eq!(w.starts(Some(&w.ann)).await.first(), Some(&at(1, 10, 0)));
-    sqlx::query("UPDATE holds SET expires_at = now() - interval '1 minute' WHERE id = $1").bind(hold.id).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE appointments SET expires_at = now() - interval '1 minute' WHERE id = $1").bind(hold.id).execute(&pool).await.unwrap();
     assert_eq!(w.starts(Some(&w.ann)).await.first(), Some(&at(1, 9, 0)));
 }
 

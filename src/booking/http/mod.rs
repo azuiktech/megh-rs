@@ -6,7 +6,6 @@
 //! The router assumes the application authenticates the caller and applies [`crate::authorizer`], which derives
 //! the grants from the paths: `orgs:read:{org_id}` and then the resource and action of the route.
 
-mod appointments;
 mod availability;
 mod bookables;
 mod clients;
@@ -18,10 +17,6 @@ mod page;
 mod payment_methods;
 mod schedules;
 mod services;
-mod view;
-mod waitlist_entries;
-pub use error::ApiError;
-mod slot;
 
 use std::collections::HashMap;
 
@@ -85,10 +80,8 @@ fn routes() -> OpenApiRouter<AppContext> {
 
 fn others() -> Router<AppContext> {
     Router::new()
-        .merge(appointments::routes())
         .merge(crud::routes::<services::Services>())
         .merge(crud::routes::<payment_methods::PaymentMethods>())
-        .merge(crud::routes_unchangeable::<waitlist_entries::WaitlistEntries>())
         .merge(availability::routes())
         .merge(schedules::routes("schedules", Kind::Open))
         .merge(schedules::routes("blockouts", Kind::Blockout))

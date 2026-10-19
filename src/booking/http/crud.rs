@@ -80,12 +80,6 @@ pub(super) fn routes<C: Collection>() -> Router<AppContext> {
     Router::new().route(&collection, get(list::<C>).post(create::<C>)).route(&format!("{collection}/{{id}}"), get(read::<C>).patch(update::<C>).delete(remove::<C>))
 }
 
-/// Get, List, Create and Delete, for rows that are made and unmade, never changed.
-pub(super) fn routes_unchangeable<C: Collection>() -> Router<AppContext> {
-    let collection = format!("/api/v1/orgs/{{org_id}}/{}", C::NAME);
-    Router::new().route(&collection, get(list::<C>).post(create::<C>)).route(&format!("{collection}/{{id}}"), get(read::<C>).delete(remove::<C>))
-}
-
 async fn context(state: &AppContext, org: Uuid) -> Result<Context, ApiError> {
     Ok(Context { pool: state.pool.clone(), org, zone: zone_of(&state.pool, org).await?, scope: subtree(&state.pool, org).await? })
 }

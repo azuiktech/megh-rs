@@ -35,11 +35,11 @@ async fn org(pool: &PgPool) -> Uuid {
 async fn bookables_clients_and_services_round_trip(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
     let org = org(&pool).await;
-    let bookable = Bookable { org_id: org, name: "r".into(), capacity: 2, attributes: attributes() };
+    let bookable = Bookable { org_id: org, name: "r".into(), capacity: 2, waitlist: 0, attributes: attributes() };
     let bookable = BookableRow::new(BookableId(Uuid::new_v4()), bookable).insert(&pool).await.unwrap();
     assert_eq!((bookable.capacity, bookable.attributes.clone()), (2, attributes()));
     ClientRow::new(ClientId(Uuid::new_v4()), Client { org_id: org, name: "c".into(), first_name: "A".into(), last_name: "B".into(), email: None, home_phone: None, work_phone: None, mobile_phone: None, attributes: attributes() }).insert(&pool).await.unwrap();
-    let need = Need { who: Box::new(Always), count: 1, engagement: Engagement::Free };
+    let need = Need { who: Box::new(Always), count: 1, engagement: Engagement::Free, role: Role::Provider };
     let step = Step { duration: seconds(60), client: Presence::Present, needs: vec![need], attributes: attributes() };
     let price = Price { micros: 5, currency: "USD".into() };
     let service = Service { org_id: org, name: "s".into(), mode: Mode::Class, price, steps: vec![step], variants: vec![], attributes: attributes() };
@@ -83,45 +83,72 @@ async fn appointments_holds_and_the_rest_round_trip(pool: PgPool) {
         attributes: attributes(),
     };
     PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), method).insert(&pool).await.unwrap();
-    let hold = Hold { org_id: org, tz: "UTC".into(), parties: vec![], placements: vec![], expires_at: now + Duration::minutes(5), attributes: attributes() };
-    HoldRow::new(HoldId(Uuid::new_v4()), hold).insert(&pool).await.unwrap();
-    let target = Target::Window(ServiceId(Uuid::new_v4()), Interval { start: now, end: now + Duration::days(1) });
-    let entry = WaitlistEntry { org_id: org, client_id: client.id, target, requested_at: now, attributes: attributes() };
-    WaitlistEntryRow::new(WaitlistEntryId(Uuid::new_v4()), entry).insert(&pool).await.unwrap();
+    let held = held_appointment(&pool, org, now).await;
+    assert_eq!((held.status, held.provider_ids.len(), held.payment.clone()), (Status::Held, 0, None));
 }
 
 #[sqlx::test(migrations = false)]
 async fn cancelling_an_appointment_releases_its_time(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
     let org = org(&pool).await;
-    let bookable = Bookable { org_id: org, name: "r".into(), capacity: 1, attributes: attributes() };
+    let bookable = Bookable { org_id: org, name: "r".into(), capacity: 1, waitlist: 0, attributes: attributes() };
     let bookable = BookableRow::new(BookableId(Uuid::new_v4()), bookable).insert(&pool).await.unwrap();
     let client = Client { org_id: org, name: "c".into(), first_name: "A".into(), last_name: "B".into(), email: None, home_phone: None, work_phone: None, mobile_phone: None, attributes: attributes() };
     let client = ClientRow::new(ClientId(Uuid::new_v4()), client).insert(&pool).await.unwrap();
+    let service = service_of(&pool, org).await;
+    let now = Utc::now();
     let appointment = Appointment {
         org_id: org,
-        tz: "UTC".into(),
-        lines: vec![],
-        payer_id: client.id,
-        payments: vec![],
-        idempotency_key: IdempotencyKey("k".into()),
-        fingerprint: "f".into(),
+        client_id: client.id,
+        service_id: service.id,
+        provider_ids: vec![],
+        room_id: bookable.id,
+        starts_at: now,
+        ends_at: now + Duration::hours(1),
+        status: Status::Booked,
+        expires_at: None,
+        payment: None,
         attributes: attributes(),
     };
     let appointment = AppointmentRow::new(AppointmentId(Uuid::new_v4()), appointment).insert(&pool).await.unwrap();
-    let now = Utc::now();
     let occupancy = Occupancy {
-        hold_id: None,
-        appointment_id: Some(appointment.id),
-        bookable_id: bookable.id,
+        appointment_id: appointment.id,
+        bookable_id: Some(bookable.id),
+        client_id: None,
         starts_at: now,
         ends_at: now + Duration::hours(1),
         engagement: Engagement::OnDemand,
-        seats: 1,
+        status: Status::Booked,
     };
     let occupancy = OccupancyRow::new(OccupancyId(Uuid::new_v4()), occupancy).insert(&pool).await.unwrap();
     assert_eq!(occupancy.engagement, Engagement::OnDemand);
     appointment.soft_delete(&pool).await.unwrap().unwrap();
     let blocking: i64 = sqlx::query_scalar("SELECT count(*) FROM occupancies WHERE deleted_at IS NULL").fetch_one(&pool).await.unwrap();
     assert_eq!(blocking, 0);
+}
+
+async fn service_of(pool: &PgPool, org: Uuid) -> ServiceRow {
+    let price = Price { micros: 5, currency: "USD".into() };
+    let service = Service { org_id: org, name: "s".into(), mode: Mode::Appointment, price, steps: vec![], variants: vec![], attributes: attributes() };
+    ServiceRow::new(ServiceId(Uuid::new_v4()), service).insert(pool).await.unwrap()
+}
+
+async fn held_appointment(pool: &PgPool, org: Uuid, now: chrono::DateTime<Utc>) -> AppointmentRow {
+    let room = BookableRow::new(BookableId(Uuid::new_v4()), Bookable { org_id: org, name: "h".into(), capacity: 1, waitlist: 0, attributes: attributes() }).insert(pool).await.unwrap();
+    let client = ClientRow::new(ClientId(Uuid::new_v4()), Client { org_id: org, name: "h".into(), first_name: "A".into(), last_name: "B".into(), email: None, home_phone: None, work_phone: None, mobile_phone: None, attributes: attributes() }).insert(pool).await.unwrap();
+    let service = service_of(pool, org).await;
+    let hold = Appointment {
+        org_id: org,
+        client_id: client.id,
+        service_id: service.id,
+        provider_ids: vec![],
+        room_id: room.id,
+        starts_at: now,
+        ends_at: now + Duration::minutes(30),
+        status: Status::Held,
+        expires_at: Some(now + Duration::minutes(5)),
+        payment: None,
+        attributes: attributes(),
+    };
+    AppointmentRow::new(AppointmentId(Uuid::new_v4()), hold).insert(pool).await.unwrap()
 }

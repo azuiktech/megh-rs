@@ -104,24 +104,6 @@ async fn searching_the_availability_needs_the_search_grant(pool: PgPool) {
     assert_eq!(status(&app, "POST", &uri, "availability:search", body).await, StatusCode::FORBIDDEN);
 }
 
-#[sqlx::test]
-async fn appointments_need_create_confirm_and_delete_grants_on_the_instance(pool: PgPool) {
-    let org = org(&pool, "clinic").await;
-    let (app, id) = (app(pool), Uuid::new_v4());
-    let collection = format!("/api/v1/orgs/{org}/appointments");
-    let read = format!("orgs:read:{org}");
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} appointments:create"), "{}").await, StatusCode::BAD_REQUEST);
-    assert_eq!(status(&app, "POST", &collection, &read, "{}").await, StatusCode::FORBIDDEN);
-    let confirm = format!("{collection}/{id}:confirm");
-    assert_eq!(status(&app, "POST", &confirm, &format!("{read} appointments:confirm:{id}"), "{}").await, StatusCode::BAD_REQUEST);
-    assert_eq!(status(&app, "POST", &confirm, &format!("{read} appointments:confirm:{}", Uuid::new_v4()), "{}").await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "POST", &confirm, &format!("{read} appointments:create"), "{}").await, StatusCode::FORBIDDEN);
-    let one = format!("{collection}/{id}");
-    assert_eq!(status(&app, "DELETE", &one, &format!("{read} appointments:delete:{id}"), "").await, StatusCode::NOT_FOUND);
-    assert_eq!(status(&app, "DELETE", &one, &format!("{read} appointments:read:{id}"), "").await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "GET", &collection, &format!("{read} appointments:read"), "").await, StatusCode::OK);
-}
-
 fn replacement(org: Uuid) -> String {
     json!({"org_id": org, "name": "Room 1", "capacity": 1, "attributes": {}}).to_string()
 }
@@ -182,24 +164,4 @@ async fn groupings_need_their_own_grants(pool: PgPool) {
     assert_eq!(status(&app, "POST", &collection, &format!("{read} schedules:create"), &body).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "POST", &collection, &format!("{read} groupings:create"), &body).await, StatusCode::OK);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} groupings:read"), "").await, StatusCode::OK);
-}
-
-#[sqlx::test]
-async fn the_waitlist_needs_its_own_grants(pool: PgPool) {
-    let org = org(&pool, "clinic").await;
-    let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/waitlistEntries"));
-    let read = format!("orgs:read:{org}");
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} waitlistentries:create"), "{}").await, StatusCode::BAD_REQUEST);
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} groupings:create"), "{}").await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "GET", &collection, &format!("{read} waitlistentries:read"), "").await, StatusCode::OK);
-}
-
-#[sqlx::test]
-async fn moving_an_appointment_needs_the_update_grant_on_it(pool: PgPool) {
-    let org = org(&pool, "clinic").await;
-    let (app, id) = (app(pool), Uuid::new_v4());
-    let (read, one) = (format!("orgs:read:{org}"), format!("/api/v1/orgs/{org}/appointments/{id}"));
-    assert_eq!(status(&app, "PATCH", &one, &format!("{read} appointments:update:{id}"), "{}").await, StatusCode::BAD_REQUEST);
-    assert_eq!(status(&app, "PATCH", &one, &format!("{read} appointments:update:{}", Uuid::new_v4()), "{}").await, StatusCode::FORBIDDEN);
-    assert_eq!(status(&app, "PATCH", &one, &format!("{read} appointments:delete:{id}"), "{}").await, StatusCode::FORBIDDEN);
 }

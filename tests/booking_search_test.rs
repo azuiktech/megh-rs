@@ -138,7 +138,7 @@ async fn an_active_hold_blocks_and_an_expired_one_does_not(pool: PgPool) {
     let (room, _stylist, haircut) = (w.room(1).await, w.stylist(&[]).await, w.haircut(60).await);
     let hold = held(&w.pool, room.id, between(1, 9, 17), Utc::now() + chrono::Duration::minutes(10)).await;
     assert!(w.find(&request(haircut.id, whole_day(1))).await.is_empty());
-    sqlx::query("UPDATE holds SET expires_at = now() - interval '1 minute' WHERE id = $1").bind(hold.id).execute(&w.pool).await.unwrap();
+    sqlx::query("UPDATE appointments SET expires_at = now() - interval '1 minute' WHERE id = $1").bind(hold.id).execute(&w.pool).await.unwrap();
     assert!(!w.find(&request(haircut.id, whole_day(1))).await.is_empty());
 }
 
@@ -183,11 +183,11 @@ async fn a_variant_changes_duration_and_price_for_the_matching_provider(pool: Pg
 
 fn step_of(length: u64, provider: Option<megh::booking::Condition>, room: megh::booking::Condition) -> megh::booking::Step {
     let needs = provider.into_iter().map(|who| need(who, Engagement::Engaged)).chain([need(room, Engagement::Engaged)]).collect();
-    megh::booking::Step { duration: minutes(length), client: megh::booking::Presence::Present, needs, attributes: serde_json::json!({}) }
+    megh::booking::Step { duration: minutes(length), client: megh::booking::Presence::Present, needs, attributes: Default::default() }
 }
 
 fn timed(length: u64, client: megh::booking::Presence, needs: Vec<megh::booking::Need>) -> megh::booking::Step {
-    megh::booking::Step { duration: minutes(length), client, needs, attributes: serde_json::json!({}) }
+    megh::booking::Step { duration: minutes(length), client, needs, attributes: Default::default() }
 }
 
 #[sqlx::test]
@@ -240,7 +240,7 @@ async fn a_partys_services_follow_each_other_back_to_back(pool: PgPool) {
     }
     let want = |service: &ServiceRow| ServiceWant { service: service.id, wants: vec![] };
     let mut search = request(cut.id, whole_day(1));
-    search.parties = vec![Party { client: None, seats: 1, services: vec![want(&cut), want(&colour)] }];
+    search.parties = vec![Party { client: None, services: vec![want(&cut), want(&colour)] }];
     let slots = w.find(&search).await;
     assert!(!slots.is_empty());
     for slot in &slots {
@@ -254,7 +254,7 @@ async fn parties_share_one_room_at_the_same_time(pool: PgPool) {
     let suite = w.room(2).await;
     let (first, second) = (w.stylist(&[]).await, w.stylist(&[]).await);
     let massage = w.haircut(60).await;
-    let party = || Party { client: None, seats: 1, services: vec![ServiceWant { service: massage.id, wants: vec![] }] };
+    let party = || Party { client: None, services: vec![ServiceWant { service: massage.id, wants: vec![] }] };
     let mut search = request(massage.id, whole_day(1));
     search.parties = vec![party(), party()];
     let slots = w.find(&search).await;
@@ -262,6 +262,6 @@ async fn parties_share_one_room_at_the_same_time(pool: PgPool) {
     for slot in &slots {
         assert_eq!(starts(slot).iter().min(), starts(slot).iter().max());
         assert_eq!(allocation_of(slot, first.id).len() + allocation_of(slot, second.id).len(), 2);
-        assert_eq!(allocation_of(slot, suite.id).iter().map(|a| a.seats).sum::<u32>(), 2);
+        assert_eq!(allocation_of(slot, suite.id).len(), 2);
     }
 }

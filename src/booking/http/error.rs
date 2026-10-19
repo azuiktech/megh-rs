@@ -2,7 +2,7 @@
 
 use axum::http::StatusCode;
 
-pub use crate::auth::api::ApiError;
+use crate::auth::api::ApiError;
 use crate::booking::Error;
 
 impl From<Error> for ApiError {
@@ -11,7 +11,7 @@ impl From<Error> for ApiError {
         match error {
             Error::NotFound => Self::new(StatusCode::NOT_FOUND, "NOT_FOUND", message),
             Error::Invalid(_) | Error::Recurrence(_) => Self::invalid(message),
-            Error::NotOpen(_) | Error::HoldExpired(_) | Error::Insufficient(_) | Error::Expired(_) | Error::NotEligible(_) | Error::Cycle => Self::new(StatusCode::BAD_REQUEST, "FAILED_PRECONDITION", message),
+            Error::NotOpen(_) | Error::Transition(..) | Error::HoldExpired(_) | Error::Insufficient(_) | Error::Expired(_) | Error::NotEligible(_) | Error::Cycle => Self::new(StatusCode::BAD_REQUEST, "FAILED_PRECONDITION", message),
             Error::Occupied(_) | Error::ClientBusy(_) => Self::new(StatusCode::CONFLICT, "ABORTED", message),
             Error::KeyReused => Self::conflict(message),
             Error::Database(error) => Self::internal(error),

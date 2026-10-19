@@ -49,9 +49,9 @@ impl Market {
                     plan.assignments.iter().filter_map(move |picks| {
                         let placed = self.place(plan, picks, start, &state.allocations)?;
                         let price = Price { micros: placed.price, currency: plan.service.price.currency.clone() };
-                        let placement = Placement { party, service: plan.service.id, during: Interval { start, end: placed.end }, price };
+                        let placement = Placement { party, service: plan.service.id, during: placed.client, price };
                         Some(State {
-                            allocations: [state.allocations.clone(), placed.allocations].concat(),
+                            allocations: [state.allocations.clone(), placed.allocations.into_iter().map(|a| Allocation { placement: state.placements.len(), ..a }).collect()].concat(),
                             placements: [state.placements.clone(), vec![placement]].concat(),
                             price: state.price + placed.price,
                             cursor: placed.end,

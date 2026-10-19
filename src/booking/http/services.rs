@@ -14,7 +14,7 @@ use uuid::Uuid;
 use super::common::{money, seconds, span_of, MoneyBody};
 use super::crud::{updates, Collection, Context, Mask, Stamps};
 use crate::auth::api::ApiError;
-use crate::booking::{Attributes, Change, Condition, Engagement, Filter, Mode, Need, OrgId, Presence, Service, ServiceId, ServiceRow, Step, Variant};
+use crate::booking::{Attributes, Change, Condition, Engagement, Filter, Mode, Need, OrgId, Presence, Role, Service, ServiceId, ServiceRow, Step, Variant};
 use crate::TableEntity;
 
 pub(super) struct Services;
@@ -47,6 +47,7 @@ struct NeedBody {
     who: String,
     count: Option<u32>,
     engagement: Option<Engagement>,
+    role: Option<Role>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +77,7 @@ fn condition(text: &str) -> Result<Condition, ApiError> {
 fn need(body: &NeedBody) -> Result<Need, ApiError> {
     let count = body.count.unwrap_or(1);
     let who = condition(&body.who)?;
-    (count > 0).then_some(Need { who, count, engagement: body.engagement.unwrap_or(Engagement::Engaged) }).ok_or_else(|| ApiError::invalid("a need is for at least 1"))
+    (count > 0).then_some(Need { who, count, engagement: body.engagement.unwrap_or(Engagement::Engaged), role: body.role.unwrap_or_default() }).ok_or_else(|| ApiError::invalid("a need is for at least 1"))
 }
 
 fn positive(text: &str) -> Result<Duration, ApiError> {

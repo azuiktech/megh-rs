@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::{Condition, Engagement, Mode, Need, OrgId, Presence, Price, Service, Step, Templates};
+use super::{Condition, Engagement, Mode, Need, OrgId, Presence, Price, Role, Service, Step, Templates};
 
 /// A copy of a condition, through its serialized form: conditions are trait objects without `Clone`.
 fn duplicate(condition: &Condition) -> Condition {
@@ -8,8 +8,8 @@ fn duplicate(condition: &Condition) -> Condition {
     serde_json::from_value(stored).expect("a condition deserializes")
 }
 
-fn need(who: Condition, engagement: Engagement) -> Need {
-    Need { who, count: 1, engagement }
+fn need(who: Condition, engagement: Engagement, role: Role) -> Need {
+    Need { who, count: 1, engagement, role }
 }
 
 fn step(duration: Duration, client: Presence, needs: Vec<Need>) -> Step {
@@ -17,7 +17,7 @@ fn step(duration: Duration, client: Presence, needs: Vec<Need>) -> Step {
 }
 
 fn present(duration: Duration, provider: (Condition, Engagement), room: &Condition) -> Step {
-    step(duration, Presence::Present, vec![need(provider.0, provider.1), need(duplicate(room), Engagement::Engaged)])
+    step(duration, Presence::Present, vec![need(provider.0, provider.1, Role::Provider), need(duplicate(room), Engagement::Engaged, Role::Room)])
 }
 
 fn service(org: OrgId, name: &str, mode: Mode, steps: Vec<Step>) -> Service {
@@ -31,7 +31,7 @@ impl Templates for Service {
     }
 
     fn with_cleanup(mut self, cleanup: Duration, room: Condition) -> Self {
-        self.steps.push(step(cleanup, Presence::Absent, vec![need(room, Engagement::Engaged)]));
+        self.steps.push(step(cleanup, Presence::Absent, vec![need(room, Engagement::Engaged, Role::Room)]));
         self
     }
 
@@ -50,7 +50,7 @@ impl Templates for Service {
     }
 
     fn room_only(org: OrgId, name: &str, duration: Duration, room: Condition) -> Self {
-        service(org, name, Mode::Resource, vec![step(duration, Presence::Present, vec![need(room, Engagement::Engaged)])])
+        service(org, name, Mode::Resource, vec![step(duration, Presence::Present, vec![need(room, Engagement::Engaged, Role::Room)])])
     }
 
     fn session(org: OrgId, name: &str, duration: Duration, capacity: u32, room: Condition) -> Self {

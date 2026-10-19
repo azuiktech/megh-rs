@@ -9,8 +9,7 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-pub use crate::auth::api::ListQuery;
-use crate::auth::api::{ApiError, Paginated};
+use crate::auth::api::{ApiError, ListQuery, Paginated};
 use crate::booking::{Attributes, Filter, Predicate};
 
 const DEFAULT_PAGE_SIZE: usize = 50;

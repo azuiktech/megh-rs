@@ -20,18 +20,6 @@ impl Slots {
     }
 }
 
-/// Waiting clients of an occurrence or a window: implements `Waitlist`.
-#[derive(Clone)]
-pub struct Queue {
-    pub(super) pool: PgPool,
-}
-
-impl Queue {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
 /// Holds, appointments and their cancellation: implements `Appointments`.
 #[derive(Clone)]
 pub struct Reservations {

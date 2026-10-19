@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 fn party(service: &ServiceRow) -> Party {
-    Party { client: None, seats: 1, services: vec![ServiceWant { service: service.id, wants: vec![] }] }
+    Party { client: None, services: vec![ServiceWant { service: service.id, wants: vec![] }] }
 }
 
 async fn stylist(pool: &PgPool, org: Uuid) -> BookableRow {
@@ -59,7 +59,7 @@ async fn cut_then_colour(pool: &PgPool) -> SearchRequest {
         open_rule(pool, Where { service: Some(service.id), ..Where::default() }, 9, 8).await;
     }
     let mut search = request(cut.id, Interval { start: at(1, 9, 0), end: at(1, 10, 30) });
-    search.parties = vec![Party { client: None, seats: 1, services: vec![ServiceWant { service: cut.id, wants: vec![] }, ServiceWant { service: colour.id, wants: vec![] }] }];
+    search.parties = vec![Party { client: None, services: vec![ServiceWant { service: cut.id, wants: vec![] }, ServiceWant { service: colour.id, wants: vec![] }] }];
     search
 }
 

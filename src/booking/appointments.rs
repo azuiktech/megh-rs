@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Attributes, BookableId, AppointmentId, ClientId, Condition, Engagement, HoldId, Interval, OrgId,
-    OccupancyId, PaymentMethodId, Price, Result, ServiceId, WaitlistEntryId,
+    Attributes, BookableId, AppointmentId, ClientId, Condition, Engagement, Interval, OrgId,
+    OccupancyId, PaymentMethodId, Price, Result, Role, ServiceId,
 };
 use crate::{Entity, Table};
 
@@ -20,7 +20,6 @@ pub struct ServiceWant {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Party {
     pub client: Option<ClientId>,
-    pub seats: u32,
     pub services: Vec<ServiceWant>,
 }
 
@@ -39,16 +38,37 @@ pub struct SearchRequest {
     pub limit: Option<usize>,
 }
 
+/// Where an appointment stands. `booked` and `confirmed` use the capacity of a room, `waitlist` a place of its
+/// waitlist; `cancelled` uses nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
+pub enum Status {
+    /// A slot kept for a while, until `expires_at`; it uses capacity like a booked appointment.
+    Held,
+    Waitlist,
+    #[default]
+    Booked,
+    Confirmed,
+    Cancelled,
+}
+
 /// The only thing that blocks time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Allocation {
     pub bookable: BookableId,
     pub during: Interval,
     pub engagement: Engagement,
-    pub seats: u32,
+    /// Whether the bookable is the room or a provider of the service.
+    pub role: Role,
+    /// The placement of the slot this belongs to.
+    pub placement: usize,
+    /// `waitlist` when the room is over capacity but within its waitlist.
+    #[serde(default)]
+    pub status: Status,
 }
 
-/// When one party's service takes place.
+/// When one party's service takes place for the client: from the first step the client is present to the last.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Placement {
     pub party: usize,
@@ -64,88 +84,86 @@ pub struct Slot {
     pub price: Price,
 }
 
-/// A semi-formed booking: a temporary block that may have no client or payment yet.
-#[derive(Debug, Serialize, Deserialize, Table)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "holds")]
-pub struct Hold {
-    pub org_id: OrgId,
-    pub tz: String,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub parties: Vec<Party>,
-    /// When each party's service takes place, from the slot that was held.
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub placements: Vec<Placement>,
-    pub expires_at: DateTime<Utc>,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub attributes: Attributes,
-}
-
-/// An allocation as stored: the row that blocks time, owned by a hold or by a booking, never both.
+/// An allocation as stored: the row that blocks time, owned by an appointment.
 /// Expired holds and soft-deleted appointments no longer block.
 #[derive(Debug, Serialize, Deserialize, Table)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "occupancies")]
 pub struct Occupancy {
-    pub hold_id: Option<HoldId>,
-    pub appointment_id: Option<AppointmentId>,
-    pub bookable_id: BookableId,
+    pub appointment_id: AppointmentId,
+    /// The room or provider whose time this blocks; or, instead, the client whose own time it blocks.
+    pub bookable_id: Option<BookableId>,
+    pub client_id: Option<ClientId>,
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
     pub engagement: Engagement,
-    #[cfg_attr(feature = "postgres", sqlx(try_from = "i32"))]
-    pub seats: u32,
+    /// The status of the appointment, copied here so that seats are counted from this table alone.
+    pub status: Status,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BookedLine {
-    pub client: ClientId,
-    pub service: ServiceId,
-    pub seats: u32,
-    /// When the service takes place.
-    pub during: Interval,
-    pub duration: Duration,
-    pub price: Price,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Amount {
     Money(Price),
     Uses(u32),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What pays for an appointment, and who: a parent's insurance can pay for a child's appointment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Payment {
+    #[schema(value_type = String, format = Uuid)]
+    pub payer_id: ClientId,
+    #[schema(value_type = String, format = Uuid)]
     pub method: PaymentMethodId,
     pub amount: Amount,
 }
 
-/// Booked, or soft-deleted when cancelled. Late cancel, attendance and notes are attributes.
-#[derive(Debug, Serialize, Deserialize, Table)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
+/// One client having one service, in one room with zero or more providers, from `starts_at` to `ends_at`. That is the
+/// client's time; the time the room and the providers are blocked comes from the service.
+#[derive(Debug, Serialize, Deserialize, Table, utoipa::ToSchema)]
 #[table(name = "appointments")]
 pub struct Appointment {
+    #[schema(value_type = String, format = Uuid)]
     pub org_id: OrgId,
-    pub tz: String,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub lines: Vec<BookedLine>,
-    pub payer_id: ClientId,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub payments: Vec<Payment>,
-    pub idempotency_key: IdempotencyKey,
-    /// Of the confirmation; the same key with another fingerprint is `Error::KeyReused`.
-    pub fingerprint: String,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
+    #[schema(value_type = String, format = Uuid)]
+    pub client_id: ClientId,
+    #[schema(value_type = String, format = Uuid)]
+    pub service_id: ServiceId,
+    #[schema(value_type = Vec<String>)]
+    pub provider_ids: Vec<BookableId>,
+    #[schema(value_type = String, format = Uuid)]
+    pub room_id: BookableId,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
+    pub status: Status,
+    /// Only while `held`.
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Not known while `held`; the payment is debited when the appointment becomes `booked`.
+    pub payment: Option<Payment>,
+    #[schema(value_type = Object)]
     pub attributes: Attributes,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Confirmation {
-    pub clients: Vec<ClientId>,
-    pub payer: ClientId,
-    pub payments: Vec<Payment>,
-    pub attributes: Attributes,
+/// `sqlx(json)` cannot read a payment that is SQL NULL, so the row is read by hand.
+#[cfg(feature = "postgres")]
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Appointment {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
+        use sqlx::types::Json;
+        use sqlx::Row;
+        Ok(Self {
+            org_id: row.try_get("org_id")?,
+            client_id: row.try_get("client_id")?,
+            service_id: row.try_get("service_id")?,
+            provider_ids: row.try_get("provider_ids")?,
+            room_id: row.try_get("room_id")?,
+            starts_at: row.try_get("starts_at")?,
+            ends_at: row.try_get("ends_at")?,
+            status: row.try_get("status")?,
+            expires_at: row.try_get("expires_at")?,
+            payment: row.try_get::<Option<Json<Payment>>, _>("payment")?.map(|json| json.0),
+            attributes: row.try_get::<Json<Attributes>, _>("attributes")?.0,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -175,31 +193,10 @@ pub struct PaymentMethod {
     pub attributes: Attributes,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Target {
-    Window(ServiceId, Interval),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Table)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "waitlist_entries")]
-pub struct WaitlistEntry {
-    pub org_id: OrgId,
-    pub client_id: ClientId,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub target: Target,
-    pub requested_at: DateTime<Utc>,
-    #[cfg_attr(feature = "postgres", sqlx(json))]
-    pub attributes: Attributes,
-}
-
 /// Persisted forms. Soft delete, `created_at` and `updated_at` come from `Entity`.
 pub type OccupancyRow = Entity<OccupancyId, Occupancy>;
-pub type HoldRow = Entity<HoldId, Hold>;
 pub type AppointmentRow = Entity<AppointmentId, Appointment>;
 pub type PaymentMethodRow = Entity<PaymentMethodId, PaymentMethod>;
-pub type WaitlistEntryRow = Entity<WaitlistEntryId, WaitlistEntry>;
 
 /// Slots that satisfy every need of every party with no conflict.
 #[allow(async_fn_in_trait)]
@@ -212,17 +209,26 @@ pub trait Search {
 
 #[allow(async_fn_in_trait)]
 pub trait Appointments {
-    async fn hold(&self, request: &SearchRequest, slot: &Slot, until: DateTime<Utc>) -> Result<HoldRow>;
-    async fn confirm(&self, hold: HoldId, confirmation: Confirmation, key: IdempotencyKey) -> Result<AppointmentRow>;
-    async fn cancel(&self, booking: AppointmentId) -> Result<()>;
+    /// Keeps the slot until `until` as `held` appointments, one for each placement. A hold needs capacity, never a
+    /// waitlist place, and every party of the search needs a client.
+    async fn hold(&self, request: &SearchRequest, slot: &Slot, until: DateTime<Utc>) -> Result<Vec<AppointmentRow>>;
 
-    /// Moves a booked or held appointment to another slot for the same clients and services: same id, payer and
-    /// payments; its own time counts for nothing while the new slot is checked, so it may overlap its old time.
-    async fn reschedule(&self, appointment: AppointmentId, request: &SearchRequest, slot: &Slot) -> Result<()>;
-}
+    /// Books a `held` appointment and debits `payment`. The same key returns the same appointment.
+    async fn book_held(&self, held: AppointmentId, payment: Payment, key: IdempotencyKey) -> Result<AppointmentRow>;
 
-#[allow(async_fn_in_trait)]
-pub trait Waitlist {
-    async fn join(&self, entry: WaitlistEntry) -> Result<WaitlistEntryRow>;
-    async fn waiting(&self, target: &Target) -> Result<Vec<WaitlistEntryRow>>;
+    async fn cancel(&self, appointment: AppointmentId) -> Result<()>;
+
+    /// Books the slot directly, one appointment for each placement and `payments[i]` for placement `i`: `booked` while
+    /// every room has capacity, `waitlist` when one is over capacity but within its waitlist, otherwise
+    /// `Error::Occupied`. A payment is debited only when the appointment is `booked`. The same key and request return
+    /// the same appointments.
+    async fn book(&self, request: &SearchRequest, slot: &Slot, payments: Vec<Payment>, key: IdempotencyKey) -> Result<Vec<AppointmentRow>>;
+
+    /// The only status changes: waitlist to booked (needs capacity; debits the payment) or cancelled, booked to confirmed
+    /// or cancelled, confirmed to cancelled. Anything else is `Error::Transition`.
+    async fn transition(&self, appointment: AppointmentId, to: Status) -> Result<AppointmentRow>;
+
+    /// Moves the appointment to the one placement of `slot`; its own time counts for nothing while the new slot is
+    /// checked, so it may overlap its old time.
+    async fn reschedule(&self, appointment: AppointmentId, request: &SearchRequest, slot: &Slot) -> Result<AppointmentRow>;
 }

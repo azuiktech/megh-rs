@@ -82,3 +82,25 @@ async fn an_org_sees_its_own_clients_and_those_of_the_orgs_grouped_under_it(pool
     assert_eq!(ids(&app, location, "clients", "").await, vec![below["id"].clone()]);
     assert_eq!(call(&app, "GET", &path(brand, "clients", &elsewhere), None).await.0, StatusCode::NOT_FOUND);
 }
+
+#[sqlx::test]
+async fn a_client_made_over_rest_can_be_searched_for_and_booked(pool: PgPool) {
+    let org = clinic(&pool).await;
+    let (room, stylist) = (bookable(&pool, org, "room", 1, &[("kind", "room")]).await, bookable(&pool, org, "stylist", 1, &[("role", "stylist")]).await);
+    let haircut = service(&pool, org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    sqlx::query("UPDATE services SET org_id = $1 WHERE id = $2").bind(org).bind(haircut.id).execute(&pool).await.unwrap();
+    let app = booking_router(pool.clone());
+    for bookable in [&room, &stylist] {
+        let body = json!({"bookable_id": bookable.id, "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"});
+        created(&app, org, "schedules", body).await;
+    }
+    let client = rest_client(&app, org, "Rex", json!({})).await;
+    let search = json!({"parties": [{"client_id": client["id"], "services": [{"service_id": haircut.id}]}], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T10:00:00"});
+    let (_, found) = call(&app, "POST", &format!("/api/v1/orgs/{org}/availability:search"), Some(search)).await;
+    let slot = found["slots"][0].clone();
+    let method = on_spot(&pool, org).await;
+    let payment = json!({"payer_id": client["id"], "method": method.id, "amount": {"type": "uses", "value": 0}});
+    let booking = json!({"slot": slot, "payments": [payment], "request_id": "rex-1"});
+    let (status, booked) = call(&app, "POST", &format!("/api/v1/orgs/{org}/appointments"), Some(booking)).await;
+    assert_eq!((status, booked["data"][0]["client_id"].clone()), (StatusCode::OK, client["id"].clone()), "{booked}");
+}

@@ -8,8 +8,9 @@ use crate::{Entity, Table};
 
 macro_rules! ids {
     ($($name:ident),*) => {$(
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema)]
         #[serde(transparent)]
+        #[schema(value_type = String, format = Uuid)]
         #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(transparent))]
         pub struct $name(pub Uuid);
     )*};
@@ -17,13 +18,12 @@ macro_rules! ids {
 
 ids!(
     BookableId, ClientId, ServiceId, ScheduleId,
-    AppointmentId, HoldId, OccupancyId, PaymentMethodId, WaitlistEntryId
+    AppointmentId, HoldId, OccupancyId, PaymentMethodId, WaitlistEntryId, GroupingId
 );
 
 /// A location, brand or franchise is an `Org`; its id is the org's `Uuid`.
 pub type OrgId = Uuid;
 
-/// Tags and metadata are this one map.
 /// Assorted fields of an entity: any JSON, usually an object.
 pub type Attributes = serde_json::Value;
 
@@ -36,7 +36,7 @@ pub trait Predicate: Debug + Send + Sync {
 pub type Condition = Box<dyn Predicate>;
 
 /// The entity kind a grouping edge connects: both ends are of this kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
 pub enum Grouped {
@@ -49,43 +49,68 @@ pub enum Grouped {
 /// Grouping graph over any entity kind: brand, franchise, category, lobby, role.
 /// A group rule applies to its members transitively; cycles are rejected.
 /// (`org::Member` already means a user in an org, hence the name.)
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Table)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Table, utoipa::ToSchema)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "groupings")]
 pub struct Grouping {
+    /// The org of the path.
+    #[schema(value_type = String, format = Uuid)]
     pub org_id: OrgId,
     pub kind: Grouped,
     pub member_id: Uuid,
     pub group_id: Uuid,
 }
 
+fn not_blank(text: &str) -> Result<(), validator::ValidationError> {
+    if text.trim().is_empty() { Err(validator::ValidationError::new("blank")) } else { Ok(()) }
+}
+
+fn within_orgs(org: &OrgId, orgs: &Vec<OrgId>) -> Result<(), validator::ValidationError> {
+    if orgs.contains(org) { Ok(()) } else { Err(validator::ValidationError::new("outside_orgs")) }
+}
+
 /// A provider or a room. Capacity above 1 is double booking.
-#[derive(Debug, Serialize, Deserialize, Table)]
+#[derive(Debug, Serialize, Deserialize, Table, utoipa::ToSchema, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "bookables")]
+#[validate(context = "Vec<OrgId>")]
 pub struct Bookable {
+    /// The org of the path, or one grouped under it.
+    #[schema(value_type = String, format = Uuid)]
+    #[validate(custom(function = "within_orgs", use_context))]
     pub org_id: OrgId,
+    #[validate(custom(function = "not_blank"))]
     pub name: String,
     #[cfg_attr(feature = "postgres", sqlx(try_from = "i32"))]
+    #[validate(range(min = 1))]
     pub capacity: u32,
     #[cfg_attr(feature = "postgres", sqlx(json))]
+    #[schema(value_type = Object)]
     pub attributes: Attributes,
 }
 
 /// A person, pet or other; the kind is in the attributes.
-#[derive(Debug, Serialize, Deserialize, Table)]
+#[derive(Debug, Serialize, Deserialize, Table, utoipa::ToSchema, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "clients")]
+#[validate(context = "Vec<OrgId>")]
 pub struct Client {
+    /// The org of the path, or one grouped under it.
+    #[schema(value_type = String, format = Uuid)]
+    #[validate(custom(function = "within_orgs", use_context))]
     pub org_id: OrgId,
+    #[validate(custom(function = "not_blank"))]
     pub name: String,
+    #[validate(custom(function = "not_blank"))]
     pub first_name: String,
+    #[validate(custom(function = "not_blank"))]
     pub last_name: String,
     pub email: Option<String>,
     pub home_phone: Option<String>,
     pub work_phone: Option<String>,
     pub mobile_phone: Option<String>,
     #[cfg_attr(feature = "postgres", sqlx(json))]
+    #[schema(value_type = Object)]
     pub attributes: Attributes,
 }
 
@@ -101,7 +126,7 @@ pub enum Mode {
 }
 
 /// Micros of an ISO 4217 currency, as stored; `money::from_micros` gives the `Money`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Price {
     pub micros: i64,
     pub currency: String,
@@ -142,7 +167,7 @@ pub struct Step {
     pub attributes: Attributes,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
 pub enum Engagement {
@@ -174,7 +199,7 @@ pub struct Variant {
 }
 
 /// Persisted forms. Soft delete, `created_at` and `updated_at` come from `Entity`.
-pub type GroupingRow = Entity<Uuid, Grouping>;
+pub type GroupingRow = Entity<GroupingId, Grouping>;
 pub type BookableRow = Entity<BookableId, Bookable>;
 pub type ClientRow = Entity<ClientId, Client>;
 pub type ServiceRow = Entity<ServiceId, Service>;

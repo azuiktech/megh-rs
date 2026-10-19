@@ -50,7 +50,7 @@ pub trait Table {
 }
 
 /// Generic persistent entity wrapper providing ID and audit timestamps.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 pub struct Entity<ID, T> {
     pub id: ID,

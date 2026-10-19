@@ -4,26 +4,36 @@
 //! path (a location joins a brand from the location's own path); the group must be too, except that an org may join
 //! any existing org.
 
-use std::future::Future;
-
+use axum::extract::State;
+use axum_params::Params;
 use serde::Deserialize;
-use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::crud::{Collection, Context, Mask, Stamps};
-use super::error::ApiError;
-use crate::booking::{Error, Grouped, Grouping, GroupingRow, Groups};
+use super::common::zone_of;
+use super::page::paginate;
+use super::{subtree, AppContext};
+use crate::auth::api::{ApiError, ApiResult, ErrorBody, ListQuery, Paginated};
+use crate::booking::{Error, Grouped, Grouping, GroupingId, GroupingRow, Groups};
 use crate::TableEntity;
 
-pub(super) struct Groupings;
+#[derive(Deserialize)]
+pub(super) struct ListGroupings {
+    org_id: Uuid,
+    #[serde(flatten)]
+    query: ListQuery,
+}
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct GroupingBody {
-    kind: Option<Grouped>,
-    member_id: Option<Uuid>,
-    group_id: Option<Uuid>,
+#[derive(Deserialize)]
+pub(super) struct GroupingRef {
+    org_id: Uuid,
+    id: Uuid,
+}
+
+/// The orgs a request covers: the org of the path and those grouped under it.
+async fn scope(pool: &PgPool, org: Uuid) -> Result<Vec<Uuid>, ApiError> {
+    zone_of(pool, org).await?;
+    Ok(subtree(pool, org).await?)
 }
 
 /// The table and owner column of the entities of a kind.
@@ -37,77 +47,83 @@ fn table(kind: Grouped) -> (&'static str, &'static str) {
 }
 
 /// The live owner of an entity of the kind, or `None` when there is no such entity.
-async fn owner_of(ctx: &Context, kind: Grouped, id: Uuid) -> Result<Option<Uuid>, ApiError> {
+async fn owner_of(pool: &PgPool, kind: Grouped, id: Uuid) -> Result<Option<Uuid>, ApiError> {
     let (table, owner) = table(kind);
     let live = if kind == Grouped::Org { "" } else { " AND deleted_at IS NULL" };
-    let found: Option<Option<Uuid>> = sqlx::query_scalar(&format!("SELECT {owner} FROM {table} WHERE id = $1{live}")).bind(id).fetch_optional(&ctx.pool).await?;
+    let found: Option<Option<Uuid>> = sqlx::query_scalar(&format!("SELECT {owner} FROM {table} WHERE id = $1{live}")).bind(id).fetch_optional(pool).await?;
     Ok(found.flatten())
 }
 
 /// The member must be an entity the org of the path covers: an org only places what is its own under a group.
-async fn check_member(ctx: &Context, kind: Grouped, id: Uuid) -> Result<(), ApiError> {
-    match owner_of(ctx, kind, id).await? {
-        Some(owner) if ctx.scope.contains(&owner) => Ok(()),
+async fn check_member(pool: &PgPool, scope: &[Uuid], kind: Grouped, id: Uuid) -> Result<(), ApiError> {
+    match owner_of(pool, kind, id).await? {
+        Some(owner) if scope.contains(&owner) => Ok(()),
         _ => Err(ApiError::not_found(format!("member {id} not found"))),
     }
 }
 
 /// The group is covered too, except for orgs: an org may be placed under any existing org.
-async fn check_group(ctx: &Context, kind: Grouped, id: Uuid) -> Result<(), ApiError> {
-    match (owner_of(ctx, kind, id).await?, kind) {
+async fn check_group(pool: &PgPool, scope: &[Uuid], kind: Grouped, id: Uuid) -> Result<(), ApiError> {
+    match (owner_of(pool, kind, id).await?, kind) {
         (Some(_), Grouped::Org) => Ok(()),
-        (Some(owner), _) if ctx.scope.contains(&owner) => Ok(()),
+        (Some(owner), _) if scope.contains(&owner) => Ok(()),
         _ => Err(ApiError::not_found(format!("group {id} not found"))),
     }
 }
 
 /// Adding the edge must not close a loop: the group must not already sit below the member.
-async fn check_loop(ctx: &Context, kind: Grouped, member: Uuid, group: Uuid) -> Result<(), ApiError> {
-    let groups = Groups::load(&ctx.pool, kind).await?;
+async fn check_loop(pool: &PgPool, kind: Grouped, member: Uuid, group: Uuid) -> Result<(), ApiError> {
+    let groups = Groups::load(pool, kind).await?;
     match groups.reach(group)?.contains_key(&member) {
         true => Err(Error::Cycle.into()),
         false => Ok(()),
     }
 }
 
-impl Collection for Groupings {
-    type Row = GroupingRow;
-    type Body = GroupingBody;
-    const NAME: &'static str = "groupings";
-    const TABLE: &'static str = "groupings";
+async fn found(pool: &PgPool, scope: &[Uuid], id: Uuid) -> ApiResult<GroupingRow> {
+    let row = sqlx::query_as("SELECT * FROM groupings WHERE id = $1 AND org_id = ANY($2)").bind(id).bind(scope).fetch_optional(pool).await?;
+    row.ok_or_else(|| ApiError::not_found(format!("grouping {id} not found")))
+}
 
-    fn stamps(row: &GroupingRow) -> Stamps {
-        Stamps { id: row.id, created: row.created_at, updated: row.updated_at, deleted: row.deleted_at }
-    }
+/// List groupings.
+#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/groupings", tag = "groupings", params(("org_id" = Uuid, Path), ListQuery),
+    responses((status = OK, body = Paginated<GroupingRow>), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn list(State(ctx): State<AppContext>, Params(input, _): Params<ListGroupings>) -> ApiResult<Paginated<GroupingRow>> {
+    let scope = scope(&ctx.pool, input.org_id).await?;
+    let shown = if input.query.show_deleted == Some(true) { "" } else { " AND deleted_at IS NULL" };
+    let rows = sqlx::query_as(&format!("SELECT * FROM groupings WHERE org_id = ANY($1){shown} ORDER BY created_at, id")).bind(&scope).fetch_all(&ctx.pool).await?;
+    Ok(paginate(rows, &input.query)?)
+}
 
-    fn fields(row: &GroupingRow, _: &Context) -> Value {
-        json!({"org_id": row.org_id, "kind": row.kind, "member_id": row.member_id, "group_id": row.group_id})
+/// Create a grouping: put a member under a group.
+#[utoipa::path(post, path = "/api/v1/orgs/{org_id}/groupings", tag = "groupings", params(("org_id" = Uuid, Path)), request_body = Grouping,
+    responses((status = OK, body = GroupingRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody), (status = CONFLICT, body = ErrorBody)))]
+pub(super) async fn create(State(ctx): State<AppContext>, Params(grouping, _): Params<Grouping>) -> ApiResult<GroupingRow> {
+    let org = grouping.org_id;
+    let scope = scope(&ctx.pool, org).await?;
+    if grouping.member_id == grouping.group_id {
+        return Err(ApiError::invalid("an entity cannot be grouped under itself"));
     }
+    check_member(&ctx.pool, &scope, grouping.kind, grouping.member_id).await?;
+    check_group(&ctx.pool, &scope, grouping.kind, grouping.group_id).await?;
+    check_loop(&ctx.pool, grouping.kind, grouping.member_id, grouping.group_id).await?;
+    Ok(GroupingRow::new(GroupingId(Uuid::new_v4()), grouping).insert(&ctx.pool).await?)
+}
 
-    async fn create(ctx: &Context, body: GroupingBody) -> Result<GroupingRow, ApiError> {
-        let (Some(kind), Some(member), Some(group)) = (body.kind, body.member_id, body.group_id) else { return Err(ApiError::invalid("kind, member_id and group_id are required")) };
-        if member == group {
-            return Err(ApiError::invalid("an entity cannot be grouped under itself"));
-        }
-        check_member(ctx, kind, member).await?;
-        check_group(ctx, kind, group).await?;
-        check_loop(ctx, kind, member, group).await?;
-        Ok(GroupingRow::new(Uuid::new_v4(), Grouping { org_id: ctx.org, kind, member_id: member, group_id: group }))
-    }
+/// Get a grouping.
+#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/groupings/{id}", tag = "groupings", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = GroupingRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn read(State(ctx): State<AppContext>, Params(input, _): Params<GroupingRef>) -> ApiResult<GroupingRow> {
+    found(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await
+}
 
-    async fn update(_: &Context, _: &GroupingRow, _: GroupingBody, _: &Mask) -> Result<GroupingRow, ApiError> {
-        Err(ApiError::invalid("a grouping cannot be changed; delete it and make another"))
+/// Delete a grouping. Soft delete: it comes back with `deleted_at`.
+#[utoipa::path(delete, path = "/api/v1/orgs/{org_id}/groupings/{id}", tag = "groupings", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = GroupingRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn remove(State(ctx): State<AppContext>, Params(input, _): Params<GroupingRef>) -> ApiResult<GroupingRow> {
+    let current = found(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await?;
+    if current.deleted_at.is_some() {
+        return Err(ApiError::not_found(format!("grouping {} is deleted", input.id)));
     }
-
-    fn insert(pool: &PgPool, row: GroupingRow) -> impl Future<Output = Result<GroupingRow, sqlx::Error>> + Send {
-        async move { row.insert(pool).await }
-    }
-
-    fn save(pool: &PgPool, row: GroupingRow) -> impl Future<Output = Result<GroupingRow, sqlx::Error>> + Send {
-        async move { row.save(pool).await }
-    }
-
-    fn delete(pool: &PgPool, row: GroupingRow) -> impl Future<Output = Result<Option<GroupingRow>, sqlx::Error>> + Send {
-        async move { row.soft_delete(pool).await }
-    }
+    current.soft_delete(&ctx.pool).await?.ok_or_else(|| ApiError::not_found("already deleted"))
 }

@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use super::common::{check_scope, instant, money, span_of, zone_of};
 use super::error::ApiError;
-use super::BookingState;
+use super::AppContext;
 use crate::booking::{
     ClientId, Condition, Filter, Interval, Party, Search, SearchRequest, ServiceId, ServiceWant, Slot, Slots,
 };
@@ -53,7 +53,7 @@ struct ServiceBody {
     wants: Option<Vec<String>>,
 }
 
-pub(super) fn routes() -> Router<BookingState> {
+pub(super) fn routes() -> Router<AppContext> {
     Router::new().route("/api/v1/orgs/{org_id}/availability:search", post(search))
 }
 
@@ -130,7 +130,7 @@ fn slot_json(slot: &Slot, request: &SearchRequest, zone: Tz) -> Value {
 }
 
 async fn search(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
     WithRejection(Json(body), _): WithRejection<Json<SearchBody>, ApiError>,
 ) -> Result<Json<Value>, ApiError> {

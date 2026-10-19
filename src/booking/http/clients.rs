@@ -1,101 +1,116 @@
 //! `/api/v1/orgs/{org_id}/clients`: the people, pets and others who are served.
 
-use std::future::Future;
-
+use axum::extract::State;
+use axum_params::Params;
 use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
+use validator::ValidateArgs;
 
-use super::crud::{updates, Collection, Context, Mask, Stamps};
-use super::error::ApiError;
-use crate::booking::{Attributes, Client, ClientId, ClientRow, OrgId};
+use super::common::zone_of;
+use super::page::paginate;
+use super::{subtree, AppContext};
+use crate::auth::api::{ApiError, ApiResult, ErrorBody, ListQuery, Paginated};
+use crate::booking::{Client, ClientId, ClientRow};
 use crate::TableEntity;
 
-pub(super) struct Clients;
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ClientBody {
-    org_id: Option<OrgId>,
-    display_name: Option<String>,
-    first_name: Option<String>,
-    last_name: Option<String>,
-    email: Option<String>,
-    home_phone: Option<String>,
-    work_phone: Option<String>,
-    mobile_phone: Option<String>,
-    attributes: Option<Attributes>,
+#[derive(Deserialize)]
+pub(super) struct ListClients {
+    org_id: Uuid,
+    #[serde(flatten)]
+    query: ListQuery,
 }
 
-fn named(name: Option<String>) -> Result<String, ApiError> {
-    name.filter(|name| !name.trim().is_empty()).ok_or_else(|| ApiError::invalid("display_name is required"))
+#[derive(Deserialize)]
+pub(super) struct ClientRef {
+    org_id: Uuid,
+    id: Uuid,
 }
 
-fn part(name: Option<String>, field: &str) -> Result<String, ApiError> {
-    name.filter(|name| !name.trim().is_empty()).ok_or_else(|| ApiError::invalid(format!("{field} is required")))
+#[derive(Deserialize)]
+pub(super) struct ReplaceClient {
+    id: Uuid,
+    #[serde(flatten)]
+    client: Client,
 }
 
-/// A client belongs to the org of the path or to an org grouped under it.
-fn owner(ctx: &Context, org: Option<OrgId>) -> Result<OrgId, ApiError> {
-    let org = org.unwrap_or(ctx.org);
-    ctx.scope.contains(&org).then_some(org).ok_or_else(|| ApiError::invalid("an org other than this one or those grouped under it cannot own a client"))
+#[derive(Deserialize)]
+pub(super) struct PatchClient {
+    org_id: Uuid,
+    id: Uuid,
+    #[serde(flatten)]
+    changes: serde_json::Value,
 }
 
-impl Collection for Clients {
-    type Row = ClientRow;
-    type Body = ClientBody;
-    const NAME: &'static str = "clients";
-    const TABLE: &'static str = "clients";
+/// The orgs a request covers: the org of the path and those grouped under it.
+async fn scope(pool: &PgPool, org: Uuid) -> Result<Vec<Uuid>, ApiError> {
+    zone_of(pool, org).await?;
+    Ok(subtree(pool, org).await?)
+}
 
-    fn stamps(row: &ClientRow) -> Stamps {
-        Stamps { id: row.id.0, created: row.created_at, updated: row.updated_at, deleted: row.deleted_at }
-    }
+async fn found(pool: &PgPool, scope: &[Uuid], id: Uuid) -> ApiResult<ClientRow> {
+    let row = sqlx::query_as("SELECT * FROM clients WHERE id = $1 AND org_id = ANY($2)").bind(id).bind(scope).fetch_optional(pool).await?;
+    row.ok_or_else(|| ApiError::not_found(format!("client {id} not found")))
+}
 
-    fn fields(row: &ClientRow, _: &Context) -> Value {
-        json!({"org_id": row.org_id, "display_name": row.name, "first_name": row.first_name, "last_name": row.last_name, "email": row.email, "home_phone": row.home_phone, "work_phone": row.work_phone, "mobile_phone": row.mobile_phone, "attributes": row.attributes})
+async fn live(pool: &PgPool, scope: &[Uuid], id: Uuid) -> ApiResult<ClientRow> {
+    let row = found(pool, scope, id).await?;
+    match row.deleted_at {
+        None => Ok(row),
+        Some(_) => Err(ApiError::not_found(format!("client {id} is deleted"))),
     }
+}
 
-    async fn create(ctx: &Context, body: ClientBody) -> Result<ClientRow, ApiError> {
-        let data = Client {
-            org_id: owner(ctx, body.org_id)?,
-            name: named(body.display_name)?,
-            first_name: part(body.first_name, "first_name")?,
-            last_name: part(body.last_name, "last_name")?,
-            email: body.email,
-            home_phone: body.home_phone,
-            work_phone: body.work_phone,
-            mobile_phone: body.mobile_phone,
-            attributes: body.attributes.unwrap_or_else(|| serde_json::json!({})),
-        };
-        Ok(ClientRow::new(ClientId(Uuid::new_v4()), data))
-    }
+/// List clients.
+#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/clients", tag = "clients", params(("org_id" = Uuid, Path), ListQuery),
+    responses((status = OK, body = Paginated<ClientRow>), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn list(State(ctx): State<AppContext>, Params(input, _): Params<ListClients>) -> ApiResult<Paginated<ClientRow>> {
+    let scope = scope(&ctx.pool, input.org_id).await?;
+    let shown = if input.query.show_deleted == Some(true) { "" } else { " AND deleted_at IS NULL" };
+    let rows = sqlx::query_as(&format!("SELECT * FROM clients WHERE org_id = ANY($1){shown} ORDER BY created_at, id")).bind(&scope).fetch_all(&ctx.pool).await?;
+    Ok(paginate(rows, &input.query)?)
+}
 
-    async fn update(ctx: &Context, current: &ClientRow, body: ClientBody, mask: &Mask) -> Result<ClientRow, ApiError> {
-        let data = Client {
-            org_id: if updates(mask, "org_id", body.org_id.is_some()) { owner(ctx, body.org_id)? } else { current.org_id },
-            name: if updates(mask, "display_name", body.display_name.is_some()) { named(body.display_name)? } else { current.name.clone() },
-            first_name: if updates(mask, "first_name", body.first_name.is_some()) { part(body.first_name, "first_name")? } else { current.first_name.clone() },
-            last_name: if updates(mask, "last_name", body.last_name.is_some()) { part(body.last_name, "last_name")? } else { current.last_name.clone() },
-            email: if updates(mask, "email", body.email.is_some()) { body.email } else { current.email.clone() },
-            home_phone: if updates(mask, "home_phone", body.home_phone.is_some()) { body.home_phone } else { current.home_phone.clone() },
-            work_phone: if updates(mask, "work_phone", body.work_phone.is_some()) { body.work_phone } else { current.work_phone.clone() },
-            mobile_phone: if updates(mask, "mobile_phone", body.mobile_phone.is_some()) { body.mobile_phone } else { current.mobile_phone.clone() },
-            attributes: if updates(mask, "attributes", body.attributes.is_some()) { body.attributes.unwrap_or_else(|| serde_json::json!({})) } else { current.attributes.clone() },
-        };
-        Ok(ClientRow::with_timestamps(current.id, data, current.created_at, Utc::now()))
-    }
+/// Create a client.
+#[utoipa::path(post, path = "/api/v1/orgs/{org_id}/clients", tag = "clients", params(("org_id" = Uuid, Path)), request_body = Client,
+    responses((status = OK, body = ClientRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn create(State(ctx): State<AppContext>, Params(client, _): Params<Client>) -> ApiResult<ClientRow> {
+    client.validate_with_args(&scope(&ctx.pool, client.org_id).await?)?;
+    Ok(ClientRow::new(ClientId(Uuid::new_v4()), client).insert(&ctx.pool).await?)
+}
 
-    fn insert(pool: &PgPool, row: ClientRow) -> impl Future<Output = Result<ClientRow, sqlx::Error>> + Send {
-        async move { row.insert(pool).await }
-    }
+/// Get a client.
+#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/clients/{id}", tag = "clients", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = ClientRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn read(State(ctx): State<AppContext>, Params(input, _): Params<ClientRef>) -> ApiResult<ClientRow> {
+    found(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await
+}
 
-    fn save(pool: &PgPool, row: ClientRow) -> impl Future<Output = Result<ClientRow, sqlx::Error>> + Send {
-        async move { row.save(pool).await }
-    }
+/// Replace the data of a client.
+#[utoipa::path(put, path = "/api/v1/orgs/{org_id}/clients/{id}", tag = "clients", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)), request_body = Client,
+    responses((status = OK, body = ClientRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn replace(State(ctx): State<AppContext>, Params(input, _): Params<ReplaceClient>) -> ApiResult<ClientRow> {
+    let scope = scope(&ctx.pool, input.client.org_id).await?;
+    let current = live(&ctx.pool, &scope, input.id).await?;
+    input.client.validate_with_args(&scope)?;
+    Ok(ClientRow::with_timestamps(current.id, input.client, current.created_at, Utc::now()).save(&ctx.pool).await?)
+}
 
-    fn delete(pool: &PgPool, row: ClientRow) -> impl Future<Output = Result<Option<ClientRow>, sqlx::Error>> + Send {
-        async move { row.soft_delete(pool).await }
-    }
+/// Change the fields of a client that the body names (JSON merge patch, RFC 7396).
+#[utoipa::path(patch, path = "/api/v1/orgs/{org_id}/clients/{id}", tag = "clients", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)), request_body = Client,
+    responses((status = OK, body = ClientRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn patch(State(ctx): State<AppContext>, Params(input, _): Params<PatchClient>) -> ApiResult<ClientRow> {
+    let scope = scope(&ctx.pool, input.org_id).await?;
+    let patched = live(&ctx.pool, &scope, input.id).await?.patch(&input.changes).map_err(|error| ApiError::invalid(error.to_string()))?;
+    patched.validate_with_args(&scope)?;
+    Ok(patched.save(&ctx.pool).await?)
+}
+
+/// Delete a client. Soft delete: it comes back with `deleted_at`.
+#[utoipa::path(delete, path = "/api/v1/orgs/{org_id}/clients/{id}", tag = "clients", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = ClientRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn remove(State(ctx): State<AppContext>, Params(input, _): Params<ClientRef>) -> ApiResult<ClientRow> {
+    let current = live(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await?;
+    current.soft_delete(&ctx.pool).await?.ok_or_else(|| ApiError::not_found("already deleted"))
 }

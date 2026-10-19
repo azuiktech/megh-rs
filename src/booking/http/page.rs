@@ -6,23 +6,15 @@ use std::cmp::Ordering;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::DateTime;
 use base64::Engine;
-use serde::Deserialize;
+use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::error::ApiError;
+pub use crate::auth::api::ListQuery;
+use crate::auth::api::{ApiError, Paginated};
 use crate::booking::{Attributes, Filter, Predicate};
 
 const DEFAULT_PAGE_SIZE: usize = 50;
 const MAX_PAGE_SIZE: usize = 1000;
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ListQuery {
-    pub page_size: Option<i64>,
-    pub page_token: Option<String>,
-    pub filter: Option<String>,
-    pub order_by: Option<String>,
-    pub show_deleted: Option<bool>,
-}
 
 fn offset_of(token: Option<&str>) -> Result<usize, ApiError> {
     let invalid = || ApiError::invalid("page_token is not valid");
@@ -44,11 +36,11 @@ fn size_of(requested: Option<i64>) -> Result<usize, ApiError> {
 }
 
 /// The items that satisfy the AIP-160 `filter`, judged on their JSON fields.
-fn filtered(items: Vec<Value>, filter: Option<&str>) -> Result<Vec<Value>, ApiError> {
+fn filtered<T>(items: Vec<(Value, T)>, filter: Option<&str>) -> Result<Vec<(Value, T)>, ApiError> {
     let Some(expression) = filter else { return Ok(items) };
     let filter = Filter::parse(expression)?;
     let holds = |item: &Value| item.as_object().is_some_and(|fields| filter.holds(&fields.iter().map(|(key, value)| (key.clone(), value.clone())).collect::<Attributes>()));
-    Ok(items.into_iter().filter(holds).collect())
+    Ok(items.into_iter().filter(|(fields, _)| holds(fields)).collect())
 }
 
 /// The fields of an `order_by` such as `capacity desc, display_name`, each with whether it descends.
@@ -87,13 +79,13 @@ fn compare(left: &Value, right: &Value) -> Ordering {
 }
 
 /// The items ordered by the fields of `order_by` (the order they came in when it is absent).
-fn ordered(mut items: Vec<Value>, order_by: Option<&str>) -> Result<Vec<Value>, ApiError> {
+fn ordered<T>(mut items: Vec<(Value, T)>, order_by: Option<&str>) -> Result<Vec<(Value, T)>, ApiError> {
     let Some(text) = order_by.filter(|text| !text.trim().is_empty()) else { return Ok(items) };
     let fields = orders(text)?;
-    if let Some(unknown) = fields.iter().find(|(field, _)| !items.is_empty() && items.iter().all(|item| item.get(field).is_none())) {
+    if let Some(unknown) = fields.iter().find(|(field, _)| !items.is_empty() && items.iter().all(|(item, _)| item.get(field).is_none())) {
         return Err(ApiError::invalid(format!("cannot order by {}: no such field", unknown.0)));
     }
-    items.sort_by(|left, right| {
+    items.sort_by(|(left, _), (right, _)| {
         fields.iter().map(|(field, descending)| {
             let ordering = compare(left.get(field).unwrap_or(&Value::Null), right.get(field).unwrap_or(&Value::Null));
             if *descending { ordering.reverse() } else { ordering }
@@ -102,11 +94,17 @@ fn ordered(mut items: Vec<Value>, order_by: Option<&str>) -> Result<Vec<Value>, 
     Ok(items)
 }
 
+/// The page of the items that satisfy the query's filter, in the query's order.
+pub fn paginate<T: Serialize>(items: Vec<T>, query: &ListQuery) -> Result<Paginated<T>, ApiError> {
+    let (offset, size) = (offset_of(query.page_token.as_deref())?, size_of(query.page_size)?);
+    let fields = items.into_iter().map(|item| Ok((serde_json::to_value(&item).map_err(|error| ApiError::invalid(error.to_string()))?, item))).collect::<Result<Vec<_>, ApiError>>()?;
+    let items = ordered(filtered(fields, query.filter.as_deref())?, query.order_by.as_deref())?;
+    let next = (offset + size < items.len()).then(|| URL_SAFE_NO_PAD.encode((offset + size).to_string())).unwrap_or_default();
+    Ok(Paginated { data: items.into_iter().skip(offset).take(size).map(|(_, item)| item).collect(), next_page_token: next })
+}
+
 /// `{"<collection>": [...], "next_page_token": "..."}` for one page of the items.
 pub fn page(collection: &str, items: Vec<Value>, query: &ListQuery) -> Result<Value, ApiError> {
-    let (offset, size) = (offset_of(query.page_token.as_deref())?, size_of(query.page_size)?);
-    let items = ordered(filtered(items, query.filter.as_deref())?, query.order_by.as_deref())?;
-    let next = (offset + size < items.len()).then(|| URL_SAFE_NO_PAD.encode((offset + size).to_string())).unwrap_or_default();
-    let shown: Vec<_> = items.into_iter().skip(offset).take(size).collect();
-    Ok(json!({ collection: shown, "next_page_token": next }))
+    let page = paginate(items, query)?;
+    Ok(json!({ collection: page.data, "next_page_token": page.next_page_token }))
 }

@@ -122,9 +122,9 @@ async fn an_org_sees_its_own_services_and_those_of_the_orgs_grouped_under_it(poo
 async fn a_whole_salon_made_over_rest_is_found_by_the_search(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let chair = created(&app, org, "bookables", json!({"display_name": "Chair 1", "attributes": {"kind": "chair"}})).await;
-    let master = created(&app, org, "bookables", json!({"display_name": "Mia", "attributes": {"role": "stylist", "level": "master"}})).await;
-    let junior = created(&app, org, "bookables", json!({"display_name": "Jo", "attributes": {"role": "stylist", "level": "junior"}})).await;
+    let chair = rest_bookable(&app, org, "Chair 1", 1, json!({"kind": "chair"})).await;
+    let master = rest_bookable(&app, org, "Mia", 1, json!({"role": "stylist", "level": "master"})).await;
+    let junior = rest_bookable(&app, org, "Jo", 1, json!({"role": "stylist", "level": "junior"})).await;
     for bookable in [&chair, &master, &junior] {
         let body = json!({"bookable_id": bookable["id"], "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"});
         created(&app, org, "schedules", body).await;

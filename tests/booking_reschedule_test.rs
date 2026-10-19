@@ -26,7 +26,7 @@ struct Salon {
 async fn salon(pool: PgPool) -> Salon {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let (chair, stylist) = (created(&app, org, "bookables", json!({"display_name": "Chair", "attributes": {"kind": "chair"}})).await, created(&app, org, "bookables", json!({"display_name": "Mia", "attributes": {"role": "stylist"}})).await);
+    let (chair, stylist) = (created(&app, org, "bookables", json!({"org_id": org, "name": "Chair", "capacity": 1, "attributes": {"kind": "chair"}})).await, created(&app, org, "bookables", json!({"org_id": org, "name": "Mia", "capacity": 1, "attributes": {"role": "stylist"}})).await);
     for bookable in [&chair, &stylist] {
         created(&app, org, "schedules", json!({"bookable_id": bookable["id"], "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"})).await;
     }
@@ -34,7 +34,7 @@ async fn salon(pool: PgPool) -> Salon {
     let price = |units: &str| json!({"currency_code": "USD", "units": units, "nanos": 0});
     let haircut = created(&app, org, "services", json!({"display_name": "Haircut", "price": price("40"), "steps": steps(60)})).await;
     let colour = created(&app, org, "services", json!({"display_name": "Colour", "price": price("90"), "steps": steps(60)})).await;
-    let (ann, ben) = (created(&app, org, "clients", json!({"display_name": "Ann", "first_name": "Ann", "last_name": "Client"})).await, created(&app, org, "clients", json!({"display_name": "Ben", "first_name": "Ben", "last_name": "Client"})).await);
+    let (ann, ben) = (created(&app, org, "clients", json!({"org_id": org, "name": "Ann", "first_name": "Ann", "last_name": "Client", "attributes": {}})).await, created(&app, org, "clients", json!({"org_id": org, "name": "Ben", "first_name": "Ben", "last_name": "Client", "attributes": {}})).await);
     Salon { app, org, haircut, colour, ann, ben }
 }
 

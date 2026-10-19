@@ -31,11 +31,11 @@ impl Place {
     }
 
     async fn bookable(&self, name: &str, capacity: u32, tags: Value) -> Value {
-        self.make("bookables", json!({"display_name": name, "capacity": capacity, "attributes": tags})).await
+        self.make("bookables", json!({"org_id": self.org, "name": name, "capacity": capacity, "attributes": tags})).await
     }
 
     async fn client(&self, name: &str, tags: Value) -> Value {
-        self.make("clients", json!({"display_name": name, "first_name": name, "last_name": "Client", "attributes": tags})).await
+        self.make("clients", json!({"org_id": self.org, "name": name, "first_name": name, "last_name": "Client", "attributes": tags})).await
     }
 
     async fn service(&self, name: &str, steps: Value) -> Value {

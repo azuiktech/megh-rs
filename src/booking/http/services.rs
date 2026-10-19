@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::common::{money, seconds, span_of, MoneyBody};
 use super::crud::{updates, Collection, Context, Mask, Stamps};
-use super::error::ApiError;
+use crate::auth::api::ApiError;
 use crate::booking::{Attributes, Change, Condition, Engagement, Filter, Mode, Need, OrgId, Presence, Service, ServiceId, ServiceRow, Step, Variant};
 use crate::TableEntity;
 

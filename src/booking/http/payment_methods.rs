@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::common::{amount_json, instant, AmountBody};
 use super::crud::{updates, Collection, Context, Mask, Stamps};
-use super::error::ApiError;
+use crate::auth::api::ApiError;
 use crate::booking::{Attributes, ClientId, Filter, Interval, OrgId, PaymentMethod, PaymentMethodId, PaymentMethodRow, Settlement};
 use crate::TableEntity;
 

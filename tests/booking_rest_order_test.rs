@@ -10,13 +10,13 @@ use sqlx::PgPool;
 
 async fn rooms(app: &axum::Router, org: uuid::Uuid) {
     for (name, capacity) in [("Beta", 2), ("Alpha", 2), ("Gamma", 1)] {
-        created(app, org, "bookables", json!({"display_name": name, "capacity": capacity})).await;
+        rest_bookable(app, org, name, capacity, json!({})).await;
     }
 }
 
 async fn names(app: &axum::Router, org: uuid::Uuid, order: &str) -> (StatusCode, Vec<Value>) {
     let (status, listed) = call(app, "GET", &format!("/api/v1/orgs/{org}/bookables?order_by={order}"), None).await;
-    (status, listed["bookables"].as_array().map(|items| items.iter().map(|item| item["display_name"].clone()).collect()).unwrap_or_default())
+    (status, listed["data"].as_array().map(|items| items.iter().map(|item| item["name"].clone()).collect()).unwrap_or_default())
 }
 
 #[sqlx::test]
@@ -25,11 +25,11 @@ async fn a_list_is_ordered_by_one_field_or_several_and_either_way(pool: PgPool) 
     let app = booking_router(pool);
     rooms(&app, org).await;
     assert_eq!(names(&app, org, "").await.1, vec![json!("Beta"), json!("Alpha"), json!("Gamma")]);
-    assert_eq!(names(&app, org, "display_name").await.1, vec![json!("Alpha"), json!("Beta"), json!("Gamma")]);
-    assert_eq!(names(&app, org, "display_name%20desc").await.1, vec![json!("Gamma"), json!("Beta"), json!("Alpha")]);
-    assert_eq!(names(&app, org, "capacity%20desc,display_name").await.1, vec![json!("Alpha"), json!("Beta"), json!("Gamma")]);
-    assert_eq!(names(&app, org, "capacity,display_name%20desc").await.1, vec![json!("Gamma"), json!("Beta"), json!("Alpha")]);
-    assert_eq!(names(&app, org, "create_time%20desc").await.1, vec![json!("Gamma"), json!("Alpha"), json!("Beta")]);
+    assert_eq!(names(&app, org, "name").await.1, vec![json!("Alpha"), json!("Beta"), json!("Gamma")]);
+    assert_eq!(names(&app, org, "name%20desc").await.1, vec![json!("Gamma"), json!("Beta"), json!("Alpha")]);
+    assert_eq!(names(&app, org, "capacity%20desc,name").await.1, vec![json!("Alpha"), json!("Beta"), json!("Gamma")]);
+    assert_eq!(names(&app, org, "capacity,name%20desc").await.1, vec![json!("Gamma"), json!("Beta"), json!("Alpha")]);
+    assert_eq!(names(&app, org, "created_at%20desc").await.1, vec![json!("Gamma"), json!("Alpha"), json!("Beta")]);
 }
 
 #[sqlx::test]
@@ -37,8 +37,8 @@ async fn an_order_applies_before_the_page_is_cut(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
     rooms(&app, org).await;
-    let (_, first) = call(&app, "GET", &format!("/api/v1/orgs/{org}/bookables?order_by=display_name&page_size=2"), None).await;
-    assert_eq!(first["bookables"].as_array().unwrap().iter().map(|b| b["display_name"].clone()).collect::<Vec<_>>(), vec![json!("Alpha"), json!("Beta")]);
+    let (_, first) = call(&app, "GET", &format!("/api/v1/orgs/{org}/bookables?order_by=name&page_size=2"), None).await;
+    assert_eq!(first["data"].as_array().unwrap().iter().map(|b| b["name"].clone()).collect::<Vec<_>>(), vec![json!("Alpha"), json!("Beta")]);
 }
 
 #[sqlx::test]
@@ -46,7 +46,7 @@ async fn a_field_that_does_not_exist_or_a_bad_direction_is_refused(pool: PgPool)
     let org = clinic(&pool).await;
     let app = booking_router(pool);
     rooms(&app, org).await;
-    for order in ["colour", "display_name%20sideways", "display_name%20desc%20now", "display_name,,capacity"] {
+    for order in ["colour", "name%20sideways", "name%20desc%20now", "name,,capacity"] {
         let (status, error) = call(&app, "GET", &format!("/api/v1/orgs/{org}/bookables?order_by={order}"), None).await;
         assert_eq!((status, error["error"]["status"].clone()), (StatusCode::BAD_REQUEST, json!("INVALID_ARGUMENT")), "{order}");
     }

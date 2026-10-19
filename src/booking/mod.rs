@@ -32,7 +32,7 @@ mod variants;
 pub use appointments::*;
 pub use filter::Filter;
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub use http::{booking_router, booking_router_with_csrf, ApiError};
+pub use http::{booking_router, booking_router_with_csrf, openapi, ApiError};
 pub use model::*;
 #[cfg(feature = "postgres")]
 pub use postgres::{Calendar, Queue, Reservations, Slots};

@@ -24,6 +24,9 @@ pub use user::{UpsertUserInput, User, UserProfile};
 pub use user::{PasswordError, UserRepo};
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod api;
+
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod http;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]

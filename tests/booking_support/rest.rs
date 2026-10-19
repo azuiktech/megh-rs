@@ -9,8 +9,12 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 pub async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let request = Request::builder().method(method).uri(uri).header("content-type", "application/json").header("sec-fetch-site", "same-origin");
-    let request = request.body(body.map_or_else(Body::empty, |body| Body::from(body.to_string()))).unwrap();
+    let request = Request::builder().method(method).uri(uri).header("sec-fetch-site", "same-origin");
+    let request = match body {
+        Some(body) => request.header("content-type", "application/json").body(Body::from(body.to_string())),
+        None => request.body(Body::empty()),
+    }
+    .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     (status, serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap_or(Value::Null))
@@ -30,6 +34,16 @@ pub async fn created(app: &Router, org: Uuid, collection: &str, body: Value) -> 
     resource
 }
 
+/// Creates a bookable of the org.
+pub async fn rest_bookable(app: &Router, org: Uuid, name: impl Into<Value>, capacity: u32, attributes: Value) -> Value {
+    created(app, org, "bookables", serde_json::json!({"org_id": org, "name": name.into(), "capacity": capacity, "attributes": attributes})).await
+}
+
+/// Creates a client of the org.
+pub async fn rest_client(app: &Router, org: Uuid, name: &str, attributes: Value) -> Value {
+    created(app, org, "clients", serde_json::json!({"org_id": org, "name": name, "first_name": name, "last_name": "Client", "attributes": attributes})).await
+}
+
 pub fn path(org: Uuid, collection: &str, resource: &Value) -> String {
     format!("/api/v1/orgs/{org}/{collection}/{}", resource["id"].as_str().unwrap())
 }
@@ -37,7 +51,7 @@ pub fn path(org: Uuid, collection: &str, resource: &Value) -> String {
 /// The ids in the list a call to the collection answers.
 pub async fn ids(app: &Router, org: Uuid, collection: &str, query: &str) -> Vec<Value> {
     let (_, listed) = call(app, "GET", &format!("/api/v1/orgs/{org}/{collection}{query}"), None).await;
-    listed[collection].as_array().unwrap().iter().map(|item| item["id"].clone()).collect()
+    listed.get("data").unwrap_or(&listed[collection]).as_array().unwrap().iter().map(|item| item["id"].clone()).collect()
 }
 
 /// A filter in a query string.

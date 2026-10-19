@@ -12,6 +12,7 @@ use booking_support::*;
 use chrono::Utc;
 use megh::booking::booking_router;
 use megh::{authorizer, Member};
+use serde_json::json;
 use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -41,8 +42,12 @@ fn app(pool: PgPool) -> Router {
 }
 
 async fn status(app: &Router, method: &str, uri: &str, grants: &str, body: &str) -> StatusCode {
-    let request = Request::builder().method(method).uri(uri).header("x-grants", grants).header("content-type", "application/json").header("sec-fetch-site", "same-origin");
-    app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap().status()
+    let request = Request::builder().method(method).uri(uri).header("x-grants", grants).header("sec-fetch-site", "same-origin");
+    let request = match body.is_empty() {
+        true => request.body(Body::empty()),
+        false => request.header("content-type", "application/json").body(Body::from(body.to_string())),
+    };
+    app.clone().oneshot(request.unwrap()).await.unwrap().status()
 }
 
 const WEEKLY: &str = r#"{"days": ["MO"], "start_time": "09:00", "end_time": "12:00"}"#;
@@ -117,17 +122,22 @@ async fn appointments_need_create_confirm_and_delete_grants_on_the_instance(pool
     assert_eq!(status(&app, "GET", &collection, &format!("{read} appointments:read"), "").await, StatusCode::OK);
 }
 
+fn replacement(org: Uuid) -> String {
+    json!({"org_id": org, "name": "Room 1", "capacity": 1, "attributes": {}}).to_string()
+}
+
 #[sqlx::test]
 async fn bookables_need_their_own_grants(pool: PgPool) {
     let org = org(&pool, "clinic").await;
     let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/bookables"));
     let read = format!("orgs:read:{org}");
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), r#"{"display_name": "Room 1"}"#).await, StatusCode::OK);
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} schedules:create"), r#"{"display_name": "Room 1"}"#).await, StatusCode::FORBIDDEN);
+    let room = json!({"org_id": org, "name": "Room 1", "capacity": 1, "attributes": {}}).to_string();
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), &room).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} schedules:create"), &room).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} bookables:read"), "").await, StatusCode::OK);
     let id = Uuid::new_v4();
-    assert_eq!(status(&app, "PATCH", &format!("{collection}/{id}"), &format!("{read} bookables:update:{id}"), "{}").await, StatusCode::NOT_FOUND);
-    assert_eq!(status(&app, "PATCH", &format!("{collection}/{id}"), &read, "{}").await, StatusCode::FORBIDDEN);
+    assert_eq!(status(&app, "PUT", &format!("{collection}/{id}"), &format!("{read} bookables:update:{id}"), &replacement(org)).await, StatusCode::NOT_FOUND);
+    assert_eq!(status(&app, "PUT", &format!("{collection}/{id}"), &read, &replacement(org)).await, StatusCode::FORBIDDEN);
 }
 
 #[sqlx::test]
@@ -135,8 +145,9 @@ async fn clients_need_their_own_grants(pool: PgPool) {
     let org = org(&pool, "clinic").await;
     let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/clients"));
     let read = format!("orgs:read:{org}");
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} clients:create"), r#"{"display_name": "Rex", "first_name": "Rex", "last_name": "Dog"}"#).await, StatusCode::OK);
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), r#"{"display_name": "Rex"}"#).await, StatusCode::FORBIDDEN);
+    let rex = json!({"org_id": org, "name": "Rex", "first_name": "Rex", "last_name": "Dog", "attributes": {}}).to_string();
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} clients:create"), &rex).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), &rex).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} clients:read"), "").await, StatusCode::OK);
 }
 

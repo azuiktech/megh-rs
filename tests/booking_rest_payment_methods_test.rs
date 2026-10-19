@@ -41,7 +41,7 @@ async fn money_vouchers_and_cash_are_methods_too(pool: PgPool) {
 async fn a_method_can_belong_to_a_client(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let client = created(&app, org, "clients", json!({"display_name": "Sam", "first_name": "Sam", "last_name": "Client"})).await;
+    let client = rest_client(&app, org, "Sam", json!({})).await;
     let mut body = pass(5);
     body["owner_id"] = client["id"].clone();
     let owned = created(&app, org, "paymentMethods", body).await;
@@ -77,7 +77,7 @@ async fn bad_input_is_an_invalid_argument_and_a_client_of_another_org_is_not_fou
     let org = clinic(&pool).await;
     let other = clinic(&pool).await;
     let app = booking_router(pool);
-    let strangers = created(&app, other, "clients", json!({"display_name": "Stranger", "first_name": "Stranger", "last_name": "Client"})).await;
+    let strangers = rest_client(&app, other, "Stranger", json!({})).await;
     let cases = [
         json!({"eligible": "kind = \"x\"", "settlement": "on_spot"}),
         json!({"display_name": "M", "settlement": "on_spot"}),
@@ -114,13 +114,13 @@ async fn an_org_sees_its_own_methods_and_those_of_the_orgs_grouped_under_it(pool
 async fn a_pass_made_over_rest_pays_for_an_appointment_made_over_rest(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let room = created(&app, org, "bookables", json!({"display_name": "Suite", "attributes": {"kind": "room"}})).await;
-    let therapist = created(&app, org, "bookables", json!({"display_name": "Tess", "attributes": {"role": "therapist"}})).await;
+    let room = rest_bookable(&app, org, "Suite", 1, json!({"kind": "room"})).await;
+    let therapist = rest_bookable(&app, org, "Tess", 1, json!({"role": "therapist"})).await;
     for bookable in [&room, &therapist] {
         created(&app, org, "schedules", json!({"bookable_id": bookable["id"], "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"})).await;
     }
     let massage = created(&app, org, "services", json!({"display_name": "Massage", "price": {"currency_code": "USD", "units": "90", "nanos": 0}, "attributes": {"category": "massage"}, "steps": [{"duration": "3600s", "needs": [{"who": "role = \"therapist\""}, {"who": "kind = \"room\""}]}]})).await;
-    let client = created(&app, org, "clients", json!({"display_name": "Sam", "first_name": "Sam", "last_name": "Client"})).await;
+    let client = rest_client(&app, org, "Sam", json!({})).await;
     let method = created(&app, org, "paymentMethods", json!({"display_name": "10 massages", "owner_id": client["id"], "eligible": "attributes.category = \"massage\"", "settlement": {"prepaid": {"balance": {"uses": 10}}}})).await;
     let search = json!({"parties": [{"client_id": client["id"], "services": [{"service_id": massage["id"]}]}], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T10:00:00"});
     let (_, found) = call(&app, "POST", &format!("/api/v1/orgs/{org}/availability:search"), Some(search)).await;

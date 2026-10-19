@@ -1,82 +1,116 @@
 //! `/api/v1/orgs/{org_id}/bookables`: providers and rooms.
 
-use std::future::Future;
-
+use axum::extract::State;
+use axum_params::Params;
 use chrono::Utc;
 use serde::Deserialize;
-use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
+use validator::ValidateArgs;
 
-use super::crud::{updates, Collection, Context, Mask, Stamps};
-use super::error::ApiError;
-use crate::booking::{Attributes, Bookable, BookableId, BookableRow, OrgId};
+use super::common::zone_of;
+use crate::auth::api::{ApiError, ApiResult, ErrorBody, ListQuery, Paginated};
+use super::page::paginate;
+use super::{subtree, AppContext};
+use crate::booking::{Bookable, BookableId, BookableRow};
 use crate::TableEntity;
 
-pub(super) struct Bookables;
-
-/// A provider or a room. `capacity` above 1 is double booking; `attributes` are its tags.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct BookableBody {
-    org_id: Option<OrgId>,
-    display_name: Option<String>,
-    capacity: Option<u32>,
-    attributes: Option<Attributes>,
+#[derive(Deserialize)]
+pub(super) struct ListBookables {
+    org_id: Uuid,
+    #[serde(flatten)]
+    query: ListQuery,
 }
 
-fn named(name: Option<String>) -> Result<String, ApiError> {
-    name.filter(|name| !name.trim().is_empty()).ok_or_else(|| ApiError::invalid("display_name is required"))
+#[derive(Deserialize)]
+pub(super) struct BookableRef {
+    org_id: Uuid,
+    id: Uuid,
 }
 
-fn sized(capacity: u32) -> Result<u32, ApiError> {
-    Some(capacity).filter(|capacity| *capacity > 0).ok_or_else(|| ApiError::invalid("capacity must be at least 1"))
+#[derive(Deserialize)]
+pub(super) struct ReplaceBookable {
+    id: Uuid,
+    #[serde(flatten)]
+    bookable: Bookable,
 }
 
-/// A bookable belongs to the org of the path or to an org grouped under it.
-fn owner(ctx: &Context, org: Option<OrgId>) -> Result<OrgId, ApiError> {
-    let org = org.unwrap_or(ctx.org);
-    ctx.scope.contains(&org).then_some(org).ok_or_else(|| ApiError::invalid("an org other than this one or those grouped under it cannot own a bookable"))
+#[derive(Deserialize)]
+pub(super) struct PatchBookable {
+    org_id: Uuid,
+    id: Uuid,
+    #[serde(flatten)]
+    changes: serde_json::Value,
 }
 
-impl Collection for Bookables {
-    type Row = BookableRow;
-    type Body = BookableBody;
-    const NAME: &'static str = "bookables";
-    const TABLE: &'static str = "bookables";
+/// The orgs a request covers: the org of the path and those grouped under it.
+async fn scope(pool: &PgPool, org: Uuid) -> Result<Vec<Uuid>, ApiError> {
+    zone_of(pool, org).await?;
+    Ok(subtree(pool, org).await?)
+}
 
-    fn stamps(row: &BookableRow) -> Stamps {
-        Stamps { id: row.id.0, created: row.created_at, updated: row.updated_at, deleted: row.deleted_at }
-    }
+async fn found(pool: &PgPool, scope: &[Uuid], id: Uuid) -> Result<BookableRow, ApiError> {
+    let row = sqlx::query_as("SELECT * FROM bookables WHERE id = $1 AND org_id = ANY($2)").bind(id).bind(scope).fetch_optional(pool).await?;
+    row.ok_or_else(|| ApiError::not_found(format!("bookable {id} not found")))
+}
 
-    fn fields(row: &BookableRow, _: &Context) -> Value {
-        json!({"org_id": row.org_id, "display_name": row.name, "capacity": row.capacity, "attributes": row.attributes})
+async fn live(pool: &PgPool, scope: &[Uuid], id: Uuid) -> Result<BookableRow, ApiError> {
+    let row = found(pool, scope, id).await?;
+    match row.deleted_at {
+        None => Ok(row),
+        Some(_) => Err(ApiError::not_found(format!("bookable {id} is deleted"))),
     }
+}
 
-    async fn create(ctx: &Context, body: BookableBody) -> Result<BookableRow, ApiError> {
-        let data = Bookable { org_id: owner(ctx, body.org_id)?, name: named(body.display_name)?, capacity: sized(body.capacity.unwrap_or(1))?, attributes: body.attributes.unwrap_or_else(|| serde_json::json!({})) };
-        Ok(BookableRow::new(BookableId(Uuid::new_v4()), data))
-    }
+/// List bookables.
+#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/bookables", tag = "bookables", params(("org_id" = Uuid, Path), ListQuery),
+    responses((status = OK, body = Paginated<BookableRow>), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn list(State(ctx): State<AppContext>, Params(input, _): Params<ListBookables>) -> ApiResult<Paginated<BookableRow>> {
+    let scope = scope(&ctx.pool, input.org_id).await?;
+    let shown = if input.query.show_deleted == Some(true) { "" } else { " AND deleted_at IS NULL" };
+    let rows = sqlx::query_as(&format!("SELECT * FROM bookables WHERE org_id = ANY($1){shown} ORDER BY created_at, id")).bind(&scope).fetch_all(&ctx.pool).await?;
+    Ok(paginate(rows, &input.query)?)
+}
 
-    async fn update(ctx: &Context, current: &BookableRow, body: BookableBody, mask: &Mask) -> Result<BookableRow, ApiError> {
-        let data = Bookable {
-            org_id: if updates(mask, "org_id", body.org_id.is_some()) { owner(ctx, body.org_id)? } else { current.org_id },
-            name: if updates(mask, "display_name", body.display_name.is_some()) { named(body.display_name)? } else { current.name.clone() },
-            capacity: if updates(mask, "capacity", body.capacity.is_some()) { sized(body.capacity.unwrap_or(0))? } else { current.capacity },
-            attributes: if updates(mask, "attributes", body.attributes.is_some()) { body.attributes.unwrap_or_else(|| serde_json::json!({})) } else { current.attributes.clone() },
-        };
-        Ok(BookableRow::with_timestamps(current.id, data, current.created_at, Utc::now()))
-    }
+/// Create a bookable.
+#[utoipa::path(post, path = "/api/v1/orgs/{org_id}/bookables", tag = "bookables", params(("org_id" = Uuid, Path)), request_body = Bookable,
+    responses((status = OK, body = BookableRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn create(State(ctx): State<AppContext>, Params(bookable, _): Params<Bookable>) -> ApiResult<BookableRow> {
+    bookable.validate_with_args(&scope(&ctx.pool, bookable.org_id).await?)?;
+    Ok(BookableRow::new(BookableId(Uuid::new_v4()), bookable).insert(&ctx.pool).await?)
+}
 
-    fn insert(pool: &PgPool, row: BookableRow) -> impl Future<Output = Result<BookableRow, sqlx::Error>> + Send {
-        async move { row.insert(pool).await }
-    }
+/// Get a bookable.
+#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/bookables/{id}", tag = "bookables", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = BookableRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn read(State(ctx): State<AppContext>, Params(input, _): Params<BookableRef>) -> ApiResult<BookableRow> {
+    found(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await
+}
 
-    fn save(pool: &PgPool, row: BookableRow) -> impl Future<Output = Result<BookableRow, sqlx::Error>> + Send {
-        async move { row.save(pool).await }
-    }
+/// Replace the data of a bookable.
+#[utoipa::path(put, path = "/api/v1/orgs/{org_id}/bookables/{id}", tag = "bookables", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)), request_body = Bookable,
+    responses((status = OK, body = BookableRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn replace(State(ctx): State<AppContext>, Params(input, _): Params<ReplaceBookable>) -> ApiResult<BookableRow> {
+    let scope = scope(&ctx.pool, input.bookable.org_id).await?;
+    let current = live(&ctx.pool, &scope, input.id).await?;
+    input.bookable.validate_with_args(&scope)?;
+    Ok(BookableRow::with_timestamps(current.id, input.bookable, current.created_at, Utc::now()).save(&ctx.pool).await?)
+}
 
-    fn delete(pool: &PgPool, row: BookableRow) -> impl Future<Output = Result<Option<BookableRow>, sqlx::Error>> + Send {
-        async move { row.soft_delete(pool).await }
-    }
+/// Change the fields of a bookable that the body names (JSON merge patch, RFC 7396).
+#[utoipa::path(patch, path = "/api/v1/orgs/{org_id}/bookables/{id}", tag = "bookables", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)), request_body = Bookable,
+    responses((status = OK, body = BookableRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn patch(State(ctx): State<AppContext>, Params(input, _): Params<PatchBookable>) -> ApiResult<BookableRow> {
+    let scope = scope(&ctx.pool, input.org_id).await?;
+    let patched = live(&ctx.pool, &scope, input.id).await?.patch(&input.changes).map_err(|error| ApiError::invalid(error.to_string()))?;
+    patched.validate_with_args(&scope)?;
+    Ok(patched.save(&ctx.pool).await?)
+}
+
+/// Delete a bookable. Soft delete: it comes back with `deleted_at`.
+#[utoipa::path(delete, path = "/api/v1/orgs/{org_id}/bookables/{id}", tag = "bookables", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = BookableRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn remove(State(ctx): State<AppContext>, Params(input, _): Params<BookableRef>) -> ApiResult<BookableRow> {
+    let current = live(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await?;
+    current.soft_delete(&ctx.pool).await?.ok_or_else(|| ApiError::not_found("already deleted"))
 }

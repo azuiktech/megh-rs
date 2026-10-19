@@ -13,10 +13,11 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::error::ApiError;
+use crate::auth::api::ApiError;
 use super::common::{seconds, span_of, zone_of};
-use super::page::{page, ListQuery};
-use super::{subtree, BookingState};
+use super::page::page;
+use crate::auth::api::ListQuery;
+use super::{subtree, AppContext};
 use crate::booking::{BookableId, Kind, OrgId, Recurrence, Schedule, ScheduleId, ScheduleRow, ServiceId};
 use crate::TableEntity;
 
@@ -66,7 +67,7 @@ struct UpdateQuery {
     update_mask: Option<String>,
 }
 
-pub(super) fn routes(name: &'static str, kind: Kind) -> Router<BookingState> {
+pub(super) fn routes(name: &'static str, kind: Kind) -> Router<AppContext> {
     let collection = format!("/api/v1/orgs/{{org_id}}/{name}");
     let one = format!("{collection}/{{id}}");
     Router::new()
@@ -171,7 +172,7 @@ async fn live(pool: &PgPool, collection: Collection, org: Uuid, id: ScheduleId) 
 }
 
 async fn create(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     Extension(collection): Extension<Collection>,
     WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
     WithRejection(Json(body), _): WithRejection<Json<ScheduleBody>, ApiError>,
@@ -194,7 +195,7 @@ async fn create(
 }
 
 async fn read(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     Extension(collection): Extension<Collection>,
     WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, ScheduleId)>, ApiError>,
 ) -> Result<Json<ScheduleResource>, ApiError> {
@@ -203,7 +204,7 @@ async fn read(
 }
 
 async fn list(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     Extension(collection): Extension<Collection>,
     WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
     WithRejection(Query(query), _): WithRejection<Query<ListQuery>, ApiError>,
@@ -246,7 +247,7 @@ fn changed(current: &Schedule, body: ScheduleBody, mask: &Option<Vec<String>>, o
 }
 
 async fn update(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     Extension(collection): Extension<Collection>,
     WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, ScheduleId)>, ApiError>,
     WithRejection(Query(query), _): WithRejection<Query<UpdateQuery>, ApiError>,
@@ -263,7 +264,7 @@ async fn update(
 }
 
 async fn remove(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     Extension(collection): Extension<Collection>,
     WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, ScheduleId)>, ApiError>,
 ) -> Result<Json<ScheduleResource>, ApiError> {

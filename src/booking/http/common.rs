@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::error::ApiError;
+use crate::auth::api::ApiError;
 use super::subtree;
 use crate::booking::{Amount, Price, SearchRequest};
 

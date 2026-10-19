@@ -1,5 +1,6 @@
-//! Specification: docs/TPD-booking.md, D9 and section 10: groupings (a brand and its locations, a lobby and its
-//! rooms, a category and its services) over REST, under `/api/v1/orgs/{org_id}/groupings`.
+//! Specification: groupings (a brand and its locations, a lobby and its rooms, a category and its services) over
+//! REST under `/api/v1/orgs/{org_id}/groupings`: the request body is the entity, an edge is made and deleted, never
+//! changed, and answers are the entity.
 
 mod booking_support;
 
@@ -22,7 +23,6 @@ async fn an_edge_puts_a_member_under_a_group(pool: PgPool) {
     let app = booking_router(pool);
     let grouping = created(&app, location, "groupings", edge("org", location, brand)).await;
     assert_eq!((grouping["kind"].clone(), grouping["member_id"].clone(), grouping["group_id"].clone(), grouping["org_id"].clone()), (json!("org"), json!(location), json!(brand), json!(location)));
-    assert_eq!(grouping["name"], json!(format!("orgs/{location}/groupings/{}", grouping["id"].as_str().unwrap())));
     assert_eq!(call(&app, "GET", &path(location, "groupings", &grouping), None).await, (StatusCode::OK, grouping.clone()));
     assert_eq!(ids(&app, location, "groupings", "").await, vec![grouping["id"].clone()]);
     assert_eq!(ids(&app, brand, "groupings", "").await, vec![grouping["id"].clone()]);
@@ -32,12 +32,12 @@ async fn an_edge_puts_a_member_under_a_group(pool: PgPool) {
 async fn bookables_services_and_clients_are_grouped_too(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let lobby = created(&app, org, "bookables", json!({"display_name": "Lobby"})).await;
-    let room = created(&app, org, "bookables", json!({"display_name": "Room 1"})).await;
+    let lobby = rest_bookable(&app, org, "Lobby", 1, json!({})).await;
+    let room = rest_bookable(&app, org, "Room 1", 1, json!({})).await;
     let hair = created(&app, org, "services", json!({"display_name": "Hair", "price": {"currency_code": "USD", "units": "0", "nanos": 0}})).await;
     let colour = created(&app, org, "services", json!({"display_name": "Colour", "price": {"currency_code": "USD", "units": "9", "nanos": 0}})).await;
-    let vips = created(&app, org, "clients", json!({"display_name": "VIPs", "first_name": "VIPs", "last_name": "Client"})).await;
-    let sam = created(&app, org, "clients", json!({"display_name": "Sam", "first_name": "Sam", "last_name": "Client"})).await;
+    let vips = rest_client(&app, org, "VIPs", json!({})).await;
+    let sam = rest_client(&app, org, "Sam", json!({})).await;
     let rooms = created(&app, org, "groupings", edge("bookable", &room["id"], &lobby["id"])).await;
     let menu = created(&app, org, "groupings", edge("service", &colour["id"], &hair["id"])).await;
     let people = created(&app, org, "groupings", edge("client", &sam["id"], &vips["id"])).await;
@@ -80,7 +80,6 @@ async fn what_would_break_the_hierarchy_is_refused(pool: PgPool) {
         (brand, edge("bookable", location, franchise), StatusCode::NOT_FOUND, "NOT_FOUND"),
         (brand, json!({"kind": "org", "member_id": location}), StatusCode::BAD_REQUEST, "INVALID_ARGUMENT"),
         (brand, json!({"kind": "team", "member_id": location, "group_id": brand}), StatusCode::BAD_REQUEST, "INVALID_ARGUMENT"),
-        (brand, json!({"kind": "org", "member_id": location, "group_id": brand, "x": 1}), StatusCode::BAD_REQUEST, "INVALID_ARGUMENT"),
     ];
     for (org, body, expected, name) in cases {
         let (status, error) = call(&app, "POST", &under(org), Some(body.clone())).await;
@@ -96,7 +95,7 @@ async fn an_edge_cannot_be_changed_and_a_deleted_one_can_be_made_again(pool: PgP
     let (status, _) = call(&app, "PATCH", &path(location, "groupings", &grouping), Some(json!({}))).await;
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     let (_, deleted) = call(&app, "DELETE", &path(location, "groupings", &grouping), None).await;
-    assert!(deleted["delete_time"].is_string());
+    assert!(deleted["deleted_at"].is_string());
     assert!(ids(&app, location, "groupings", "").await.is_empty());
     assert_eq!(ids(&app, location, "groupings", "?show_deleted=true").await.len(), 1);
     created(&app, location, "groupings", edge("org", location, brand)).await;

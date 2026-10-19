@@ -18,23 +18,27 @@ mod page;
 mod payment_methods;
 mod schedules;
 mod services;
-mod slot;
 mod view;
 mod waitlist_entries;
+pub use error::ApiError;
+mod slot;
 
 use std::collections::HashMap;
 
 use axum::Router;
 use sqlx::PgPool;
 use tower_http::csrf::CsrfLayer;
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme};
+use utoipa::{Modify, OpenApi};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 use uuid::Uuid;
 
-pub use error::ApiError;
 
 use super::{Groups, Grouped, Kind, Result};
 
 #[derive(Clone)]
-pub struct BookingState {
+pub struct AppContext {
     pub(super) pool: PgPool,
 }
 
@@ -44,20 +48,50 @@ pub fn booking_router(pool: PgPool) -> Router {
     booking_router_with_csrf(pool, CsrfLayer::new())
 }
 
+/// The OpenAPI document of the routes. Only the routes registered with `routes!` are in it so far.
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    routes().split_for_parts().1
+}
+
 pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
+    routes().split_for_parts().0.layer(crate::auth::api::NegotiateLayer).layer(csrf).layer(axum::middleware::map_response(crate::auth::api::aip_193)).with_state(AppContext { pool })
+}
+
+#[derive(OpenApi)]
+#[openapi(info(title = "Megh booking API", version = "1"), modifiers(&Authentication), tags((name = "bookables", description = "Providers and rooms."), (name = "clients", description = "People, pets and others who are served."), (name = "groupings", description = "The hierarchy of orgs, bookables, services and clients.")))]
+struct Booking;
+
+/// The cookie `jwt_token` that `jwt_session` issues from the session after sign-in.
+struct Authentication;
+
+impl Modify for Authentication {
+    fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
+        let cookie = SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("jwt_token")));
+        api.components.get_or_insert_with(Default::default).add_security_scheme("jwtCookie", cookie);
+        api.security = Some(vec![SecurityRequirement::new("jwtCookie", Vec::<String>::new())]);
+    }
+}
+
+fn routes() -> OpenApiRouter<AppContext> {
+    OpenApiRouter::with_openapi(Booking::openapi())
+        .routes(routes!(bookables::list, bookables::create))
+        .routes(routes!(bookables::read, bookables::replace, bookables::patch, bookables::remove))
+        .routes(routes!(clients::list, clients::create))
+        .routes(routes!(clients::read, clients::replace, clients::patch, clients::remove))
+        .routes(routes!(groupings::list, groupings::create))
+        .routes(routes!(groupings::read, groupings::remove))
+        .merge(OpenApiRouter::from(others()))
+}
+
+fn others() -> Router<AppContext> {
     Router::new()
         .merge(appointments::routes())
-        .merge(crud::routes::<bookables::Bookables>())
-        .merge(crud::routes::<clients::Clients>())
         .merge(crud::routes::<services::Services>())
         .merge(crud::routes::<payment_methods::PaymentMethods>())
-        .merge(crud::routes_unchangeable::<groupings::Groupings>())
         .merge(crud::routes_unchangeable::<waitlist_entries::WaitlistEntries>())
         .merge(availability::routes())
         .merge(schedules::routes("schedules", Kind::Open))
         .merge(schedules::routes("blockouts", Kind::Blockout))
-        .layer(csrf)
-        .with_state(BookingState { pool })
 }
 
 /// The org and every org grouped under it, at any depth.

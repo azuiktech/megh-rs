@@ -22,7 +22,7 @@ use super::error::ApiError;
 use super::page::{page, ListQuery};
 use super::slot::{verified, SlotBody};
 use super::view;
-use super::{subtree, BookingState};
+use super::{subtree, AppContext};
 use crate::booking::{
     AppointmentId, AppointmentRow, Appointments, Attributes, ClientId, Confirmation, Error, HoldId, HoldRow, IdempotencyKey, PaymentMethodId, Reservations,
 };
@@ -80,7 +80,7 @@ struct ConfirmBody {
     attributes: Option<Attributes>,
 }
 
-pub(super) fn routes() -> Router<BookingState> {
+pub(super) fn routes() -> Router<AppContext> {
     let collection = "/api/v1/orgs/{org_id}/appointments";
     Router::new()
         .route(collection, get(list).post(create))
@@ -146,7 +146,7 @@ fn expiry(body: &CreateBody, zone: Tz) -> Result<chrono::DateTime<Utc>, ApiError
 }
 
 async fn create(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
     WithRejection(Json(body), _): WithRejection<Json<CreateBody>, ApiError>,
 ) -> Result<Json<Value>, ApiError> {
@@ -197,7 +197,7 @@ fn plain_id(text: &str) -> Result<Uuid, ApiError> {
 
 /// `POST .../appointments/{id}:verb`, a custom method (AIP-136).
 async fn custom_method(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path((org, target)), _): WithRejection<Path<(Uuid, String)>, ApiError>,
     WithRejection(Json(body), _): WithRejection<Json<Value>, ApiError>,
 ) -> Result<Json<Value>, ApiError> {
@@ -210,7 +210,7 @@ async fn custom_method(
     }
 }
 
-async fn confirm(state: &BookingState, org: Uuid, id: Uuid, body: ConfirmBody) -> Result<Json<Value>, ApiError> {
+async fn confirm(state: &AppContext, org: Uuid, id: Uuid, body: ConfirmBody) -> Result<Json<Value>, ApiError> {
     let pool = &state.pool;
     zone_of(pool, org).await?;
     let scope = subtree(pool, org).await?;
@@ -227,14 +227,14 @@ async fn confirm(state: &BookingState, org: Uuid, id: Uuid, body: ConfirmBody) -
     Ok(Json(resource_of(pool, org, &scope, appointment.id.0).await?))
 }
 
-async fn read(State(state): State<BookingState>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, String)>, ApiError>) -> Result<Json<Value>, ApiError> {
+async fn read(State(state): State<AppContext>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, String)>, ApiError>) -> Result<Json<Value>, ApiError> {
     zone_of(&state.pool, org).await?;
     let scope = subtree(&state.pool, org).await?;
     Ok(Json(resource_of(&state.pool, org, &scope, plain_id(&id)?).await?))
 }
 
 async fn reschedule(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, String)>, ApiError>,
     WithRejection(Query(query), _): WithRejection<Query<MaskQuery>, ApiError>,
     WithRejection(Json(body), _): WithRejection<Json<RescheduleBody>, ApiError>,
@@ -258,7 +258,7 @@ async fn reschedule(
 }
 
 async fn list(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
     WithRejection(Query(query), _): WithRejection<Query<ListQuery>, ApiError>,
 ) -> Result<Json<Value>, ApiError> {
@@ -268,7 +268,7 @@ async fn list(
     Ok(Json(page("appointments", items, &query)?))
 }
 
-async fn cancel(State(state): State<BookingState>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, String)>, ApiError>) -> Result<Json<Value>, ApiError> {
+async fn cancel(State(state): State<AppContext>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, String)>, ApiError>) -> Result<Json<Value>, ApiError> {
     let (pool, id) = (&state.pool, plain_id(&id)?);
     zone_of(pool, org).await?;
     let scope = subtree(pool, org).await?;

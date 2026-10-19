@@ -21,9 +21,10 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::common::zone_of;
-use super::error::ApiError;
-use super::page::{page, ListQuery};
-use super::{subtree, BookingState};
+use crate::auth::api::ApiError;
+use super::page::page;
+use crate::auth::api::ListQuery;
+use super::{subtree, AppContext};
 
 /// The org of the path, its time zone and the orgs it covers (itself and those grouped under it).
 pub(super) struct Context {
@@ -74,18 +75,18 @@ struct UpdateQuery {
 }
 
 /// Get, List, Create, Update and Delete.
-pub(super) fn routes<C: Collection>() -> Router<BookingState> {
+pub(super) fn routes<C: Collection>() -> Router<AppContext> {
     let collection = format!("/api/v1/orgs/{{org_id}}/{}", C::NAME);
     Router::new().route(&collection, get(list::<C>).post(create::<C>)).route(&format!("{collection}/{{id}}"), get(read::<C>).patch(update::<C>).delete(remove::<C>))
 }
 
 /// Get, List, Create and Delete, for rows that are made and unmade, never changed.
-pub(super) fn routes_unchangeable<C: Collection>() -> Router<BookingState> {
+pub(super) fn routes_unchangeable<C: Collection>() -> Router<AppContext> {
     let collection = format!("/api/v1/orgs/{{org_id}}/{}", C::NAME);
     Router::new().route(&collection, get(list::<C>).post(create::<C>)).route(&format!("{collection}/{{id}}"), get(read::<C>).delete(remove::<C>))
 }
 
-async fn context(state: &BookingState, org: Uuid) -> Result<Context, ApiError> {
+async fn context(state: &AppContext, org: Uuid) -> Result<Context, ApiError> {
     Ok(Context { pool: state.pool.clone(), org, zone: zone_of(&state.pool, org).await?, scope: subtree(&state.pool, org).await? })
 }
 
@@ -118,7 +119,7 @@ async fn live<C: Collection>(ctx: &Context, id: Uuid) -> Result<C::Row, ApiError
 }
 
 async fn create<C: Collection>(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
     WithRejection(Json(body), _): WithRejection<Json<C::Body>, ApiError>,
 ) -> Result<Json<Value>, ApiError> {
@@ -127,13 +128,13 @@ async fn create<C: Collection>(
     Ok(Json(resource::<C>(&C::insert(&ctx.pool, row).await?, &ctx)))
 }
 
-async fn read<C: Collection>(State(state): State<BookingState>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, Uuid)>, ApiError>) -> Result<Json<Value>, ApiError> {
+async fn read<C: Collection>(State(state): State<AppContext>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, Uuid)>, ApiError>) -> Result<Json<Value>, ApiError> {
     let ctx = context(&state, org).await?;
     Ok(Json(resource::<C>(&fetch::<C>(&ctx, id).await?, &ctx)))
 }
 
 async fn list<C: Collection>(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
     WithRejection(Query(query), _): WithRejection<Query<ListQuery>, ApiError>,
 ) -> Result<Json<Value>, ApiError> {
@@ -146,7 +147,7 @@ async fn list<C: Collection>(
 }
 
 async fn update<C: Collection>(
-    State(state): State<BookingState>,
+    State(state): State<AppContext>,
     WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, Uuid)>, ApiError>,
     WithRejection(Query(query), _): WithRejection<Query<UpdateQuery>, ApiError>,
     WithRejection(Json(body), _): WithRejection<Json<C::Body>, ApiError>,
@@ -160,7 +161,7 @@ async fn update<C: Collection>(
     Ok(Json(resource::<C>(&fetch::<C>(&ctx, id).await?, &ctx)))
 }
 
-async fn remove<C: Collection>(State(state): State<BookingState>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, Uuid)>, ApiError>) -> Result<Json<Value>, ApiError> {
+async fn remove<C: Collection>(State(state): State<AppContext>, WithRejection(Path((org, id)), _): WithRejection<Path<(Uuid, Uuid)>, ApiError>) -> Result<Json<Value>, ApiError> {
     let ctx = context(&state, org).await?;
     let current = live::<C>(&ctx, id).await?;
     let deleted = C::delete(&ctx.pool, current).await?.ok_or_else(|| ApiError::not_found("already deleted"))?;

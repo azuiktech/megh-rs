@@ -29,7 +29,7 @@ pub fn is(key: &str, value: &str) -> Condition {
 }
 
 pub fn attributes(pairs: &[(&str, &str)]) -> Attributes {
-    pairs.iter().map(|(key, value)| (key.to_string(), serde_json::json!(value))).collect()
+    serde_json::Value::Object(pairs.iter().map(|(key, value)| (key.to_string(), serde_json::json!(value))).collect())
 }
 
 pub fn minutes(count: u64) -> Duration {
@@ -84,7 +84,8 @@ pub async fn org(pool: &PgPool, name: &str) -> Uuid {
 }
 
 pub async fn group(pool: &PgPool, kind: Grouped, member: Uuid, group: Uuid) {
-    GroupingRow::new(Uuid::new_v4(), Grouping { org_id: None, kind, member_id: member, group_id: group }).insert(pool).await.unwrap();
+    let owner = org(pool, "grouping").await;
+    GroupingRow::new(Uuid::new_v4(), Grouping { org_id: owner, kind, member_id: member, group_id: group }).insert(pool).await.unwrap();
 }
 
 pub async fn bookable(pool: &PgPool, org: Uuid, name: &str, capacity: u32, tags: &[(&str, &str)]) -> BookableRow {
@@ -93,7 +94,12 @@ pub async fn bookable(pool: &PgPool, org: Uuid, name: &str, capacity: u32, tags:
 }
 
 pub async fn client(pool: &PgPool) -> ClientRow {
-    let data = Client { org_id: None, name: "client".into(), attributes: Attributes::new() };
+    let owner = org(pool, "client").await;
+    client_of(pool, owner).await
+}
+
+pub async fn client_of(pool: &PgPool, org: Uuid) -> ClientRow {
+    let data = Client { org_id: org, name: "client".into(), first_name: "Cleo".into(), last_name: "Client".into(), email: None, home_phone: None, work_phone: None, mobile_phone: None, attributes: serde_json::json!({}) };
     ClientRow::new(ClientId(Uuid::new_v4()), data).insert(pool).await.unwrap()
 }
 
@@ -102,22 +108,22 @@ pub fn price(micros: i64) -> Price {
 }
 
 fn step(duration: Duration, needs: Vec<Need>) -> Step {
-    Step { duration, client: Presence::Present, needs, attributes: Attributes::new() }
+    Step { duration, client: Presence::Present, needs, attributes: serde_json::json!({}) }
 }
 
 pub fn need(who: Condition, engagement: Engagement) -> Need {
     Need { who, count: 1, engagement }
 }
 
-pub async fn insert_service(pool: &PgPool, name: &str, steps: Vec<Step>, variants: Vec<Variant>) -> ServiceRow {
-    let data = Service { org_id: None, name: name.into(), mode: Mode::Appointment, price: price(100_000_000), steps, variants, attributes: Attributes::new() };
+pub async fn insert_service(pool: &PgPool, org: Uuid, name: &str, steps: Vec<Step>, variants: Vec<Variant>) -> ServiceRow {
+    let data = Service { org_id: org, name: name.into(), mode: Mode::Appointment, price: price(100_000_000), steps, variants, attributes: serde_json::json!({}) };
     ServiceRow::new(ServiceId(Uuid::new_v4()), data).insert(pool).await.unwrap()
 }
 
 /// One step of `length` minutes engaging the provider (when given) and one room.
-pub async fn service(pool: &PgPool, name: &str, length: u64, provider: Option<Condition>, room: Condition) -> ServiceRow {
+pub async fn service(pool: &PgPool, org: Uuid, name: &str, length: u64, provider: Option<Condition>, room: Condition) -> ServiceRow {
     let needs = provider.into_iter().map(|who| need(who, Engagement::Engaged)).chain([need(room, Engagement::Engaged)]).collect();
-    insert_service(pool, name, vec![step(minutes(length), needs)], vec![]).await
+    insert_service(pool, org, name, vec![step(minutes(length), needs)], vec![]).await
 }
 
 #[derive(Default)]
@@ -127,8 +133,18 @@ pub struct Where {
     pub bookable: Option<BookableId>,
 }
 
+/// The org that owns a rule: the one named, else that of its bookable or of its service.
+async fn owner_of_rule(pool: &PgPool, axes: &Where) -> Uuid {
+    match (axes.org, axes.bookable, axes.service) {
+        (Some(org), ..) => org,
+        (None, Some(bookable), _) => sqlx::query_scalar("SELECT org_id FROM bookables WHERE id = $1").bind(bookable).fetch_one(pool).await.unwrap(),
+        (None, None, Some(service)) => sqlx::query_scalar("SELECT org_id FROM services WHERE id = $1").bind(service).fetch_one(pool).await.unwrap(),
+        (None, None, None) => panic!("a rule belongs to an org"),
+    }
+}
+
 pub async fn rule(pool: &PgPool, kind: Kind, axes: Where, recurrence: Recurrence, span: Duration) {
-    let data = Schedule { org_id: axes.org, service_id: axes.service, bookable_id: axes.bookable, kind, recurrence, span, reason: None, notes: None };
+    let data = Schedule { org_id: owner_of_rule(pool, &axes).await, service_id: axes.service, bookable_id: axes.bookable, kind, recurrence, span, reason: None, notes: None };
     ScheduleRow::new(ScheduleId(Uuid::new_v4()), data).insert(pool).await.unwrap();
 }
 
@@ -147,8 +163,9 @@ async fn occupy(pool: &PgPool, hold: Option<HoldId>, booking: Option<Appointment
 
 /// An existing booking occupying `bookable`.
 pub async fn booked(pool: &PgPool, bookable: BookableId, during: Interval, engagement: Engagement) -> AppointmentRow {
-    let payer = client(pool).await;
-    let data = Appointment { org_id: None, tz: "UTC".into(), lines: vec![], payer_id: payer.id, payments: vec![], idempotency_key: IdempotencyKey(Uuid::new_v4().to_string()), fingerprint: "seed".into(), attributes: Attributes::new() };
+    let org: Uuid = sqlx::query_scalar("SELECT org_id FROM bookables WHERE id = $1").bind(bookable).fetch_one(pool).await.unwrap();
+    let payer = client_of(pool, org).await;
+    let data = Appointment { org_id: org, tz: "UTC".into(), lines: vec![], payer_id: payer.id, payments: vec![], idempotency_key: IdempotencyKey(Uuid::new_v4().to_string()), fingerprint: "seed".into(), attributes: serde_json::json!({}) };
     let booking = AppointmentRow::new(AppointmentId(Uuid::new_v4()), data).insert(pool).await.unwrap();
     occupy(pool, None, Some(booking.id), bookable, during, engagement, 1).await;
     booking
@@ -156,7 +173,8 @@ pub async fn booked(pool: &PgPool, bookable: BookableId, during: Interval, engag
 
 /// An existing hold on `bookable` that expires at `expires_at`.
 pub async fn held(pool: &PgPool, bookable: BookableId, during: Interval, expires_at: DateTime<Utc>) -> HoldRow {
-    let data = Hold { org_id: None, tz: "UTC".into(), parties: vec![], placements: vec![], expires_at, attributes: Attributes::new() };
+    let org: Uuid = sqlx::query_scalar("SELECT org_id FROM bookables WHERE id = $1").bind(bookable).fetch_one(pool).await.unwrap();
+    let data = Hold { org_id: org, tz: "UTC".into(), parties: vec![], placements: vec![], expires_at, attributes: serde_json::json!({}) };
     let hold = HoldRow::new(HoldId(Uuid::new_v4()), data).insert(pool).await.unwrap();
     occupy(pool, Some(hold.id), None, bookable, during, Engagement::Engaged, 1).await;
     hold

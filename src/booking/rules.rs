@@ -32,7 +32,7 @@ fn nearness(axis: Option<Uuid>, reach: &Reach) -> Option<usize> {
 fn rank(rule: &Schedule, above: &Above) -> Option<Rank> {
     Some((
         nearness(rule.bookable_id.map(|id| id.0), &above.bookable)?,
-        nearness(rule.org_id, &above.org)?,
+        nearness(Some(rule.org_id), &above.org)?,
         nearness(rule.service_id.map(|id| id.0), &above.service)?,
     ))
 }

@@ -34,7 +34,7 @@ async fn salon(pool: PgPool) -> Salon {
     let price = |units: &str| json!({"currency_code": "USD", "units": units, "nanos": 0});
     let haircut = created(&app, org, "services", json!({"display_name": "Haircut", "price": price("40"), "steps": steps(60)})).await;
     let colour = created(&app, org, "services", json!({"display_name": "Colour", "price": price("90"), "steps": steps(60)})).await;
-    let (ann, ben) = (created(&app, org, "clients", json!({"display_name": "Ann"})).await, created(&app, org, "clients", json!({"display_name": "Ben"})).await);
+    let (ann, ben) = (created(&app, org, "clients", json!({"display_name": "Ann", "first_name": "Ann", "last_name": "Client"})).await, created(&app, org, "clients", json!({"display_name": "Ben", "first_name": "Ben", "last_name": "Client"})).await);
     Salon { app, org, haircut, colour, ann, ben }
 }
 
@@ -174,7 +174,7 @@ async fn moving_onto_a_time_that_is_full_is_occupied(pool: PgPool) {
     for found in [&room, &stylist] {
         open_rule(&pool, Where { bookable: Some(found.id), ..Where::default() }, 9, 8).await;
     }
-    let haircut = service(&pool, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&pool, org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     let request_at = |hour: u32| {
         let mut request = request(haircut.id, between(1, hour, hour + 1));
         request.parties = vec![Party { client: None, seats: 1, services: vec![ServiceWant { service: haircut.id, wants: vec![] }] }];

@@ -225,7 +225,7 @@ async fn another_orgs_bookable_cannot_be_used(pool: PgPool) {
 #[sqlx::test]
 async fn schedules_and_blockouts_made_over_rest_drive_the_availability(pool: PgPool) {
     let org = clinic(&pool).await;
-    let (room, cleaning) = (bookable(&pool, org, "room", 1, &[]).await, service(&pool, "cleaning", 30, None, is("kind", "room")).await);
+    let (room, cleaning) = (bookable(&pool, org, "room", 1, &[]).await, service(&pool, org, "cleaning", 30, None, is("kind", "room")).await);
     let app = booking_router(pool.clone());
     created(&app, org, "schedules", json!({"bookable_id": room.id, "service_id": cleaning.id, "days": ["WE", "TH"], "start_time": "15:00", "end_time": "18:00", "start_date": "2026-11-04"})).await;
     created(&app, org, "blockouts", json!({"bookable_id": room.id, "date": "2026-11-12", "start_time": "16:00", "end_time": "16:30", "reason": "meeting"})).await;

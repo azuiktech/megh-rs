@@ -31,7 +31,7 @@ pub struct Recurrence(pub String);
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "schedules")]
 pub struct Schedule {
-    pub org_id: Option<OrgId>,
+    pub org_id: OrgId,
     pub service_id: Option<ServiceId>,
     pub bookable_id: Option<BookableId>,
     pub kind: Kind,

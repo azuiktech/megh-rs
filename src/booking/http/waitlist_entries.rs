@@ -99,7 +99,7 @@ impl Collection for WaitlistEntries {
         check_scope(ctx, client, &target).await?;
         check_not_waiting(ctx, client, &target).await?;
         let requested_at: DateTime<Utc> = body.request_time.as_deref().map(|text| instant(text, ctx.zone)).transpose()?.unwrap_or_else(Utc::now);
-        let data = WaitlistEntry { org_id: Some(ctx.org), client_id: client, target, requested_at, attributes: body.attributes.unwrap_or_default() };
+        let data = WaitlistEntry { org_id: ctx.org, client_id: client, target, requested_at, attributes: body.attributes.unwrap_or_else(|| serde_json::json!({})) };
         Ok(WaitlistEntryRow::new(WaitlistEntryId(Uuid::new_v4()), data))
     }
 

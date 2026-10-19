@@ -18,7 +18,7 @@ impl Predicate for Always {
 }
 
 fn attributes() -> Attributes {
-    Attributes::from([("k".to_string(), serde_json::json!(1))])
+    serde_json::json!({"k": 1})
 }
 
 fn seconds(count: u64) -> std::time::Duration {
@@ -38,11 +38,11 @@ async fn bookables_clients_and_services_round_trip(pool: PgPool) {
     let bookable = Bookable { org_id: org, name: "r".into(), capacity: 2, attributes: attributes() };
     let bookable = BookableRow::new(BookableId(Uuid::new_v4()), bookable).insert(&pool).await.unwrap();
     assert_eq!((bookable.capacity, bookable.attributes.clone()), (2, attributes()));
-    ClientRow::new(ClientId(Uuid::new_v4()), Client { org_id: Some(org), name: "c".into(), attributes: attributes() }).insert(&pool).await.unwrap();
+    ClientRow::new(ClientId(Uuid::new_v4()), Client { org_id: org, name: "c".into(), first_name: "A".into(), last_name: "B".into(), email: None, home_phone: None, work_phone: None, mobile_phone: None, attributes: attributes() }).insert(&pool).await.unwrap();
     let need = Need { who: Box::new(Always), count: 1, engagement: Engagement::Free };
     let step = Step { duration: seconds(60), client: Presence::Present, needs: vec![need], attributes: attributes() };
     let price = Price { micros: 5, currency: "USD".into() };
-    let service = Service { org_id: Some(org), name: "s".into(), mode: Mode::Class, price, steps: vec![step], variants: vec![], attributes: attributes() };
+    let service = Service { org_id: org, name: "s".into(), mode: Mode::Class, price, steps: vec![step], variants: vec![], attributes: attributes() };
     let service = ServiceRow::new(ServiceId(Uuid::new_v4()), service).insert(&pool).await.unwrap();
     assert_eq!(service.mode, Mode::Class);
     assert_eq!(service.steps[0].needs[0].engagement, Engagement::Free);
@@ -52,9 +52,9 @@ async fn bookables_clients_and_services_round_trip(pool: PgPool) {
 async fn schedules_and_groupings_round_trip(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
     let org = org(&pool).await;
-    GroupingRow::new(Uuid::new_v4(), Grouping { org_id: Some(org), kind: Grouped::Org, member_id: org, group_id: Uuid::new_v4() }).insert(&pool).await.unwrap();
+    GroupingRow::new(Uuid::new_v4(), Grouping { org_id: org, kind: Grouped::Org, member_id: org, group_id: Uuid::new_v4() }).insert(&pool).await.unwrap();
     let schedule = Schedule {
-        org_id: Some(org),
+        org_id: org,
         service_id: None,
         bookable_id: None,
         kind: Kind::Blockout,
@@ -72,10 +72,10 @@ async fn appointments_holds_and_the_rest_round_trip(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
     let org = org(&pool).await;
     let now = Utc::now();
-    let client = Client { org_id: Some(org), name: "c".into(), attributes: attributes() };
+    let client = Client { org_id: org, name: "c".into(), first_name: "A".into(), last_name: "B".into(), email: None, home_phone: None, work_phone: None, mobile_phone: None, attributes: attributes() };
     let client = ClientRow::new(ClientId(Uuid::new_v4()), client).insert(&pool).await.unwrap();
     let method = PaymentMethod {
-        org_id: Some(org),
+        org_id: org,
         name: "pass".into(),
         owner_id: Some(client.id),
         eligible: Box::new(Always),
@@ -83,10 +83,10 @@ async fn appointments_holds_and_the_rest_round_trip(pool: PgPool) {
         attributes: attributes(),
     };
     PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), method).insert(&pool).await.unwrap();
-    let hold = Hold { org_id: Some(org), tz: "UTC".into(), parties: vec![], placements: vec![], expires_at: now + Duration::minutes(5), attributes: attributes() };
+    let hold = Hold { org_id: org, tz: "UTC".into(), parties: vec![], placements: vec![], expires_at: now + Duration::minutes(5), attributes: attributes() };
     HoldRow::new(HoldId(Uuid::new_v4()), hold).insert(&pool).await.unwrap();
     let target = Target::Window(ServiceId(Uuid::new_v4()), Interval { start: now, end: now + Duration::days(1) });
-    let entry = WaitlistEntry { org_id: Some(org), client_id: client.id, target, requested_at: now, attributes: attributes() };
+    let entry = WaitlistEntry { org_id: org, client_id: client.id, target, requested_at: now, attributes: attributes() };
     WaitlistEntryRow::new(WaitlistEntryId(Uuid::new_v4()), entry).insert(&pool).await.unwrap();
 }
 
@@ -96,10 +96,10 @@ async fn cancelling_an_appointment_releases_its_time(pool: PgPool) {
     let org = org(&pool).await;
     let bookable = Bookable { org_id: org, name: "r".into(), capacity: 1, attributes: attributes() };
     let bookable = BookableRow::new(BookableId(Uuid::new_v4()), bookable).insert(&pool).await.unwrap();
-    let client = Client { org_id: Some(org), name: "c".into(), attributes: attributes() };
+    let client = Client { org_id: org, name: "c".into(), first_name: "A".into(), last_name: "B".into(), email: None, home_phone: None, work_phone: None, mobile_phone: None, attributes: attributes() };
     let client = ClientRow::new(ClientId(Uuid::new_v4()), client).insert(&pool).await.unwrap();
     let appointment = Appointment {
-        org_id: Some(org),
+        org_id: org,
         tz: "UTC".into(),
         lines: vec![],
         payer_id: client.id,

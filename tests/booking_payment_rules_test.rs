@@ -26,7 +26,7 @@ async fn world(pool: PgPool) -> World {
         let found = bookable(&pool, org, name, 1, &[tag]).await;
         open_rule(&pool, Where { bookable: Some(found.id), ..Where::default() }, 9, 8).await;
     }
-    let massage = service(&pool, "massage", 60, Some(is("role", "therapist")), is("kind", "room")).await;
+    let massage = service(&pool, org, "massage", 60, Some(is("role", "therapist")), is("kind", "room")).await;
     sqlx::query("UPDATE services SET attributes = '{\"category\": \"massage\"}' WHERE id = $1").bind(massage.id).execute(&pool).await.unwrap();
     let client = client(&pool).await;
     World { pool, org, massage, client }
@@ -34,7 +34,7 @@ async fn world(pool: PgPool) -> World {
 
 impl World {
     async fn method(&self, eligible: &str, settlement: Settlement) -> PaymentMethodRow {
-        let method = PaymentMethod { org_id: Some(self.org), name: "method".into(), owner_id: None, eligible: Box::new(Filter::parse(eligible).unwrap()), settlement, attributes: Default::default() };
+        let method = PaymentMethod { org_id: self.org, name: "method".into(), owner_id: None, eligible: Box::new(Filter::parse(eligible).unwrap()), settlement, attributes: serde_json::json!({}) };
         PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), method).insert(&self.pool).await.unwrap()
     }
 
@@ -45,7 +45,7 @@ impl World {
         let reservations = Reservations::new(self.pool.clone());
         let hold = reservations.hold(&request, &slot, Utc::now() + Duration::minutes(10)).await.unwrap();
         let payments = vec![Payment { method: method.id, amount }];
-        let confirmation = Confirmation { clients: vec![self.client.id], payer: self.client.id, payments, attributes: Default::default() };
+        let confirmation = Confirmation { clients: vec![self.client.id], payer: self.client.id, payments, attributes: serde_json::json!({}) };
         reservations.confirm(hold.id, confirmation, IdempotencyKey(key)).await
     }
 

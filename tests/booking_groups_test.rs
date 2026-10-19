@@ -13,7 +13,7 @@ async fn a_grouping_cycle_is_an_error(pool: PgPool) {
     group(&pool, Grouped::Org, first, second).await;
     group(&pool, Grouped::Org, second, first).await;
     let room = bookable(&pool, first, "room", 1, &[]).await;
-    let service = service(&pool, "service", 30, None, is("kind", "room")).await;
+    let service = service(&pool, first, "service", 30, None, is("kind", "room")).await;
     let axes = Axes { org: first, service: service.id, bookable: room.id };
     let result = Calendar::new(pool).open(&axes, &whole_day(1)).await;
     assert!(matches!(result, Err(Error::Cycle)));
@@ -23,7 +23,7 @@ async fn a_grouping_cycle_is_an_error(pool: PgPool) {
 async fn local_hours_stay_local_when_daylight_saving_ends(pool: PgPool) {
     let org = org(&pool, "clinic").await;
     let room = bookable(&pool, org, "room", 1, &[]).await;
-    let service = service(&pool, "service", 30, None, is("kind", "room")).await;
+    let service = service(&pool, org, "service", 30, None, is("kind", "room")).await;
     let hours = Recurrence("DTSTART;TZID=America/New_York:20261030T090000\nRRULE:FREQ=DAILY".into());
     rule(&pool, Kind::Open, Where { service: Some(service.id), bookable: Some(room.id), ..Where::default() }, hours, minutes(480)).await;
     let axes = Axes { org, service: service.id, bookable: room.id };

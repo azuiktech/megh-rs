@@ -54,7 +54,7 @@ impl Collection for Bookables {
     }
 
     async fn create(ctx: &Context, body: BookableBody) -> Result<BookableRow, ApiError> {
-        let data = Bookable { org_id: owner(ctx, body.org_id)?, name: named(body.display_name)?, capacity: sized(body.capacity.unwrap_or(1))?, attributes: body.attributes.unwrap_or_default() };
+        let data = Bookable { org_id: owner(ctx, body.org_id)?, name: named(body.display_name)?, capacity: sized(body.capacity.unwrap_or(1))?, attributes: body.attributes.unwrap_or_else(|| serde_json::json!({})) };
         Ok(BookableRow::new(BookableId(Uuid::new_v4()), data))
     }
 
@@ -63,7 +63,7 @@ impl Collection for Bookables {
             org_id: if updates(mask, "org_id", body.org_id.is_some()) { owner(ctx, body.org_id)? } else { current.org_id },
             name: if updates(mask, "display_name", body.display_name.is_some()) { named(body.display_name)? } else { current.name.clone() },
             capacity: if updates(mask, "capacity", body.capacity.is_some()) { sized(body.capacity.unwrap_or(0))? } else { current.capacity },
-            attributes: if updates(mask, "attributes", body.attributes.is_some()) { body.attributes.unwrap_or_default() } else { current.attributes.clone() },
+            attributes: if updates(mask, "attributes", body.attributes.is_some()) { body.attributes.unwrap_or_else(|| serde_json::json!({})) } else { current.attributes.clone() },
         };
         Ok(BookableRow::with_timestamps(current.id, data, current.created_at, Utc::now()))
     }

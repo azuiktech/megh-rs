@@ -32,7 +32,7 @@ async fn parties_start_together_unless_an_offset_is_allowed(pool: PgPool) {
     let room = bookable(&pool, org, "suite", 2, &[("kind", "room")]).await;
     open_rule(&pool, Where { bookable: Some(room.id), ..Where::default() }, 9, 8).await;
     let (_first, _second) = (stylist(&pool, org).await, stylist(&pool, org).await);
-    let massage = service(&pool, "massage", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let massage = service(&pool, org, "massage", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     let mut search = request(massage.id, between(1, 9, 11));
     search.parties = vec![party(&massage), party(&massage)];
     let together = find(&pool, &search).await;
@@ -53,8 +53,8 @@ async fn cut_then_colour(pool: &PgPool) -> SearchRequest {
     rule(pool, megh::booking::Kind::Open, Where { bookable: Some(cutter.id), ..Where::default() }, daily(9), minutes(30)).await;
     let colourist = stylist_with(pool, org, "colour").await;
     booked(pool, colourist.id, between(1, 9, 10), Engagement::Engaged).await;
-    let cut = service(pool, "cut", 30, Some(is("skill", "cut")), is("kind", "room")).await;
-    let colour = service(pool, "colour", 30, Some(is("skill", "colour")), is("kind", "room")).await;
+    let cut = service(pool, org, "cut", 30, Some(is("skill", "cut")), is("kind", "room")).await;
+    let colour = service(pool, org, "colour", 30, Some(is("skill", "colour")), is("kind", "room")).await;
     for service in [&cut, &colour] {
         open_rule(pool, Where { service: Some(service.id), ..Where::default() }, 9, 8).await;
     }
@@ -88,7 +88,7 @@ async fn placements_say_when_each_service_of_each_party_takes_place(pool: PgPool
     let room = bookable(&pool, org, "suite", 2, &[("kind", "room")]).await;
     open_rule(&pool, Where { bookable: Some(room.id), ..Where::default() }, 9, 8).await;
     let (_first, _second) = (stylist(&pool, org).await, stylist(&pool, org).await);
-    let massage = service(&pool, "massage", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let massage = service(&pool, org, "massage", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     let mut search = request(massage.id, between(1, 9, 17));
     search.parties = vec![party(&massage), party(&massage)];
     let slot = find(&pool, &search).await.remove(0);
@@ -101,7 +101,7 @@ async fn placements_say_when_each_service_of_each_party_takes_place(pool: PgPool
 async fn a_limit_caps_the_slots(pool: PgPool) {
     let org = org(&pool, "salon").await;
     let (_room, _stylist) = (bookable(&pool, org, "room", 1, &[("kind", "room")]).await, stylist(&pool, org).await);
-    let haircut = service(&pool, "haircut", 30, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&pool, org, "haircut", 30, Some(is("role", "stylist")), is("kind", "room")).await;
     open_rule(&pool, Where { service: Some(haircut.id), ..Where::default() }, 9, 8).await;
     let mut search = request(haircut.id, whole_day(1));
     search.limit = Some(2);
@@ -118,7 +118,7 @@ async fn a_search_for_an_org_sees_its_own_bookables_and_those_grouped_under_it(p
         let room = bookable(&pool, org, "room", 1, &[("kind", "room")]).await;
         open_rule(&pool, Where { bookable: Some(room.id), ..Where::default() }, 9, 8).await;
     }
-    let haircut = service(&pool, "haircut", 30, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&pool, brand, "haircut", 30, Some(is("role", "stylist")), is("kind", "room")).await;
     let mut search = request(haircut.id, whole_day(1));
     search.org = Some(brand);
     let slots = find(&pool, &search).await;
@@ -130,7 +130,7 @@ async fn a_search_for_an_org_sees_its_own_bookables_and_those_grouped_under_it(p
 async fn next_day_is_the_first_day_with_a_slot_after_the_window(pool: PgPool) {
     let org = org(&pool, "salon").await;
     let (room, stylist) = (bookable(&pool, org, "room", 1, &[("kind", "room")]).await, bookable(&pool, org, "stylist", 1, &[("role", "stylist")]).await);
-    let haircut = service(&pool, "haircut", 30, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&pool, org, "haircut", 30, Some(is("role", "stylist")), is("kind", "room")).await;
     for bookable in [room.id, stylist.id] {
         rule(&pool, megh::booking::Kind::Open, Where { bookable: Some(bookable), ..Where::default() }, once(3, 9), minutes(480)).await;
     }

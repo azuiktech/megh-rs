@@ -159,7 +159,7 @@ async fn bookables_made_over_rest_are_what_a_schedule_and_the_calendar_work_with
     let org = clinic(&pool).await;
     let app = booking_router(pool.clone());
     let room = created(&app, org, json!({"display_name": "Room 1", "attributes": {"kind": "room"}})).await;
-    let cleaning = service(&pool, "cleaning", 30, None, is("kind", "room")).await;
+    let cleaning = service(&pool, org, "cleaning", 30, None, is("kind", "room")).await;
     let schedule = json!({"bookable_id": room["id"], "service_id": cleaning.id, "date": "2026-11-12", "start_time": "09:00", "end_time": "10:00"});
     assert_eq!(call(&app, "POST", &format!("/api/v1/orgs/{org}/schedules"), Some(schedule)).await.0, StatusCode::OK);
     let axes = Axes { org, service: cleaning.id, bookable: serde_json::from_value(room["id"].clone()).unwrap() };

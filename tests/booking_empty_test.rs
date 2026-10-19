@@ -19,7 +19,7 @@ async fn a_combination_with_no_open_rule_has_no_open_time(pool: PgPool) {
 }
 
 fn confirmation() -> Confirmation {
-    Confirmation { clients: vec![], payer: ClientId(Uuid::new_v4()), payments: vec![], attributes: Default::default() }
+    Confirmation { clients: vec![], payer: ClientId(Uuid::new_v4()), payments: vec![], attributes: serde_json::json!({}) }
 }
 
 #[sqlx::test]

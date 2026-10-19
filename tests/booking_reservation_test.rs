@@ -22,7 +22,7 @@ async fn world(pool: PgPool) -> World {
     let org = org(&pool, "salon").await;
     let room = bookable(&pool, org, "room", 1, &[("kind", "room")]).await;
     bookable(&pool, org, "stylist", 1, &[("role", "stylist")]).await;
-    let haircut = service(&pool, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
+    let haircut = service(&pool, org, "haircut", 60, Some(is("role", "stylist")), is("kind", "room")).await;
     open_rule(&pool, Where { service: Some(haircut.id), ..Where::default() }, 9, 8).await;
     let client = client(&pool).await;
     World { pool, room, haircut, client }
@@ -40,7 +40,7 @@ impl World {
     }
 
     fn confirmation(&self) -> Confirmation {
-        Confirmation { clients: vec![self.client.id], payer: self.client.id, payments: vec![], attributes: Default::default() }
+        Confirmation { clients: vec![self.client.id], payer: self.client.id, payments: vec![], attributes: serde_json::json!({}) }
     }
 
     async fn confirm(&self, hold: &HoldRow, confirmation: Confirmation, key: &str) -> megh::booking::Result<megh::booking::AppointmentRow> {
@@ -140,12 +140,12 @@ async fn cancelling_soft_deletes_the_booking_and_frees_the_time(pool: PgPool) {
 async fn a_prepaid_method_is_debited_by_the_booking(pool: PgPool) {
     let w = world(pool).await;
     let method = PaymentMethod {
-        org_id: None,
+        org_id: w.room.org_id,
         name: "30-visit pass".into(),
         owner_id: Some(w.client.id),
         eligible: is("mode", "appointment"),
         settlement: Settlement::Prepaid { balance: Amount::Uses(30), valid: None },
-        attributes: Default::default(),
+        attributes: serde_json::json!({}),
     };
     let method = PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), method).insert(&w.pool).await.unwrap();
     let hold = w.hold(&w.first_slot().await).await.unwrap();

@@ -135,7 +135,7 @@ async fn clients_need_their_own_grants(pool: PgPool) {
     let org = org(&pool, "clinic").await;
     let (app, collection) = (app(pool), format!("/api/v1/orgs/{org}/clients"));
     let read = format!("orgs:read:{org}");
-    assert_eq!(status(&app, "POST", &collection, &format!("{read} clients:create"), r#"{"display_name": "Rex"}"#).await, StatusCode::OK);
+    assert_eq!(status(&app, "POST", &collection, &format!("{read} clients:create"), r#"{"display_name": "Rex", "first_name": "Rex", "last_name": "Dog"}"#).await, StatusCode::OK);
     assert_eq!(status(&app, "POST", &collection, &format!("{read} bookables:create"), r#"{"display_name": "Rex"}"#).await, StatusCode::FORBIDDEN);
     assert_eq!(status(&app, "GET", &collection, &format!("{read} clients:read"), "").await, StatusCode::OK);
 }

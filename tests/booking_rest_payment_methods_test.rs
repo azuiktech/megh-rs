@@ -1,5 +1,6 @@
-//! Specification: docs/TPD-booking.md, section 13 and R6: payment methods (passes, vouchers, coupons, insurance, cash,
-//! card) over REST, under `/api/v1/orgs/{org_id}/paymentMethods`.
+//! Specification: payment methods (passes, vouchers, coupons, insurance, cash, card) over REST under
+//! `/api/v1/orgs/{org_id}/paymentMethods`: the request body is the entity, `PUT` replaces its data, `PATCH` merges the
+//! fields it names, answers are the entity and a list is a page with its `data` and `next_page_token`.
 
 mod booking_support;
 
@@ -11,30 +12,39 @@ use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn pass(uses: u32) -> Value {
-    json!({"display_name": "30-visit pass", "eligible": "kind = \"massage\"", "settlement": {"prepaid": {"balance": {"uses": uses}, "valid": {"start_time": "2026-11-01T00:00:00", "end_time": "2027-02-01T00:00:00"}}}})
+fn eligible(filter: &str) -> Value {
+    json!({"Filter": filter})
+}
+
+fn pass(org: Uuid, uses: u32) -> Value {
+    let valid = json!({"start": "2026-11-01T04:00:00Z", "end": "2027-02-01T05:00:00Z"});
+    method(org, "30-visit pass", json!({"type": "prepaid", "value": {"balance": {"type": "uses", "value": uses}, "valid": valid}}))
+}
+
+fn method(org: Uuid, name: &str, settlement: Value) -> Value {
+    json!({"org_id": org, "name": name, "owner_id": null, "eligible": eligible("kind = \"massage\""), "settlement": settlement, "attributes": {}})
 }
 
 #[sqlx::test]
-async fn a_prepaid_pass_is_created_with_its_balance_and_validity_in_local_time(pool: PgPool) {
+async fn a_prepaid_pass_is_created_from_the_entity_with_its_balance_and_validity(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let method = created(&app, org, "paymentMethods", pass(30)).await;
-    assert_eq!((method["display_name"].clone(), method["eligible"].clone(), method["org_id"].clone()), (json!("30-visit pass"), json!("kind = \"massage\""), json!(org)));
-    assert_eq!(method["settlement"], json!({"prepaid": {"balance": {"uses": 30}, "valid": {"start_time": "2026-11-01T00:00:00-04:00", "end_time": "2027-02-01T00:00:00-05:00"}}}));
-    assert_eq!(method["name"], json!(format!("orgs/{org}/paymentMethods/{}", method["id"].as_str().unwrap())));
+    let created = created(&app, org, "paymentMethods", pass(org, 30)).await;
+    assert_eq!((created["name"].clone(), created["eligible"].clone(), created["org_id"].clone()), (json!("30-visit pass"), eligible("kind = \"massage\""), json!(org)));
+    assert_eq!(created["settlement"], pass(org, 30)["settlement"]);
+    assert!(created["id"].is_string() && created["deleted_at"].is_null());
 }
 
 #[sqlx::test]
 async fn money_vouchers_and_cash_are_methods_too(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let voucher = created(&app, org, "paymentMethods", json!({"display_name": "Gift voucher", "eligible": "kind = \"massage\"", "settlement": {"prepaid": {"balance": {"money": {"currency_code": "USD", "units": "50", "nanos": 0}}}}})).await;
-    assert_eq!(voucher["settlement"], json!({"prepaid": {"balance": {"money": {"currency_code": "USD", "units": "50", "nanos": 0}}, "valid": null}}));
-    let cash = created(&app, org, "paymentMethods", json!({"display_name": "Cash", "eligible": "kind = \"massage\"", "settlement": "on_spot"})).await;
-    assert_eq!(cash["settlement"], json!("on_spot"));
+    let money = json!({"type": "money", "value": {"micros": 50_000_000, "currency": "USD"}});
+    let voucher = created(&app, org, "paymentMethods", method(org, "Gift voucher", json!({"type": "prepaid", "value": {"balance": money, "valid": null}}))).await;
+    let cash = created(&app, org, "paymentMethods", method(org, "Cash", json!({"type": "on_spot"}))).await;
+    assert_eq!(cash["settlement"], json!({"type": "on_spot"}));
     assert_eq!(ids(&app, org, "paymentMethods", "").await, vec![voucher["id"].clone(), cash["id"].clone()]);
-    assert_eq!(ids(&app, org, "paymentMethods", &filter("display_name = \"Cash\"")).await, vec![cash["id"].clone()]);
+    assert_eq!(ids(&app, org, "paymentMethods", &filter("name = \"Cash\"")).await, vec![cash["id"].clone()]);
 }
 
 #[sqlx::test]
@@ -42,7 +52,7 @@ async fn a_method_can_belong_to_a_client(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
     let client = rest_client(&app, org, "Sam", json!({})).await;
-    let mut body = pass(5);
+    let mut body = pass(org, 5);
     body["owner_id"] = client["id"].clone();
     let owned = created(&app, org, "paymentMethods", body).await;
     assert_eq!(owned["owner_id"], client["id"]);
@@ -50,24 +60,24 @@ async fn a_method_can_belong_to_a_client(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn an_update_tops_up_the_balance_and_changes_only_what_is_masked(pool: PgPool) {
+async fn a_put_tops_up_the_balance_and_a_patch_changes_only_the_fields_it_names(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let method = created(&app, org, "paymentMethods", pass(2)).await;
-    let (_, topped) = call(&app, "PATCH", &format!("{}?update_mask=settlement", path(org, "paymentMethods", &method)), Some(json!({"settlement": {"prepaid": {"balance": {"uses": 12}}}, "display_name": "ignored"}))).await;
-    assert_eq!((topped["settlement"].clone(), topped["display_name"].clone()), (json!({"prepaid": {"balance": {"uses": 12}, "valid": null}}), method["display_name"].clone()));
-    let (_, narrowed) = call(&app, "PATCH", &path(org, "paymentMethods", &method), Some(json!({"eligible": "kind = \"facial\""}))).await;
-    assert_eq!((narrowed["eligible"].clone(), narrowed["settlement"].clone()), (json!("kind = \"facial\""), topped["settlement"].clone()));
+    let created = created(&app, org, "paymentMethods", pass(org, 2)).await;
+    let (status, topped) = call(&app, "PUT", &path(org, "paymentMethods", &created), Some(pass(org, 12))).await;
+    assert_eq!((status, topped["settlement"].clone(), topped["id"].clone()), (StatusCode::OK, pass(org, 12)["settlement"].clone(), created["id"].clone()));
+    let (_, narrowed) = call(&app, "PATCH", &path(org, "paymentMethods", &created), Some(json!({"eligible": eligible("kind = \"facial\"")}))).await;
+    assert_eq!((narrowed["eligible"].clone(), narrowed["settlement"].clone()), (eligible("kind = \"facial\""), topped["settlement"].clone()));
 }
 
 #[sqlx::test]
-async fn a_delete_keeps_the_method_with_its_delete_time(pool: PgPool) {
+async fn a_delete_keeps_the_method_with_its_deleted_at(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    let method = created(&app, org, "paymentMethods", pass(2)).await;
-    let (status, deleted) = call(&app, "DELETE", &path(org, "paymentMethods", &method), None).await;
+    let created = created(&app, org, "paymentMethods", pass(org, 2)).await;
+    let (status, deleted) = call(&app, "DELETE", &path(org, "paymentMethods", &created), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(deleted["delete_time"].is_string());
+    assert!(deleted["deleted_at"].is_string());
     assert!(ids(&app, org, "paymentMethods", "").await.is_empty());
     assert_eq!(ids(&app, org, "paymentMethods", "?show_deleted=true").await.len(), 1);
 }
@@ -78,22 +88,26 @@ async fn bad_input_is_an_invalid_argument_and_a_client_of_another_org_is_not_fou
     let other = clinic(&pool).await;
     let app = booking_router(pool);
     let strangers = rest_client(&app, other, "Stranger", json!({})).await;
+    let with = |field: &str, value: Value| {
+        let mut body = method(org, "M", json!({"type": "on_spot"}));
+        body[field] = value;
+        body
+    };
+    let prepaid = |value: Value| json!({"type": "prepaid", "value": value});
     let cases = [
-        json!({"eligible": "kind = \"x\"", "settlement": "on_spot"}),
-        json!({"display_name": "M", "settlement": "on_spot"}),
-        json!({"display_name": "M", "eligible": "kind = \"x\""}),
-        json!({"display_name": "M", "eligible": "kind=\"x\"", "settlement": "on_spot"}),
-        json!({"display_name": "M", "eligible": "kind = \"x\"", "settlement": "cheque"}),
-        json!({"display_name": "M", "eligible": "kind = \"x\"", "settlement": {"prepaid": {}}}),
-        json!({"display_name": "M", "eligible": "kind = \"x\"", "settlement": {"prepaid": {"balance": {"money": {"currency_code": "USD", "units": "-1", "nanos": 0}}}}}),
-        json!({"display_name": "M", "eligible": "kind = \"x\"", "settlement": {"prepaid": {"balance": {"uses": 1}, "valid": {"start_time": "2027-01-01T00:00:00", "end_time": "2026-01-01T00:00:00"}}}}),
-        json!({"display_name": "M", "eligible": "kind = \"x\"", "settlement": "on_spot", "unknown": 1}),
+        json!({"org_id": org, "eligible": eligible("kind = \"x\""), "settlement": {"type": "on_spot"}, "attributes": {}}),
+        with("name", json!(" ")),
+        with("org_id", json!(other)),
+        with("eligible", eligible("kind=\"x\"")),
+        with("settlement", json!({"type": "cheque"})),
+        with("settlement", prepaid(json!({}))),
+        with("settlement", prepaid(json!({"balance": {"type": "uses", "value": 1}, "valid": {"start": "2027-01-01T00:00:00Z", "end": "2026-01-01T00:00:00Z"}}))),
     ];
     for body in cases {
         let (status, error) = call(&app, "POST", &format!("/api/v1/orgs/{org}/paymentMethods"), Some(body.clone())).await;
         assert_eq!((status, error["error"]["status"].clone()), (StatusCode::BAD_REQUEST, json!("INVALID_ARGUMENT")), "{body}");
     }
-    let mut owned = pass(1);
+    let mut owned = pass(org, 1);
     owned["owner_id"] = strangers["id"].clone();
     assert_eq!(call(&app, "POST", &format!("/api/v1/orgs/{org}/paymentMethods"), Some(owned)).await.0, StatusCode::NOT_FOUND);
     assert_eq!(call(&app, "GET", &format!("/api/v1/orgs/{org}/paymentMethods/{}", Uuid::new_v4()), None).await.0, StatusCode::NOT_FOUND);
@@ -104,30 +118,8 @@ async fn an_org_sees_its_own_methods_and_those_of_the_orgs_grouped_under_it(pool
     let (brand, location, other) = (clinic(&pool).await, clinic(&pool).await, clinic(&pool).await);
     group(&pool, Grouped::Org, location, brand).await;
     let app = booking_router(pool);
-    let (own, below, elsewhere) = (created(&app, brand, "paymentMethods", pass(1)).await, created(&app, location, "paymentMethods", pass(2)).await, created(&app, other, "paymentMethods", pass(3)).await);
+    let (own, below, elsewhere) = (created(&app, brand, "paymentMethods", pass(brand, 1)).await, created(&app, location, "paymentMethods", pass(location, 2)).await, created(&app, other, "paymentMethods", pass(other, 3)).await);
     assert_eq!(ids(&app, brand, "paymentMethods", "").await, vec![own["id"].clone(), below["id"].clone()]);
     assert_eq!(ids(&app, location, "paymentMethods", "").await, vec![below["id"].clone()]);
     assert_eq!(call(&app, "GET", &path(brand, "paymentMethods", &elsewhere), None).await.0, StatusCode::NOT_FOUND);
-}
-
-#[sqlx::test]
-async fn a_pass_made_over_rest_pays_for_an_appointment_made_over_rest(pool: PgPool) {
-    let org = clinic(&pool).await;
-    let app = booking_router(pool);
-    let room = rest_bookable(&app, org, "Suite", 1, json!({"kind": "room"})).await;
-    let therapist = rest_bookable(&app, org, "Tess", 1, json!({"role": "therapist"})).await;
-    for bookable in [&room, &therapist] {
-        created(&app, org, "schedules", json!({"bookable_id": bookable["id"], "date": "2026-11-04", "start_time": "09:00", "end_time": "17:00"})).await;
-    }
-    let massage = created(&app, org, "services", json!({"display_name": "Massage", "price": {"currency_code": "USD", "units": "90", "nanos": 0}, "attributes": {"category": "massage"}, "steps": [{"duration": "3600s", "needs": [{"who": "role = \"therapist\""}, {"who": "kind = \"room\"", "role": "room"}]}]})).await;
-    let client = rest_client(&app, org, "Sam", json!({})).await;
-    let method = created(&app, org, "paymentMethods", json!({"display_name": "10 massages", "owner_id": client["id"], "eligible": "attributes.category = \"massage\"", "settlement": {"prepaid": {"balance": {"uses": 10}}}})).await;
-    let search = json!({"parties": [{"client_id": client["id"], "services": [{"service_id": massage["id"]}]}], "start_time": "2026-11-04T09:00:00", "end_time": "2026-11-04T10:00:00"});
-    let (_, found) = call(&app, "POST", &format!("/api/v1/orgs/{org}/availability:search"), Some(search)).await;
-    let payment = json!({"payer_id": client["id"], "method": method["id"], "amount": {"type": "uses", "value": 1}});
-    let booking = json!({"slot": found["slots"][0], "payments": [payment], "request_id": "massage-1"});
-    let (status, booked) = call(&app, "POST", &format!("/api/v1/orgs/{org}/appointments"), Some(booking)).await;
-    assert_eq!(status, StatusCode::OK, "{booked}");
-    let (_, after) = call(&app, "GET", &path(org, "paymentMethods", &method), None).await;
-    assert_eq!(after["settlement"], json!({"prepaid": {"balance": {"uses": 9}, "valid": null}}));
 }

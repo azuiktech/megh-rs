@@ -7,7 +7,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::DateTime;
 use base64::Engine;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::auth::api::{ApiError, ListQuery, Paginated};
 use crate::booking::{Attributes, Filter, Predicate};
@@ -100,10 +100,4 @@ pub fn paginate<T: Serialize>(items: Vec<T>, query: &ListQuery) -> Result<Pagina
     let items = ordered(filtered(fields, query.filter.as_deref())?, query.order_by.as_deref())?;
     let next = (offset + size < items.len()).then(|| URL_SAFE_NO_PAD.encode((offset + size).to_string())).unwrap_or_default();
     Ok(Paginated { data: items.into_iter().skip(offset).take(size).map(|(_, item)| item).collect(), next_page_token: next })
-}
-
-/// `{"<collection>": [...], "next_page_token": "..."}` for one page of the items.
-pub fn page(collection: &str, items: Vec<Value>, query: &ListQuery) -> Result<Value, ApiError> {
-    let page = paginate(items, query)?;
-    Ok(json!({ collection: page.data, "next_page_token": page.next_page_token }))
 }

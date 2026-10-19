@@ -56,12 +56,13 @@ async fn a_field_that_does_not_exist_or_a_bad_direction_is_refused(pool: PgPool)
 async fn times_are_ordered_as_times_in_every_list(pool: PgPool) {
     let org = clinic(&pool).await;
     let app = booking_router(pool);
-    for date in ["2026-11-12", "2026-11-04"] {
-        created(&app, org, "schedules", json!({"date": date, "start_time": "09:00", "end_time": "10:00", "org_id": org})).await;
+    for date in ["20261112", "20261104"] {
+        let recurrence = format!("DTSTART;TZID=America/New_York:{date}T090000\nRRULE:FREQ=DAILY;COUNT=1");
+        created(&app, org, "schedules", json!({"org_id": org, "service_id": null, "bookable_id": null, "kind": "open", "recurrence": recurrence, "span": "PT1H", "reason": null, "notes": null})).await;
     }
     let (_, listed) = call(&app, "GET", &format!("/api/v1/orgs/{org}/schedules?order_by=recurrence"), None).await;
-    let recurrences: Vec<_> = listed["schedules"].as_array().unwrap().iter().map(|s| s["recurrence"].as_str().unwrap().to_string()).collect();
+    let recurrences: Vec<_> = listed["data"].as_array().unwrap().iter().map(|s| s["recurrence"].as_str().unwrap().to_string()).collect();
     assert!(recurrences[0].contains("20261104") && recurrences[1].contains("20261112"));
-    let (_, latest) = call(&app, "GET", &format!("/api/v1/orgs/{org}/schedules?order_by=create_time%20desc"), None).await;
-    assert!(latest["schedules"][0]["recurrence"].as_str().unwrap().contains("20261104"));
+    let (_, latest) = call(&app, "GET", &format!("/api/v1/orgs/{org}/schedules?order_by=created_at%20desc"), None).await;
+    assert!(latest["data"][0]["recurrence"].as_str().unwrap().contains("20261104"));
 }

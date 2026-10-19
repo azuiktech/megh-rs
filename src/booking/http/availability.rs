@@ -1,149 +1,78 @@
-//! `POST /api/v1/orgs/{org_id}/availability:search`, a custom method (AIP-136): the slots where parties can be served.
+//! `POST /api/v1/orgs/{org}/availability:search`, a custom method (AIP-136): the slots where parties can be served.
 
-use std::time::Duration;
-
-use axum::extract::{Path, State};
-use axum::routing::post;
-use axum::{Json, Router};
-use axum_extra::extract::WithRejection;
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
-use serde::Deserialize;
-use serde_json::{json, Value};
+use axum::extract::State;
+use axum::response::{IntoResponse, Response};
+use axum_content_negotiation::Negotiate;
+use axum_params::Params;
+use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::common::{check_scope, instant, money, span_of, zone_of};
-use crate::auth::api::ApiError;
+use super::common::check_scope;
 use super::AppContext;
-use crate::booking::{
-    ClientId, Condition, Filter, Interval, Party, Search, SearchRequest, ServiceId, ServiceWant, Slot, Slots,
-};
+use crate::auth::api::{ApiError, ApiResult, ErrorBody};
+use crate::booking::{AppointmentId, Search, SearchRequest, Slot, Slots};
 
 const MOST_PARTIES: usize = 10;
 const MOST_DAYS: i64 = 31;
+const MOST_SLOTS: usize = 100;
+const DEFAULT_HORIZON_DAYS: u32 = 180;
+const MOST_HORIZON_DAYS: u32 = 366;
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SearchBody {
-    parties: Vec<PartyBody>,
-    start_time: String,
-    end_time: String,
-    party_offset: Option<String>,
-    service_gap: Option<String>,
-    slot_interval: Option<String>,
-    page_size: Option<u32>,
+/// The request of a search, for the org of the path.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(super) struct SearchSlots {
+    #[schema(value_type = String, format = Uuid)]
+    org: Uuid,
+    #[serde(flatten)]
+    request: SearchRequest,
+    /// How many days ahead to look for the next day with a slot when there is none; 180 when absent.
     horizon_days: Option<u32>,
     /// The appointment (or held appointment) being moved: its own time counts for nothing in this search.
-    reschedule: Option<Uuid>,
+    #[schema(value_type = Option<String>, format = Uuid)]
+    reschedule: Option<AppointmentId>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PartyBody {
-    client_id: Option<ClientId>,
-    services: Vec<ServiceBody>,
+/// The slots found, and when there are none the first day after the window that has one.
+#[derive(Serialize, utoipa::ToSchema)]
+pub(super) struct FoundSlots {
+    slots: Vec<Slot>,
+    next_available_day: Option<NaiveDate>,
 }
 
-/// `wants` are AIP-160 filters; each must hold for at least one bookable chosen for the service.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ServiceBody {
-    service_id: ServiceId,
-    wants: Option<Vec<String>>,
-}
-
-pub(super) fn routes() -> Router<AppContext> {
-    Router::new().route("/api/v1/orgs/{org_id}/availability:search", post(search))
-}
-
-fn duration(text: &Option<String>, default: Duration) -> Result<Duration, ApiError> {
-    text.as_deref().map_or(Ok(default), span_of)
-}
-
-fn service_want(body: &ServiceBody) -> Result<ServiceWant, ApiError> {
-    let wants = body.wants.iter().flatten().map(|text| Ok(Box::new(Filter::parse(text)?) as Condition)).collect::<Result<_, ApiError>>()?;
-    Ok(ServiceWant { service: body.service_id, wants })
-}
-
-fn party(body: &PartyBody) -> Result<Party, ApiError> {
-    match body.services.is_empty() {
-        true => Err(ApiError::invalid("a party needs at least one service")),
-        false => Ok(Party { client: body.client_id, services: body.services.iter().map(service_want).collect::<Result<_, _>>()? }),
+impl IntoResponse for FoundSlots {
+    fn into_response(self) -> Response {
+        Negotiate(self).into_response()
     }
 }
 
-fn window(body: &SearchBody, zone: Tz) -> Result<Interval, ApiError> {
-    let (start, end) = (instant(&body.start_time, zone)?, instant(&body.end_time, zone)?);
-    match (end > start, end - start <= chrono::Duration::days(MOST_DAYS)) {
-        (false, _) => Err(ApiError::invalid("end_time must be after start_time")),
-        (_, false) => Err(ApiError::invalid(format!("the window is at most {MOST_DAYS} days"))),
-        _ => Ok(Interval { start, end }),
+pub(super) fn within_limits(request: &SearchRequest) -> Result<(), ApiError> {
+    match (request.parties.len(), request.within.end - request.within.start) {
+        (0, _) => Err(ApiError::invalid("give at least one party")),
+        (count, _) if count > MOST_PARTIES => Err(ApiError::invalid(format!("give at most {MOST_PARTIES} parties"))),
+        (_, span) if span <= chrono::Duration::zero() => Err(ApiError::invalid("within must end after it starts")),
+        (_, span) if span > chrono::Duration::days(MOST_DAYS) => Err(ApiError::invalid(format!("the window is at most {MOST_DAYS} days"))),
+        _ if request.parties.iter().any(|party| party.services.is_empty()) => Err(ApiError::invalid("a party needs at least one service")),
+        _ => Ok(()),
     }
 }
 
-fn search_request(body: &SearchBody, org: Uuid, zone: Tz) -> Result<SearchRequest, ApiError> {
-    if body.parties.is_empty() || body.parties.len() > MOST_PARTIES {
-        return Err(ApiError::invalid(format!("give between 1 and {MOST_PARTIES} parties")));
-    }
-    Ok(SearchRequest {
-        org: Some(org),
-        parties: body.parties.iter().map(party).collect::<Result<_, _>>()?,
-        within: window(body, zone)?,
-        party_offset: duration(&body.party_offset, Duration::ZERO)?,
-        service_gap: duration(&body.service_gap, Duration::ZERO)?,
-        slot_interval: duration(&body.slot_interval, Duration::from_secs(900))?,
-        limit: Some(body.page_size.unwrap_or(20).clamp(1, 100) as usize),
-    })
-}
-
-fn local(time: DateTime<Utc>, zone: Tz) -> DateTime<Tz> {
-    time.with_timezone(&zone)
-}
-
-fn party_json(index: usize, request: &SearchRequest, slot: &Slot, zone: Tz) -> Value {
-    let services: Vec<Value> = slot
-        .placements
-        .iter()
-        .filter(|placement| placement.party == index)
-        .map(|placement| json!({"service_id": placement.service, "start_time": local(placement.during.start, zone), "end_time": local(placement.during.end, zone), "price": money(&placement.price)}))
-        .collect();
-    json!({"client_id": request.parties[index].client, "services": services})
-}
-
-fn slot_json(slot: &Slot, request: &SearchRequest, zone: Tz) -> Value {
-    let starts = slot.allocations.iter().map(|allocation| allocation.during.start).min();
-    let ends = slot.allocations.iter().map(|allocation| allocation.during.end).max();
-    let allocations: Vec<Value> = slot
-        .allocations
-        .iter()
-        .map(|a| json!({"bookable_id": a.bookable, "start_time": local(a.during.start, zone), "end_time": local(a.during.end, zone), "engagement": a.engagement, "role": a.role, "placement": a.placement}))
-        .collect();
-    json!({
-        "start_time": starts.map(|time| local(time, zone)),
-        "end_time": ends.map(|time| local(time, zone)),
-        "price": money(&slot.price),
-        "parties": (0..request.parties.len()).map(|index| party_json(index, request, slot, zone)).collect::<Vec<_>>(),
-        "allocations": allocations,
-    })
-}
-
-async fn search(
-    State(state): State<AppContext>,
-    WithRejection(Path(org), _): WithRejection<Path<Uuid>, ApiError>,
-    WithRejection(Json(body), _): WithRejection<Json<SearchBody>, ApiError>,
-) -> Result<Json<Value>, ApiError> {
-    let zone = zone_of(&state.pool, org).await?;
-    let request = search_request(&body, org, zone)?;
-    check_scope(&state.pool, org, &request).await?;
-    let slots = Slots::new(state.pool.clone());
-    let found = match body.reschedule {
-        Some(id) => slots.find_ignoring(&request, id).await?,
+/// Find the slots where the parties can be served.
+#[utoipa::path(post, path = "/api/v1/orgs/{org}/availability:search", tag = "availability", params(("org" = Uuid, Path)), request_body = SearchSlots,
+    responses((status = OK, body = FoundSlots), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn search(State(ctx): State<AppContext>, Params(input, _): Params<SearchSlots>) -> ApiResult<FoundSlots> {
+    let request = SearchRequest { org: Some(input.org), limit: Some(input.request.limit.unwrap_or(20).clamp(1, MOST_SLOTS)), ..input.request };
+    within_limits(&request)?;
+    check_scope(&ctx.pool, input.org, &request).await?;
+    let slots = Slots::new(ctx.pool.clone());
+    let found = match input.reschedule {
+        Some(id) => slots.find_ignoring(&request, id.0).await?,
         None => slots.find(&request).await?,
     };
-    let next = match found.is_empty() {
-        true => slots.next_day(&request, body.horizon_days.unwrap_or(180).min(366)).await?,
+    let horizon = input.horizon_days.unwrap_or(DEFAULT_HORIZON_DAYS).min(MOST_HORIZON_DAYS);
+    let next_available_day = match found.is_empty() {
+        true => slots.next_day(&request, horizon).await?,
         false => None,
     };
-    let shown: Vec<Value> = found.iter().map(|slot| slot_json(slot, &request, zone)).collect();
-    Ok(Json(json!({"slots": shown, "next_available_day": next})))
+    Ok(FoundSlots { slots: found, next_available_day })
 }

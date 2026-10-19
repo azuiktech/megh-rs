@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-20
+- Every booking REST route is on the entity itself: services, payment methods, schedules, blockouts and `availability:search` join bookables, clients, groupings and appointments (`State` plus `Params`, the entity in and out, `Paginated` lists); the generic `crud` layer and the old `display_name`, `update_mask`, `google.type.Money` and local-time shapes are gone. Durations are ISO 8601 (`jiff`) everywhere, a recurrence is an RFC 5545 `RRuleSet`, a `Change` and a `Settlement` are tagged `{"type", "value"}` (migration 0020 rewrites what was stored), a condition is checked when it is read. Appointments take the search request and the slot as the engine types. Fixed: the body `org_id` could override the org of the path, so the path parameter is now `{org}` and the scope comes from it (PR #139, issue #138)
+
 ## 2026-10-18
 - Rescheduling: `PATCH /api/v1/orgs/{org_id}/appointments/{id}` with a new `slot` moves a booked or held appointment to another time for the same clients and services (same id, payer, payments and expiry; its lines take the new times and prices; the old occupancies are deleted, not removed, and the new ones made in one transaction); the slot is re-checked by the server; `availability:search` takes `reschedule` (the appointment being moved) so that its own time counts for nothing and it can move 30 minutes later; `Appointments::reschedule` and `Slots::find_ignoring` in Rust; a resource no longer shows the occupancies it left behind (PR #126, issue #125)
 - Removed the unused `Occurrence` and `Enrollment` types and tables of the first draft (migration 0013 drops `occurrences` and `enrollments`) and the waitlist target `occurrence`: a class or a talk is a service, a schedule and a room with a capacity, and a waitlist entry waits for a service in a window (PR #124, issue #123)

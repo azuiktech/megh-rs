@@ -1,4 +1,4 @@
-//! `/api/v1/orgs/{org_id}/appointments`: one client having one service in a room with zero or more providers. A slot
+//! `/api/v1/orgs/{org}/appointments`: one client having one service in a room with zero or more providers. A slot
 //! found by a search is booked as one appointment for each of its placements, directly or by holding it first.
 //!
 //! - `POST .../appointments:hold` keeps a slot for a while (`held`);
@@ -15,25 +15,25 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::common::zone_of;
+use super::common::scope;
 use super::page::paginate;
-use super::slot::{claimed_placements, verified, SlotBody};
+use super::slot::verified;
 use super::{subtree, AppContext};
 use crate::auth::api::{ApiError, ApiResult, ErrorBody, ListQuery, Paginated};
-use crate::booking::{booking_print, AppointmentId, AppointmentRow, Appointments, IdempotencyKey, Payment, Reservations, Status};
+use crate::booking::{booking_print, AppointmentId, AppointmentRow, Appointments, IdempotencyKey, Payment, Interval, Reservations, SearchRequest, ServiceId, Slot, Status};
 
 const LONGEST_HOLD_HOURS: i64 = 24;
 
 #[derive(Deserialize)]
 pub(super) struct ListAppointments {
-    org_id: Uuid,
+    org: Uuid,
     #[serde(flatten)]
     query: ListQuery,
 }
 
 #[derive(Deserialize)]
 pub(super) struct AppointmentRef {
-    org_id: Uuid,
+    org: Uuid,
     id: Uuid,
 }
 
@@ -41,8 +41,9 @@ pub(super) struct AppointmentRef {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(super) struct HoldSlot {
     #[schema(value_type = String, format = Uuid)]
-    org_id: Uuid,
-    slot: SlotBody,
+    org: Uuid,
+    request: SearchRequest,
+    slot: Slot,
     expires_at: DateTime<Utc>,
 }
 
@@ -50,8 +51,9 @@ pub(super) struct HoldSlot {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(super) struct BookSlot {
     #[schema(value_type = String, format = Uuid)]
-    org_id: Uuid,
-    slot: SlotBody,
+    org: Uuid,
+    request: SearchRequest,
+    slot: Slot,
     payments: Vec<Payment>,
     request_id: String,
 }
@@ -60,26 +62,21 @@ pub(super) struct BookSlot {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(super) struct MoveAppointment {
     #[schema(value_type = String, format = Uuid)]
-    org_id: Uuid,
+    org: Uuid,
     #[schema(value_type = String, format = Uuid)]
     id: Uuid,
-    slot: SlotBody,
+    request: SearchRequest,
+    slot: Slot,
 }
 
 /// `id` is the id of the appointment and the method after a colon: `<id>:book` or `<id>:confirm`.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(super) struct AppointmentMethod {
     #[schema(value_type = String, format = Uuid)]
-    org_id: Uuid,
+    org: Uuid,
     id: String,
     /// What pays for a held appointment that is booked.
     payment: Option<Payment>,
-}
-
-/// The orgs a request covers: the org of the path and those grouped under it.
-async fn scope(pool: &PgPool, org: Uuid) -> Result<Vec<Uuid>, ApiError> {
-    zone_of(pool, org).await?;
-    Ok(subtree(pool, org).await?)
 }
 
 async fn found(pool: &PgPool, scope: &[Uuid], id: Uuid) -> ApiResult<AppointmentRow> {
@@ -101,6 +98,11 @@ async fn check_payments(pool: &PgPool, scope: &[Uuid], payments: &[Payment]) -> 
     Ok(())
 }
 
+/// The party, service and time of each placement, as the idempotency print takes them.
+fn placed(slot: &Slot) -> Vec<(usize, ServiceId, Interval)> {
+    slot.placements.iter().map(|placement| (placement.party, placement.service, placement.during)).collect()
+}
+
 fn expiry(until: DateTime<Utc>) -> Result<DateTime<Utc>, ApiError> {
     let now = Utc::now();
     match (until > now, until - now <= Duration::hours(LONGEST_HOLD_HOURS)) {
@@ -115,10 +117,10 @@ fn all_of(appointments: Vec<AppointmentRow>) -> Paginated<AppointmentRow> {
 }
 
 /// List appointments, held ones that have not run out included.
-#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/appointments", tag = "appointments", params(("org_id" = Uuid, Path), ListQuery),
+#[utoipa::path(get, path = "/api/v1/orgs/{org}/appointments", tag = "appointments", params(("org" = Uuid, Path), ListQuery),
     responses((status = OK, body = Paginated<AppointmentRow>), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
 pub(super) async fn list(State(ctx): State<AppContext>, Params(input, _): Params<ListAppointments>) -> ApiResult<Paginated<AppointmentRow>> {
-    let scope = scope(&ctx.pool, input.org_id).await?;
+    let scope = scope(&ctx.pool, input.org).await?;
     let shown = if input.query.show_deleted == Some(true) { "" } else { " AND deleted_at IS NULL" };
     let query = format!("SELECT * FROM appointments WHERE org_id = ANY($1){shown} AND (status <> 'held' OR expires_at > now()) ORDER BY starts_at, id");
     let rows = sqlx::query_as(&query).bind(&scope).fetch_all(&ctx.pool).await?;
@@ -126,51 +128,48 @@ pub(super) async fn list(State(ctx): State<AppContext>, Params(input, _): Params
 }
 
 /// Keep a slot until `expires_at`: one `held` appointment for each placement.
-#[utoipa::path(post, path = "/api/v1/orgs/{org_id}/appointments:hold", tag = "appointments", params(("org_id" = Uuid, Path)), request_body = HoldSlot,
+#[utoipa::path(post, path = "/api/v1/orgs/{org}/appointments:hold", tag = "appointments", params(("org" = Uuid, Path)), request_body = HoldSlot,
     responses((status = OK, body = Paginated<AppointmentRow>), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody), (status = CONFLICT, body = ErrorBody)))]
 pub(super) async fn hold(State(ctx): State<AppContext>, Params(input, _): Params<HoldSlot>) -> ApiResult<Paginated<AppointmentRow>> {
-    let zone = zone_of(&ctx.pool, input.org_id).await?;
     let until = expiry(input.expires_at)?;
-    let (request, slot) = verified(&ctx.pool, input.org_id, zone, &input.slot, None).await?;
+    let (request, slot) = verified(&ctx.pool, input.org, input.request, &input.slot, None).await?;
     Ok(all_of(Reservations::new(ctx.pool.clone()).hold(&request, &slot, until).await?))
 }
 
 /// Book a slot: one appointment for each placement, `booked` while its rooms have capacity, else `waitlist`.
-#[utoipa::path(post, path = "/api/v1/orgs/{org_id}/appointments", tag = "appointments", params(("org_id" = Uuid, Path)), request_body = BookSlot,
+#[utoipa::path(post, path = "/api/v1/orgs/{org}/appointments", tag = "appointments", params(("org" = Uuid, Path)), request_body = BookSlot,
     responses((status = OK, body = Paginated<AppointmentRow>), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody), (status = CONFLICT, body = ErrorBody)))]
 pub(super) async fn book(State(ctx): State<AppContext>, Params(input, _): Params<BookSlot>) -> ApiResult<Paginated<AppointmentRow>> {
-    let zone = zone_of(&ctx.pool, input.org_id).await?;
-    check_payments(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, &input.payments).await?;
+    check_payments(&ctx.pool, &scope(&ctx.pool, input.org).await?, &input.payments).await?;
     let (reservations, key) = (Reservations::new(ctx.pool.clone()), IdempotencyKey(input.request_id));
-    if let Some(earlier) = reservations.booked_under(&key, &booking_print(&claimed_placements(&input.slot, zone)?, &input.payments)).await? {
+    if let Some(earlier) = reservations.booked_under(&key, &booking_print(&placed(&input.slot), &input.payments)).await? {
         return Ok(all_of(earlier));
     }
-    let (request, slot) = verified(&ctx.pool, input.org_id, zone, &input.slot, None).await?;
+    let (request, slot) = verified(&ctx.pool, input.org, input.request, &input.slot, None).await?;
     Ok(all_of(reservations.book(&request, &slot, input.payments, key).await?))
 }
 
 /// Get an appointment.
-#[utoipa::path(get, path = "/api/v1/orgs/{org_id}/appointments/{id}", tag = "appointments", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+#[utoipa::path(get, path = "/api/v1/orgs/{org}/appointments/{id}", tag = "appointments", params(("org" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = OK, body = AppointmentRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
 pub(super) async fn read(State(ctx): State<AppContext>, Params(input, _): Params<AppointmentRef>) -> ApiResult<AppointmentRow> {
-    found(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await
+    found(&ctx.pool, &scope(&ctx.pool, input.org).await?, input.id).await
 }
 
 /// Move an appointment to a slot of the same client and service.
-#[utoipa::path(patch, path = "/api/v1/orgs/{org_id}/appointments/{id}", tag = "appointments", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)), request_body = MoveAppointment,
+#[utoipa::path(patch, path = "/api/v1/orgs/{org}/appointments/{id}", tag = "appointments", params(("org" = Uuid, Path), ("id" = Uuid, Path)), request_body = MoveAppointment,
     responses((status = OK, body = AppointmentRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody), (status = CONFLICT, body = ErrorBody)))]
 pub(super) async fn reschedule(State(ctx): State<AppContext>, Params(input, _): Params<MoveAppointment>) -> ApiResult<AppointmentRow> {
-    let zone = zone_of(&ctx.pool, input.org_id).await?;
-    found(&ctx.pool, &subtree(&ctx.pool, input.org_id).await?, input.id).await?;
-    let (request, slot) = verified(&ctx.pool, input.org_id, zone, &input.slot, Some(input.id)).await?;
+    found(&ctx.pool, &subtree(&ctx.pool, input.org).await?, input.id).await?;
+    let (request, slot) = verified(&ctx.pool, input.org, input.request, &input.slot, Some(input.id)).await?;
     Ok(Reservations::new(ctx.pool.clone()).reschedule(AppointmentId(input.id), &request, &slot).await?)
 }
 
 /// Cancel an appointment. It stays, with the status `cancelled`.
-#[utoipa::path(delete, path = "/api/v1/orgs/{org_id}/appointments/{id}", tag = "appointments", params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+#[utoipa::path(delete, path = "/api/v1/orgs/{org}/appointments/{id}", tag = "appointments", params(("org" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = OK, body = AppointmentRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
 pub(super) async fn cancel(State(ctx): State<AppContext>, Params(input, _): Params<AppointmentRef>) -> ApiResult<AppointmentRow> {
-    let row = found(&ctx.pool, &scope(&ctx.pool, input.org_id).await?, input.id).await?;
+    let row = found(&ctx.pool, &scope(&ctx.pool, input.org).await?, input.id).await?;
     if row.deleted_at.is_some() {
         return Err(ApiError::not_found(format!("appointment {} is already cancelled", input.id)));
     }
@@ -179,12 +178,12 @@ pub(super) async fn cancel(State(ctx): State<AppContext>, Params(input, _): Para
 
 /// `:book` books a held appointment with `payment`, or a waitlisted one if there is capacity; `:confirm` confirms a
 /// booked one. The id in the path is followed by the method: `<id>:book`, `<id>:confirm`.
-#[utoipa::path(post, path = "/api/v1/orgs/{org_id}/appointments/{id}", tag = "appointments", params(("org_id" = Uuid, Path), ("id" = String, Path, description = "The id and the method: `<id>:book` or `<id>:confirm`")), request_body = AppointmentMethod,
+#[utoipa::path(post, path = "/api/v1/orgs/{org}/appointments/{id}", tag = "appointments", params(("org" = Uuid, Path), ("id" = String, Path, description = "The id and the method: `<id>:book` or `<id>:confirm`")), request_body = AppointmentMethod,
     responses((status = OK, body = AppointmentRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody), (status = CONFLICT, body = ErrorBody)))]
 pub(super) async fn method(State(ctx): State<AppContext>, Params(input, _): Params<AppointmentMethod>) -> ApiResult<AppointmentRow> {
     let (id, verb) = input.id.split_once(':').ok_or_else(|| ApiError::not_found(format!("{:?} is not a method of appointments", input.id)))?;
     let id: Uuid = id.parse().map_err(|_| ApiError::invalid(format!("{id:?} is not an appointment id")))?;
-    let scope = scope(&ctx.pool, input.org_id).await?;
+    let scope = scope(&ctx.pool, input.org).await?;
     let row = found(&ctx.pool, &scope, id).await?;
     let reservations = Reservations::new(ctx.pool.clone());
     match (verb, row.status) {

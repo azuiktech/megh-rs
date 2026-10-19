@@ -1,163 +1,129 @@
-//! `/api/v1/orgs/{org_id}/paymentMethods`: passes, vouchers, coupons, insurance, cash and card. A method is paid with
-//! prepaid (a balance of uses or money, optionally valid only for a window) or on the spot; `eligible` is an AIP-160
-//! filter.
+//! `/api/v1/orgs/{org}/paymentMethods`: passes, vouchers, cash and the like.
 
-use std::future::Future;
-
+use axum::extract::State;
+use axum_params::Params;
 use chrono::Utc;
-use chrono_tz::Tz;
 use serde::Deserialize;
-use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
+use validator::ValidateArgs;
 
-use super::common::{amount_json, instant, AmountBody};
-use super::crud::{updates, Collection, Context, Mask, Stamps};
-use crate::auth::api::ApiError;
-use crate::booking::{Attributes, ClientId, Filter, Interval, OrgId, PaymentMethod, PaymentMethodId, PaymentMethodRow, Settlement};
+use super::common::scope;
+use crate::auth::api::{ApiError, ApiResult, ErrorBody, ListQuery, Paginated};
+use super::page::paginate;
+use super::AppContext;
+use crate::booking::{ClientId, PaymentMethod, PaymentMethodId, PaymentMethodRow};
 use crate::TableEntity;
 
-pub(super) struct PaymentMethods;
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PaymentMethodBody {
-    org_id: Option<OrgId>,
-    display_name: Option<String>,
-    owner_id: Option<ClientId>,
-    eligible: Option<String>,
-    settlement: Option<SettlementBody>,
-    attributes: Option<Attributes>,
+#[derive(Deserialize)]
+pub(super) struct ListPaymentMethods {
+    org: Uuid,
+    #[serde(flatten)]
+    query: ListQuery,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SettlementBody {
-    Prepaid { balance: AmountBody, valid: Option<WindowBody> },
-    OnSpot,
+#[derive(Deserialize)]
+pub(super) struct CreatePaymentMethod {
+    org: Uuid,
+    #[serde(flatten)]
+    payment_method: PaymentMethod,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WindowBody {
-    start_time: String,
-    end_time: String,
+#[derive(Deserialize)]
+pub(super) struct PaymentMethodRef {
+    org: Uuid,
+    id: Uuid,
 }
 
-fn named(name: Option<String>) -> Result<String, ApiError> {
-    name.filter(|name| !name.trim().is_empty()).ok_or_else(|| ApiError::invalid("display_name is required"))
+#[derive(Deserialize)]
+pub(super) struct ReplacePaymentMethod {
+    org: Uuid,
+    id: Uuid,
+    #[serde(flatten)]
+    payment_method: PaymentMethod,
 }
 
-fn owner(ctx: &Context, org: Option<OrgId>) -> Result<OrgId, ApiError> {
-    let org = org.unwrap_or(ctx.org);
-    ctx.scope.contains(&org).then_some(org).ok_or_else(|| ApiError::invalid("an org other than this one or those grouped under it cannot own a payment method"))
+#[derive(Deserialize)]
+pub(super) struct PatchPaymentMethod {
+    org: Uuid,
+    id: Uuid,
+    #[serde(flatten)]
+    changes: serde_json::Value,
 }
 
-fn settlement(body: &SettlementBody, zone: Tz) -> Result<Settlement, ApiError> {
-    match body {
-        SettlementBody::OnSpot => Ok(Settlement::OnSpot),
-        SettlementBody::Prepaid { balance, valid } => {
-            let window = |window: &WindowBody| -> Result<Interval, ApiError> { Ok(Interval { start: instant(&window.start_time, zone)?, end: instant(&window.end_time, zone)? }) };
-            let valid: Option<Interval> = valid.as_ref().map(window).transpose()?;
-            if valid.is_some_and(|window| window.end <= window.start) {
-                return Err(ApiError::invalid("valid must end after it starts"));
-            }
-            Ok(Settlement::Prepaid { balance: balance.amount()?, valid })
-        }
+/// The owner, when given, is a client of the covered orgs.
+async fn owned(pool: &PgPool, scope: &[Uuid], owner: Option<ClientId>) -> Result<(), ApiError> {
+    let Some(client) = owner else { return Ok(()) };
+    let org: Option<Uuid> = sqlx::query_scalar("SELECT org_id FROM clients WHERE id = $1 AND deleted_at IS NULL").bind(client).fetch_optional(pool).await?;
+    org.filter(|org| scope.contains(org)).map(drop).ok_or_else(|| ApiError::not_found(format!("clients {} not found", client.0)))
+}
+
+async fn found(pool: &PgPool, scope: &[Uuid], id: Uuid) -> Result<PaymentMethodRow, ApiError> {
+    let row = sqlx::query_as("SELECT * FROM payment_methods WHERE id = $1 AND org_id = ANY($2)").bind(id).bind(scope).fetch_optional(pool).await?;
+    row.ok_or_else(|| ApiError::not_found(format!("payment method {id} not found")))
+}
+
+async fn live(pool: &PgPool, scope: &[Uuid], id: Uuid) -> Result<PaymentMethodRow, ApiError> {
+    let row = found(pool, scope, id).await?;
+    match row.deleted_at {
+        None => Ok(row),
+        Some(_) => Err(ApiError::not_found(format!("payment method {id} is deleted"))),
     }
 }
 
-fn settlement_json(settlement: &Settlement, zone: Tz) -> Value {
-    match settlement {
-        Settlement::OnSpot => json!("on_spot"),
-        Settlement::Prepaid { balance, valid } => {
-            let window = valid.map(|window| json!({"start_time": window.start.with_timezone(&zone), "end_time": window.end.with_timezone(&zone)}));
-            json!({"prepaid": {"balance": amount_json(balance), "valid": window}})
-        }
-    }
+/// List XXX.
+#[utoipa::path(get, path = "/api/v1/orgs/{org}/paymentMethods", tag = "paymentMethods", params(("org" = Uuid, Path), ListQuery),
+    responses((status = OK, body = Paginated<PaymentMethodRow>), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn list(State(ctx): State<AppContext>, Params(input, _): Params<ListPaymentMethods>) -> ApiResult<Paginated<PaymentMethodRow>> {
+    let scope = scope(&ctx.pool, input.org).await?;
+    let shown = if input.query.show_deleted == Some(true) { "" } else { " AND deleted_at IS NULL" };
+    let rows = sqlx::query_as(&format!("SELECT * FROM payment_methods WHERE org_id = ANY($1){shown} ORDER BY created_at, id")).bind(&scope).fetch_all(&ctx.pool).await?;
+    Ok(paginate(rows, &input.query)?)
 }
 
-/// The owner, when given, is a client of the org's subtree.
-async fn check_owner(ctx: &Context, client: Option<ClientId>) -> Result<(), ApiError> {
-    let Some(client) = client else { return Ok(()) };
-    let found: Option<Option<Uuid>> = sqlx::query_scalar("SELECT org_id FROM clients WHERE id = $1 AND deleted_at IS NULL").bind(client).fetch_optional(&ctx.pool).await?;
-    match found {
-        Some(org) if org.is_none_or(|org| ctx.scope.contains(&org)) => Ok(()),
-        _ => Err(ApiError::not_found(format!("clients {} not found", client.0))),
-    }
+/// Create a payment method.
+#[utoipa::path(post, path = "/api/v1/orgs/{org}/paymentMethods", tag = "paymentMethods", params(("org" = Uuid, Path)), request_body = PaymentMethod,
+    responses((status = OK, body = PaymentMethodRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn create(State(ctx): State<AppContext>, Params(input, _): Params<CreatePaymentMethod>) -> ApiResult<PaymentMethodRow> {
+    let scope = scope(&ctx.pool, input.org).await?;
+    input.payment_method.validate_with_args(&scope)?;
+    owned(&ctx.pool, &scope, input.payment_method.owner_id).await?;
+    Ok(PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), input.payment_method).insert(&ctx.pool).await?)
 }
 
-fn eligibility(text: &Option<String>) -> Result<crate::booking::Condition, ApiError> {
-    let text = text.as_deref().ok_or_else(|| ApiError::invalid("eligible is required, an AIP-160 filter such as kind = \"massage\""))?;
-    Ok(Box::new(Filter::parse(text)?))
+/// Get a payment method.
+#[utoipa::path(get, path = "/api/v1/orgs/{org}/paymentMethods/{id}", tag = "paymentMethods", params(("org" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = PaymentMethodRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn read(State(ctx): State<AppContext>, Params(input, _): Params<PaymentMethodRef>) -> ApiResult<PaymentMethodRow> {
+    found(&ctx.pool, &scope(&ctx.pool, input.org).await?, input.id).await
 }
 
-fn text_of(condition: &crate::booking::Condition) -> Value {
-    match serde_json::to_value(condition) {
-        Ok(Value::Object(stored)) if stored.len() == 1 && stored.get("Filter").is_some_and(Value::is_string) => stored["Filter"].clone(),
-        Ok(stored) => stored,
-        Err(_) => Value::Null,
-    }
+/// Replace the data of a payment method.
+#[utoipa::path(put, path = "/api/v1/orgs/{org}/paymentMethods/{id}", tag = "paymentMethods", params(("org" = Uuid, Path), ("id" = Uuid, Path)), request_body = PaymentMethod,
+    responses((status = OK, body = PaymentMethodRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn replace(State(ctx): State<AppContext>, Params(input, _): Params<ReplacePaymentMethod>) -> ApiResult<PaymentMethodRow> {
+    let scope = scope(&ctx.pool, input.org).await?;
+    let current = live(&ctx.pool, &scope, input.id).await?;
+    input.payment_method.validate_with_args(&scope)?;
+    owned(&ctx.pool, &scope, input.payment_method.owner_id).await?;
+    Ok(PaymentMethodRow::with_timestamps(current.id, input.payment_method, current.created_at, Utc::now()).save(&ctx.pool).await?)
 }
 
-impl Collection for PaymentMethods {
-    type Row = PaymentMethodRow;
-    type Body = PaymentMethodBody;
-    const NAME: &'static str = "paymentMethods";
-    const TABLE: &'static str = "payment_methods";
-
-    fn stamps(row: &PaymentMethodRow) -> Stamps {
-        Stamps { id: row.id.0, created: row.created_at, updated: row.updated_at, deleted: row.deleted_at }
-    }
-
-    fn fields(row: &PaymentMethodRow, ctx: &Context) -> Value {
-        json!({"org_id": row.org_id, "display_name": row.name, "owner_id": row.owner_id, "eligible": text_of(&row.eligible), "settlement": settlement_json(&row.settlement, ctx.zone), "attributes": row.attributes})
-    }
-
-    async fn create(ctx: &Context, body: PaymentMethodBody) -> Result<PaymentMethodRow, ApiError> {
-        check_owner(ctx, body.owner_id).await?;
-        let data = PaymentMethod {
-            org_id: owner(ctx, body.org_id)?,
-            name: named(body.display_name)?,
-            owner_id: body.owner_id,
-            eligible: eligibility(&body.eligible)?,
-            settlement: settlement(body.settlement.as_ref().ok_or_else(|| ApiError::invalid("settlement is required"))?, ctx.zone)?,
-            attributes: body.attributes.unwrap_or_else(|| serde_json::json!({})),
-        };
-        Ok(PaymentMethodRow::new(PaymentMethodId(Uuid::new_v4()), data))
-    }
-
-    async fn update(ctx: &Context, current: &PaymentMethodRow, body: PaymentMethodBody, mask: &Mask) -> Result<PaymentMethodRow, ApiError> {
-        let given = |field: &str, present: bool| updates(mask, field, present);
-        if given("owner_id", body.owner_id.is_some()) {
-            check_owner(ctx, body.owner_id).await?;
-        }
-        let data = PaymentMethod {
-            org_id: if given("org_id", body.org_id.is_some()) { owner(ctx, body.org_id)? } else { current.org_id },
-            name: if given("display_name", body.display_name.is_some()) { named(body.display_name)? } else { current.name.clone() },
-            owner_id: if given("owner_id", body.owner_id.is_some()) { body.owner_id } else { current.owner_id },
-            eligible: if given("eligible", body.eligible.is_some()) { eligibility(&body.eligible)? } else { reparsed(&current.eligible)? },
-            settlement: if given("settlement", body.settlement.is_some()) { settlement(body.settlement.as_ref().ok_or_else(|| ApiError::invalid("settlement is required"))?, ctx.zone)? } else { current.settlement.clone() },
-            attributes: if given("attributes", body.attributes.is_some()) { body.attributes.unwrap_or_else(|| serde_json::json!({})) } else { current.attributes.clone() },
-        };
-        Ok(PaymentMethodRow::with_timestamps(current.id, data, current.created_at, Utc::now()))
-    }
-
-    fn insert(pool: &PgPool, row: PaymentMethodRow) -> impl Future<Output = Result<PaymentMethodRow, sqlx::Error>> + Send {
-        async move { row.insert(pool).await }
-    }
-
-    fn save(pool: &PgPool, row: PaymentMethodRow) -> impl Future<Output = Result<PaymentMethodRow, sqlx::Error>> + Send {
-        async move { row.save(pool).await }
-    }
-
-    fn delete(pool: &PgPool, row: PaymentMethodRow) -> impl Future<Output = Result<Option<PaymentMethodRow>, sqlx::Error>> + Send {
-        async move { row.soft_delete(pool).await }
-    }
+/// Change the fields of a payment method that the body names (JSON merge patch, RFC 7396).
+#[utoipa::path(patch, path = "/api/v1/orgs/{org}/paymentMethods/{id}", tag = "paymentMethods", params(("org" = Uuid, Path), ("id" = Uuid, Path)), request_body = PaymentMethod,
+    responses((status = OK, body = PaymentMethodRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn patch(State(ctx): State<AppContext>, Params(input, _): Params<PatchPaymentMethod>) -> ApiResult<PaymentMethodRow> {
+    let scope = scope(&ctx.pool, input.org).await?;
+    let patched = live(&ctx.pool, &scope, input.id).await?.patch(&input.changes).map_err(|error| ApiError::invalid(error.to_string()))?;
+    patched.validate_with_args(&scope)?;
+    owned(&ctx.pool, &scope, patched.owner_id).await?;
+    Ok(patched.save(&ctx.pool).await?)
 }
 
-/// A copy of a stored condition (conditions are trait objects without `Clone`).
-fn reparsed(condition: &crate::booking::Condition) -> Result<crate::booking::Condition, ApiError> {
-    let invalid = |error: serde_json::Error| ApiError::invalid(error.to_string());
-    serde_json::from_value(serde_json::to_value(condition).map_err(invalid)?).map_err(invalid)
+/// Delete a payment method. Soft delete: it comes back with `deleted_at`.
+#[utoipa::path(delete, path = "/api/v1/orgs/{org}/paymentMethods/{id}", tag = "paymentMethods", params(("org" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = OK, body = PaymentMethodRow), (status = BAD_REQUEST, body = ErrorBody), (status = NOT_FOUND, body = ErrorBody)))]
+pub(super) async fn remove(State(ctx): State<AppContext>, Params(input, _): Params<PaymentMethodRef>) -> ApiResult<PaymentMethodRow> {
+    let current = live(&ctx.pool, &scope(&ctx.pool, input.org).await?, input.id).await?;
+    current.soft_delete(&ctx.pool).await?.ok_or_else(|| ApiError::not_found("already deleted"))
 }

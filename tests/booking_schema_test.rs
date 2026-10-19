@@ -58,13 +58,13 @@ async fn schedules_and_groupings_round_trip(pool: PgPool) {
         service_id: None,
         bookable_id: None,
         kind: Kind::Blockout,
-        recurrence: Recurrence("DTSTART:20261104T120000Z\nRRULE:FREQ=DAILY".into()),
-        span: seconds(3600),
+        recurrence: "DTSTART:20261104T120000Z\nRRULE:FREQ=DAILY".parse().unwrap(),
+        span: Span(seconds(3600)),
         reason: Some("lunch".into()),
         notes: None,
     };
     let schedule = ScheduleRow::new(ScheduleId(Uuid::new_v4()), schedule).insert(&pool).await.unwrap();
-    assert_eq!((schedule.kind, schedule.span, schedule.reason.as_deref()), (Kind::Blockout, seconds(3600), Some("lunch")));
+    assert_eq!((schedule.kind, schedule.span, schedule.reason.as_deref()), (Kind::Blockout, Span(seconds(3600)), Some("lunch")));
 }
 
 #[sqlx::test(migrations = false)]

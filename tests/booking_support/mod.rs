@@ -60,17 +60,17 @@ fn stamp(moment: DateTime<Utc>) -> String {
 
 /// Every day from day 0 at `hour`.
 pub fn daily(hour: u32) -> Recurrence {
-    Recurrence(format!("DTSTART:{}\nRRULE:FREQ=DAILY", stamp(at(0, hour, 0))))
+    format!("DTSTART:{}\nRRULE:FREQ=DAILY", stamp(at(0, hour, 0))).parse().unwrap()
 }
 
 /// Only on the given day at `hour`.
 pub fn once(offset: i64, hour: u32) -> Recurrence {
-    Recurrence(format!("DTSTART:{}\nRRULE:FREQ=DAILY;COUNT=1", stamp(at(offset, hour, 0))))
+    format!("DTSTART:{}\nRRULE:FREQ=DAILY;COUNT=1", stamp(at(offset, hour, 0))).parse().unwrap()
 }
 
 pub fn weekly(days: &[Weekday], hour: u32) -> Recurrence {
     let names: Vec<_> = days.iter().map(|day| day.to_string().to_uppercase()[..2].to_string()).collect();
-    Recurrence(format!("DTSTART:{}\nRRULE:FREQ=WEEKLY;BYDAY={}", stamp(at(0, hour, 0)), names.join(",")))
+    format!("DTSTART:{}\nRRULE:FREQ=WEEKLY;BYDAY={}", stamp(at(0, hour, 0)), names.join(",")).parse().unwrap()
 }
 
 pub fn weekday(offset: i64) -> Weekday {
@@ -152,7 +152,7 @@ async fn owner_of_rule(pool: &PgPool, axes: &Where) -> Uuid {
 }
 
 pub async fn rule(pool: &PgPool, kind: Kind, axes: Where, recurrence: Recurrence, span: Duration) {
-    let data = Schedule { org_id: owner_of_rule(pool, &axes).await, service_id: axes.service, bookable_id: axes.bookable, kind, recurrence, span, reason: None, notes: None };
+    let data = Schedule { org_id: owner_of_rule(pool, &axes).await, service_id: axes.service, bookable_id: axes.bookable, kind, recurrence, span: Span(span), reason: None, notes: None };
     ScheduleRow::new(ScheduleId(Uuid::new_v4()), data).insert(pool).await.unwrap();
 }
 

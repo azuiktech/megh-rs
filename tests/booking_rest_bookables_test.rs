@@ -184,7 +184,8 @@ async fn bookables_made_over_rest_are_what_a_schedule_and_the_calendar_work_with
     let app = booking_router(pool.clone());
     let room = rest_bookable(&app, org, "Room 1", 1, json!({"kind": "room"})).await;
     let cleaning = service(&pool, org, "cleaning", 30, None, is("kind", "room")).await;
-    let schedule = json!({"bookable_id": room["id"], "service_id": cleaning.id, "date": "2026-11-12", "start_time": "09:00", "end_time": "10:00"});
+    let recurrence = "DTSTART;TZID=America/New_York:20261112T090000\nRRULE:FREQ=DAILY;COUNT=1";
+    let schedule = json!({"org_id": org, "service_id": cleaning.id, "bookable_id": room["id"], "kind": "open", "recurrence": recurrence, "span": "PT1H", "reason": null, "notes": null});
     assert_eq!(call(&app, "POST", &format!("/api/v1/orgs/{org}/schedules"), Some(schedule)).await.0, StatusCode::OK);
     let axes = Axes { org, service: cleaning.id, bookable: serde_json::from_value(room["id"].clone()).unwrap() };
     let day = Interval { start: chrono::Utc.with_ymd_and_hms(2026, 11, 12, 0, 0, 0).unwrap(), end: chrono::Utc.with_ymd_and_hms(2026, 11, 13, 0, 0, 0).unwrap() };

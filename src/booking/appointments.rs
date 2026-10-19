@@ -7,18 +7,23 @@ use super::{
     Attributes, BookableId, AppointmentId, ClientId, Condition, Engagement, Interval, OrgId,
     OccupancyId, PaymentMethodId, Price, Result, Role, ServiceId,
 };
+use super::model::{not_blank, within_orgs};
 use crate::{Entity, Table};
 
 /// One service wanted by a party. Every `wants` condition must hold for at least one bookable chosen for it.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ServiceWant {
+    #[schema(value_type = String, format = Uuid)]
     pub service: ServiceId,
+    #[schema(value_type = Vec<Object>)]
+    #[serde(default)]
     pub wants: Vec<Condition>,
 }
 
 /// A client with the services they want, in order.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Party {
+    #[schema(value_type = Option<String>, format = Uuid)]
     pub client: Option<ClientId>,
     pub services: Vec<ServiceWant>,
 }
@@ -26,16 +31,30 @@ pub struct Party {
 /// Parties start together and a party's services run back to back, unless the offsets allow more:
 /// `party_offset` is the largest difference between the parties' start times, `service_gap` the largest
 /// gap between one party's consecutive services. Starts and gaps are tried every `slot_interval`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SearchRequest {
     /// Bookables of this org and of the orgs grouped under it; every org when empty.
+    #[schema(value_type = Option<String>, format = Uuid)]
     pub org: Option<OrgId>,
     pub parties: Vec<Party>,
     pub within: Interval,
+    /// ISO 8601, such as `PT15M`; none when absent.
+    #[serde(default, with = "jiff::fmt::serde::unsigned_duration::required")]
+    #[schema(value_type = String, format = Duration)]
     pub party_offset: Duration,
+    /// ISO 8601; none when absent.
+    #[serde(default, with = "jiff::fmt::serde::unsigned_duration::required")]
+    #[schema(value_type = String, format = Duration)]
     pub service_gap: Duration,
+    /// ISO 8601; 15 minutes when absent.
+    #[serde(default = "quarter_hour", with = "jiff::fmt::serde::unsigned_duration::required")]
+    #[schema(value_type = String, format = Duration)]
     pub slot_interval: Duration,
     pub limit: Option<usize>,
+}
+
+fn quarter_hour() -> Duration {
+    Duration::from_secs(15 * 60)
 }
 
 /// Where an appointment stands. `booked` and `confirmed` use the capacity of a room, `waitlist` a place of its
@@ -54,8 +73,9 @@ pub enum Status {
 }
 
 /// The only thing that blocks time.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Allocation {
+    #[schema(value_type = String, format = Uuid)]
     pub bookable: BookableId,
     pub during: Interval,
     pub engagement: Engagement,
@@ -69,15 +89,16 @@ pub struct Allocation {
 }
 
 /// When one party's service takes place for the client: from the first step the client is present to the last.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Placement {
     pub party: usize,
+    #[schema(value_type = String, format = Uuid)]
     pub service: ServiceId,
     pub during: Interval,
     pub price: Price,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Slot {
     pub allocations: Vec<Allocation>,
     pub placements: Vec<Placement>,
@@ -170,27 +191,43 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Appointment {
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(transparent))]
 pub struct IdempotencyKey(pub String);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Settlement {
     Prepaid { balance: Amount, valid: Option<Interval> },
     OnSpot,
 }
 
 /// Pass, voucher, coupon, insurance, cash, card. `owner` is empty for shared methods.
-#[derive(Debug, Serialize, Deserialize, Table)]
+#[derive(Debug, Serialize, Deserialize, Table, utoipa::ToSchema, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[table(name = "payment_methods")]
+#[validate(context = "Vec<OrgId>")]
 pub struct PaymentMethod {
+    /// The org of the path, or one grouped under it.
+    #[schema(value_type = String, format = Uuid)]
+    #[validate(custom(function = "within_orgs", use_context))]
     pub org_id: OrgId,
+    #[validate(custom(function = "not_blank"))]
     pub name: String,
+    #[schema(value_type = Option<String>, format = Uuid)]
     pub owner_id: Option<ClientId>,
     #[cfg_attr(feature = "postgres", sqlx(json))]
+    #[schema(value_type = Object)]
     pub eligible: Condition,
     #[cfg_attr(feature = "postgres", sqlx(json))]
+    #[validate(custom(function = "valid_window"))]
     pub settlement: Settlement,
     #[cfg_attr(feature = "postgres", sqlx(json))]
+    #[schema(value_type = Object)]
     pub attributes: Attributes,
+}
+
+fn valid_window(settlement: &Settlement) -> std::result::Result<(), validator::ValidationError> {
+    match settlement {
+        Settlement::Prepaid { valid: Some(window), .. } if window.end <= window.start => Err(validator::ValidationError::new("empty_window")),
+        _ => Ok(()),
+    }
 }
 
 /// Persisted forms. Soft delete, `created_at` and `updated_at` come from `Entity`.

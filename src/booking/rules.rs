@@ -73,6 +73,6 @@ impl Rules {
 }
 
 fn occurrences<'a>(rules: impl Iterator<Item = &'a Schedule>, within: &Interval) -> Result<Times> {
-    let found: Result<Vec<_>> = rules.map(|rule| rule.recurrence.within(rule.span, within)).collect();
+    let found: Result<Vec<_>> = rules.map(|rule| rule.recurrence.within(rule.span.0, within)).collect();
     Ok(found?.iter().flat_map(|times| times.iter().cloned()).collect())
 }

@@ -11,7 +11,6 @@ mod availability;
 mod bookables;
 mod clients;
 mod common;
-mod crud;
 mod error;
 mod groupings;
 mod page;
@@ -32,7 +31,7 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 
 
-use super::{Groups, Grouped, Kind, Result};
+use super::{Groups, Grouped, Result};
 
 #[derive(Clone)]
 pub struct AppContext {
@@ -55,7 +54,7 @@ pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
 }
 
 #[derive(OpenApi)]
-#[openapi(info(title = "Megh booking API", version = "1"), modifiers(&Authentication), tags((name = "bookables", description = "Providers and rooms."), (name = "clients", description = "People, pets and others who are served."), (name = "appointments", description = "One client having one service in a room with providers."), (name = "groupings", description = "The hierarchy of orgs, bookables, services and clients.")))]
+#[openapi(info(title = "Megh booking API", version = "1"), modifiers(&Authentication), tags((name = "bookables", description = "Providers and rooms."), (name = "clients", description = "People, pets and others who are served."), (name = "appointments", description = "One client having one service in a room with providers."), (name = "groupings", description = "The hierarchy of orgs, bookables, services and clients."), (name = "services", description = "What is offered, in steps."), (name = "paymentMethods", description = "Passes, vouchers, cash and the like."), (name = "schedules", description = "Open time."), (name = "blockouts", description = "Blocked time."), (name = "availability", description = "Where parties can be served.")))]
 struct Booking;
 
 /// The cookie `jwt_token` that `jwt_session` issues from the session after sign-in.
@@ -80,16 +79,15 @@ fn routes() -> OpenApiRouter<AppContext> {
         .routes(routes!(appointments::read, appointments::reschedule, appointments::cancel, appointments::method))
         .routes(routes!(groupings::list, groupings::create))
         .routes(routes!(groupings::read, groupings::remove))
-        .merge(OpenApiRouter::from(others()))
-}
-
-fn others() -> Router<AppContext> {
-    Router::new()
-        .merge(crud::routes::<services::Services>())
-        .merge(crud::routes::<payment_methods::PaymentMethods>())
-        .merge(availability::routes())
-        .merge(schedules::routes("schedules", Kind::Open))
-        .merge(schedules::routes("blockouts", Kind::Blockout))
+        .routes(routes!(services::list, services::create))
+        .routes(routes!(services::read, services::replace, services::patch, services::remove))
+        .routes(routes!(payment_methods::list, payment_methods::create))
+        .routes(routes!(payment_methods::read, payment_methods::replace, payment_methods::patch, payment_methods::remove))
+        .routes(routes!(schedules::schedules::list, schedules::schedules::create))
+        .routes(routes!(schedules::schedules::read, schedules::schedules::replace, schedules::schedules::patch, schedules::schedules::remove))
+        .routes(routes!(schedules::blockouts::list, schedules::blockouts::create))
+        .routes(routes!(schedules::blockouts::read, schedules::blockouts::replace, schedules::blockouts::patch, schedules::blockouts::remove))
+        .routes(routes!(availability::search))
 }
 
 /// The org and every org grouped under it, at any depth.

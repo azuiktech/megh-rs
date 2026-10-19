@@ -23,7 +23,17 @@ use serde_json::Value;
 use super::{Attributes, Error, Predicate, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct Filter(String);
+
+/// A filter is checked when it is read, so a stored or posted condition is one the engine can evaluate.
+impl TryFrom<String> for Filter {
+    type Error = Error;
+
+    fn try_from(text: String) -> Result<Self> {
+        Self::parse(text)
+    }
+}
 
 /// The parser is young and unwraps inside; whatever it does on odd input must not take the caller down.
 /// An empty text is no filter at all.

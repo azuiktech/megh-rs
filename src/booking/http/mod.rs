@@ -6,6 +6,7 @@
 //! The router assumes the application authenticates the caller and applies [`crate::authorizer`], which derives
 //! the grants from the paths: `orgs:read:{org_id}` and then the resource and action of the route.
 
+mod appointments;
 mod availability;
 mod bookables;
 mod clients;
@@ -17,6 +18,7 @@ mod page;
 mod payment_methods;
 mod schedules;
 mod services;
+mod slot;
 
 use std::collections::HashMap;
 
@@ -53,7 +55,7 @@ pub fn booking_router_with_csrf(pool: PgPool, csrf: CsrfLayer) -> Router {
 }
 
 #[derive(OpenApi)]
-#[openapi(info(title = "Megh booking API", version = "1"), modifiers(&Authentication), tags((name = "bookables", description = "Providers and rooms."), (name = "clients", description = "People, pets and others who are served."), (name = "groupings", description = "The hierarchy of orgs, bookables, services and clients.")))]
+#[openapi(info(title = "Megh booking API", version = "1"), modifiers(&Authentication), tags((name = "bookables", description = "Providers and rooms."), (name = "clients", description = "People, pets and others who are served."), (name = "appointments", description = "One client having one service in a room with providers."), (name = "groupings", description = "The hierarchy of orgs, bookables, services and clients.")))]
 struct Booking;
 
 /// The cookie `jwt_token` that `jwt_session` issues from the session after sign-in.
@@ -73,6 +75,9 @@ fn routes() -> OpenApiRouter<AppContext> {
         .routes(routes!(bookables::read, bookables::replace, bookables::patch, bookables::remove))
         .routes(routes!(clients::list, clients::create))
         .routes(routes!(clients::read, clients::replace, clients::patch, clients::remove))
+        .routes(routes!(appointments::list, appointments::book))
+        .routes(routes!(appointments::hold))
+        .routes(routes!(appointments::read, appointments::reschedule, appointments::cancel, appointments::method))
         .routes(routes!(groupings::list, groupings::create))
         .routes(routes!(groupings::read, groupings::remove))
         .merge(OpenApiRouter::from(others()))

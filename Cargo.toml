@@ -48,6 +48,9 @@ phonenumber = "0.3.10"
 aip-160 = "0.1.5"
 axum-params = { version = "0.4.1", optional = true }
 paginator-utils = "0.4"
+utoipa = { version = "6", features = ["uuid", "chrono"], optional = true }
+utoipa-axum = { version = "0.3", optional = true }
+serde_with = "3.24.0"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -59,9 +62,10 @@ base64 = "0.22"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+utoipa-scalar = { version = "0.4", features = ["axum"] }
 
 [features]
 default = ["postgres", "client", "axum"]
 postgres = ["dep:sqlx", "dep:bcrypt", "dep:aes-gcm", "dep:base64"]
 client = ["dep:reqwest", "dep:reqwest-middleware", "dep:async-trait"]
-axum = ["dep:axum", "dep:axum-params", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:axum-tower-sessions-csrf", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]
+axum = ["dep:axum", "dep:axum-params", "dep:utoipa", "dep:utoipa-axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:axum-tower-sessions-csrf", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]

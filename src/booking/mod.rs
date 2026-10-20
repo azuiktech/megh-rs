@@ -7,6 +7,8 @@ pub mod client;
 pub mod provider;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod resource;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod service;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use api::{openapi, router};
@@ -47,5 +49,6 @@ mod api {
             .merge(super::resource::routes())
             .merge(super::provider::routes())
             .merge(super::client::routes())
+            .merge(super::service::routes())
     }
 }

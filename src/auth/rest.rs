@@ -12,6 +12,7 @@ use sqlx::{FromRow, PgPool, Postgres, QueryBuilder};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use validator::Validate;
 
 #[derive(Clone)]
 pub struct AppContext {
@@ -41,10 +42,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Path, query and body as one `T`; path values overwrite the others.
+/// Path, query and body as one `T`, checked by its `validate()`; path values overwrite the others.
 pub struct Input<T>(pub T);
 
-impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Input<T> {
+impl<T: DeserializeOwned + Validate, S: Send + Sync> FromRequest<S> for Input<T> {
     type Rejection = ApiError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, ApiError> {
@@ -55,12 +56,14 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Input<T> {
             return Err(ApiError::BadRequest("expected an object".into()));
         };
         fields.extend(path.into_iter().map(|(name, value)| (name, serde_json::Value::String(value))));
-        serde_json::from_value(fields.into()).map(Input).map_err(|e| bad(&e))
+        let value: T = serde_json::from_value(fields.into()).map_err(|e| bad(&e))?;
+        value.validate().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+        Ok(Input(value))
     }
 }
 
 /// A list request: the org from the path, an AIP-160 filter, and the page.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct ListRequest {
     pub org_id: Uuid,
     #[serde(default, deserialize_with = "parse_filter")]
@@ -100,22 +103,23 @@ fn parse_filter<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Opt
 }
 
 /// One row of an org by its key: `/orgs/{org_id}/<collection>/{id}`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct Key {
     pub org_id: Uuid,
     pub id: Uuid,
 }
 
 /// A body for the row named by the path: the entity's data for PUT, the changes for PATCH.
-#[derive(Debug, Deserialize)]
-pub struct Keyed<T> {
+#[derive(Debug, Deserialize, Validate)]
+pub struct Keyed<T: Validate> {
     pub id: Uuid,
     #[serde(flatten)]
+    #[validate(nested)]
     pub data: T,
 }
 
 /// A PATCH body for the row named by the path: the JSON merge patch (RFC 7396) to apply.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Validate)]
 pub struct Changes {
     #[serde(flatten)]
     pub key: Key,

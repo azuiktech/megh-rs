@@ -52,6 +52,8 @@ utoipa = { version = "6", features = ["uuid", "chrono"], optional = true }
 utoipa-axum = { version = "0.3", optional = true }
 serde_with = "3.24.0"
 constcat = "0.6"
+iso8601 = { version = "0.6", features = ["serde"] }
+validator = { version = "0.21", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

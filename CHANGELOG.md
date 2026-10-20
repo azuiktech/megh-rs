@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-20
+- Booking Resource: table `resources` keyed by `(org_id, id)` and routes under `/orgs/{org_id}/resources` (list with AIP-160 filter and cursor paging, get, create, PUT, PATCH as JSON merge in one transaction, DELETE as soft delete), `megh::booking::{openapi, router}`, and `examples/booking.rs` serving the API with Scalar docs at `/docs`; `TableEntity::update` takes any executor, saving an `Entity` also writes `updated_at` (PR #146, issue #145)
 - Booking value types in `megh::booking::value`: `Attributes` (JSON object), `Name` and `Phone` (nutype; phone kept in E.164), `Gender`, `Address` (celes country), `Contact` (email_address), `Person`; none can be built invalid; the booking TPD (`docs/TPD-booking.md`) with its delivery plan (PR #142, issue #141)
 - Shared REST layer in `megh::auth`: `AppContext`, `ApiError`/`ApiResult`, `Input<T>` (path, query and body as one typed value through axum-params; path values always win), `ListRequest`/`PageRequest`/`Page<T>` with an opaque paginator-utils cursor, and `push_filter`, which writes an AIP-160 filter (parsed by aip-160) as a SQL WHERE condition over columns and `attributes` (PR #144, issue #143)
 

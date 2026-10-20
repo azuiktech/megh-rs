@@ -52,6 +52,7 @@ pub trait Table {
 /// Generic persistent entity wrapper providing ID and audit timestamps.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
+#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
 pub struct Entity<ID, T> {
     pub id: ID,
     #[serde(flatten)]
@@ -61,6 +62,14 @@ pub struct Entity<ID, T> {
     pub updated_at: DateTime<Utc>,
     /// Set when the entity is deleted; the row stays until a separate cleanup removes it.
     pub deleted_at: Option<DateTime<Utc>>,
+}
+
+/// An entity answers a request as its JSON.
+#[cfg(feature = "axum")]
+impl<ID: Serialize, T: Serialize> axum::response::IntoResponse for Entity<ID, T> {
+    fn into_response(self) -> axum::response::Response {
+        axum::Json(self).into_response()
+    }
 }
 
 impl<ID, T> Deref for Entity<ID, T> {
@@ -103,6 +112,11 @@ impl<ID, T: Table> Table for Entity<ID, T> {
     const PRIMARY_KEY: &'static [&'static str] = T::PRIMARY_KEY;
     const CONFLICT_COLUMNS: &'static [&'static str] = T::CONFLICT_COLUMNS;
     const COLUMNS: &'static [ColumnMeta] = T::COLUMNS;
+
+    /// The data's columns and `updated_at`, so a save also records when it happened.
+    fn update_columns() -> Vec<&'static str> {
+        T::update_columns().into_iter().chain(["updated_at"]).collect()
+    }
 }
 
 #[cfg(feature = "postgres")]
@@ -143,14 +157,14 @@ pub trait TableEntity: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postg
         sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
     }
 
-    async fn update(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error> where Self: Sized {
+    async fn update<'e>(&self, executor: impl sqlx::PgExecutor<'e>) -> Result<Self, sqlx::Error> where Self: Sized {
         let table = Self::TABLE_NAME;
         let cols = Self::update_columns();
         let set = cols.join(", ");
         let p_set = cols.iter().map(|c| format!("p.{c}")).collect::<Vec<_>>().join(", ");
         let where_clause = Self::PRIMARY_KEY.iter().map(|k| format!("{table}.{k} = p.{k}")).collect::<Vec<_>>().join(" AND ");
         let q = format!("UPDATE {table} SET ({set}) = ROW({p_set}) FROM json_populate_record(NULL::{table}, $1::json) p WHERE {where_clause} AND {table}.deleted_at IS NULL RETURNING {table}.*");
-        sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
+        sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(executor).await
     }
 
     /// Marks this row and everything a physical delete would remove (rows reached through foreign keys

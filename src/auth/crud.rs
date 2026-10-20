@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use sqlx::postgres::PgRow;
 use sqlx::{FromRow, PgPool, QueryBuilder};
 use uuid::Uuid;
+use validator::Validate;
 
 use super::filter::push_filter;
 use super::rest::{ApiError, ApiResult, Changes, Key, Keyed, ListRequest, Page, fetch_page};
@@ -14,12 +15,13 @@ use crate::{Entity, Table, TableEntity};
 
 /// An entity's data stored in a table with `org_id`, `id`, timestamps and `deleted_at`.
 pub trait Row:
-    Table + for<'r> FromRow<'r, PgRow> + Serialize + DeserializeOwned + Send + Sync + Unpin + 'static
+    Table + Validate + for<'r> FromRow<'r, PgRow> + Serialize + DeserializeOwned + Send + Sync + Unpin + 'static
 {
 }
 
 impl<T> Row for T where
     T: Table
+        + Validate
         + for<'r> FromRow<'r, PgRow>
         + Serialize
         + DeserializeOwned
@@ -74,6 +76,7 @@ pub async fn patch<T: Row>(pool: &PgPool, body: Changes) -> ApiResult<Entity<Uui
     let changed = current
         .patch(&body.changes.into())
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    changed.data.validate().map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let saved = TableEntity::update(&changed, &mut *transaction).await?;
     transaction.commit().await?;
     Ok(saved)

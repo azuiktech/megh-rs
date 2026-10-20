@@ -6,13 +6,14 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use uuid::Uuid;
+use validator::Validate;
 
 use super::value::{Attributes, Capacity, Contact, Name, Waitlist};
 use crate::auth::crud;
 use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
 use crate::{Entity, Table};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "providers", keys = ["org_id", "id"])]
 pub struct ProviderData {
     pub org_id: Uuid,

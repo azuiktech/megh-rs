@@ -54,18 +54,6 @@ pub struct Capacity(i32);
 )]
 pub struct Waitlist(i32);
 
-/// An ISO 8601 duration (`PT45M`), checked and written in its canonical form by `iso8601`; `P0D` (zero) when none is needed.
-#[nutype(
-    sanitize(with = |s: String| s.trim().parse::<iso8601::Duration>().map_or(s, |d| d.to_string())),
-    validate(predicate = |s: &str| s.parse::<iso8601::Duration>().is_ok()),
-    default = "P0D",
-    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, Default, TryFrom, Serialize, Deserialize),
-    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
-    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
-)]
-#[cfg_attr(feature = "postgres", sqlx(transparent))]
-pub struct Duration(String);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Gender {

@@ -59,9 +59,9 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
     let extraction = json!({
         "name": "Tooth extraction", "setup": "PT10M", "cleanup": "PT10M",
         "steps": [
-            {"duration": "PT15M", "providers": ["hygienist"]},
-            {"duration": "PT45M", "providers": ["hygienist", "dentist"]},
-            {"duration": "PT15M", "providers": ["hygienist"]}
+            {"duration": "PT15M", "provider1": "hygienist", "provider2": null},
+            {"duration": "PT45M", "provider1": "hygienist", "provider2": "dentist"},
+            {"duration": "PT15M", "provider1": "hygienist", "provider2": null}
         ],
         "attributes": {"category": "surgery"}
     });
@@ -75,7 +75,7 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
 
     let (status, colour) = call(&app, "POST", &collection, json!({
         "name": "Hair colour",
-        "steps": [{"duration": "PT30M", "providers": ["stylist"]}, {"duration": "PT30M"}, {"duration": "PT20M", "providers": ["stylist"]}]
+        "steps": [{"duration": "PT30M", "provider1": "stylist"}, {"duration": "PT30M"}, {"duration": "PT20M", "provider1": "stylist"}]
     }))
     .await;
     assert_eq!(status, StatusCode::OK, "{colour}");
@@ -86,7 +86,7 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
     );
     assert_eq!(
         colour["steps"][1],
-        json!({"duration": "PT30M", "providers": []}),
+        json!({"duration": "PT30M", "provider1": null, "provider2": null}),
         "the client waits alone"
     );
 
@@ -95,7 +95,8 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
         json!({"name": "X"}),
         json!({"name": "X", "steps": [{"duration": "45 minutes"}]}),
         json!({"name": "X", "setup": "ten", "steps": [{"duration": "PT5M"}]}),
-        json!({"name": "X", "steps": [{"duration": "PT5M", "providers": [" "]}]}),
+        json!({"name": "X", "steps": [{"duration": "PT5M", "provider1": ""}]}),
+        json!({"name": "", "steps": [{"duration": "PT5M"}]}),
     ] {
         assert_eq!(
             call(&app, "POST", &collection, bad.clone()).await.0,
@@ -114,13 +115,13 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
         &app,
         "PATCH",
         &item,
-        json!({"cleanup": "PT5M", "steps": [{"duration": "PT1H", "providers": ["stylist"]}]}),
+        json!({"cleanup": "PT5M", "steps": [{"duration": "PT1H", "provider1": "stylist"}]}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{patched}");
     assert_eq!(
         patched["steps"],
-        json!([{"duration": "PT1H", "providers": ["stylist"]}]),
+        json!([{"duration": "PT1H", "provider1": "stylist", "provider2": null}]),
         "a list is replaced whole"
     );
     assert_eq!(patched["cleanup"], "PT5M");
@@ -133,6 +134,11 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
         call(&app, "PATCH", &item, json!({"steps": null})).await.0,
         StatusCode::BAD_REQUEST,
         "steps have no default"
+    );
+    assert_eq!(
+        call(&app, "PATCH", &item, json!({"steps": []})).await.0,
+        StatusCode::BAD_REQUEST,
+        "a patch is checked like a new service"
     );
 
     let (status, got) = call(&app, "GET", &item, Value::Null).await;

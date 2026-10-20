@@ -30,6 +30,11 @@ pub mod http;
 pub mod token;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod filter;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod rest;
+
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub use token::{jwt_session, AccessToken, JwtSession, JWT_COOKIE};
 
 #[cfg(all(feature = "axum", feature = "postgres"))]

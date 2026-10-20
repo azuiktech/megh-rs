@@ -21,8 +21,38 @@ pub struct Name(String);
     sanitize(with = |s: String| phonenumber::parse(None, &s).map_or(s, |n| n.format().mode(phonenumber::Mode::E164).to_string())),
     validate(predicate = |s: &str| phonenumber::parse(None, s).is_ok_and(|n| n.is_valid())),
     derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Serialize, Deserialize),
+    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
+    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
 )]
+#[cfg_attr(feature = "postgres", sqlx(transparent))]
 pub struct Phone(String);
+
+/// An email address, checked by `email_address`.
+#[nutype(
+    sanitize(trim),
+    validate(predicate = |s: &str| EmailAddress::is_valid(s)),
+    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Serialize, Deserialize),
+    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
+    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
+)]
+#[cfg_attr(feature = "postgres", sqlx(transparent))]
+pub struct Email(String);
+
+/// How many appointments fit at the same time; double booking is a capacity of 2.
+#[nutype(
+    validate(greater_or_equal = 1),
+    default = 1,
+    derive(Debug, Clone, Copy, PartialEq, Eq, Default, TryFrom, Into, Serialize, Deserialize),
+)]
+pub struct Capacity(i32);
+
+/// How many appointments may wait for a place.
+#[nutype(
+    validate(greater_or_equal = 0),
+    default = 0,
+    derive(Debug, Clone, Copy, PartialEq, Eq, Default, TryFrom, Into, Serialize, Deserialize),
+)]
+pub struct Waitlist(i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,9 +72,12 @@ pub struct Address {
     pub country: Country,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Columns of a person's contact, flattened into the table of the entity that has them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, crate::Table)]
+#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
+#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
 pub struct Contact {
-    pub email: Option<EmailAddress>,
+    pub email: Option<Email>,
     pub home_phone: Option<Phone>,
     pub work_phone: Option<Phone>,
     pub mobile_phone: Option<Phone>,

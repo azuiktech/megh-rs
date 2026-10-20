@@ -13,6 +13,7 @@ pub type Attributes = serde_json::Map<String, serde_json::Value>;
     sanitize(trim),
     validate(not_empty, len_char_max = 255),
     derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Serialize, Deserialize),
+    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
 )]
 pub struct Name(String);
 
@@ -55,20 +56,26 @@ pub struct Capacity(i32);
 pub struct Waitlist(i32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
+#[cfg_attr(feature = "postgres", sqlx(type_name = "text", rename_all = "snake_case"))]
+#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Gender {
     Male,
     Female,
     Other,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
 pub struct Address {
     pub line_1: Name,
     pub line_2: Option<Name>,
     pub city: Name,
     pub region: Name,
     pub postal_code: Name,
+    #[cfg_attr(feature = "axum", schema(value_type = String, example = "US"))]
     pub country: Country,
 }
 

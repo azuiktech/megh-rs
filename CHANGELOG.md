@@ -10,6 +10,8 @@ Format:
 ```
 
 ## 2026-10-20
+- Booking Service: table `services` keyed by `(org_id, id)` and routes under `/orgs/{org_id}/services`; setup, cleanup and step durations are ISO 8601 (`iso8601`), each step names up to two provider groups (`provider1`, `provider2`); `Input<T>` and PATCH check every value with `validator` before it is saved (PR #152, issue #151)
+- Booking Client: table `clients` keyed by `(org_id, id)` and routes under `/orgs/{org_id}/clients`; optional birth date, gender with `unknown` as default, address as one nullable JSON column (PR #150, issue #149)
 - Booking Provider: table `providers` keyed by `(org_id, id)` with nullable contact columns and routes under `/orgs/{org_id}/providers`; `Email` (checked by email_address) and `Phone` read straight from text columns; `#[derive(Table)]` adds the columns of `#[sqlx(flatten)]` fields; the CRUD SQL shared by entities lives in `megh::auth::crud` (PR #148, issue #147)
 - Booking Resource: table `resources` keyed by `(org_id, id)` and routes under `/orgs/{org_id}/resources` (list with AIP-160 filter and cursor paging, get, create, PUT, PATCH as JSON merge in one transaction, DELETE as soft delete), `megh::booking::{openapi, router}`, and `examples/booking.rs` serving the API with Scalar docs at `/docs`; `TableEntity::update` takes any executor, saving an `Entity` also writes `updated_at` (PR #146, issue #145)
 - Booking value types in `megh::booking::value`: `Attributes` (JSON object), `Name` and `Phone` (nutype; phone kept in E.164), `Gender`, `Address` (celes country), `Contact` (email_address), `Person`; none can be built invalid; the booking TPD (`docs/TPD-booking.md`) with its delivery plan (PR #142, issue #141)

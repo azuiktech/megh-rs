@@ -10,7 +10,7 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::value::Attributes;
+use super::value::{Attributes, Name};
 use crate::auth::crud;
 use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
 use crate::{Entity, Table};
@@ -30,9 +30,9 @@ pub struct Step {
 #[table(name = "services", keys = ["org_id", "id"])]
 pub struct ServiceData {
     pub org_id: Uuid,
-    #[validate(length(min = 1, max = 255))]
-    #[schema(example = "Tooth extraction")]
-    pub name: String,
+    #[sqlx(try_from = "String")]
+    #[schema(value_type = String, example = "Tooth extraction")]
+    pub name: Name,
     #[serde(default)]
     pub description: String,
     #[serde(default)]

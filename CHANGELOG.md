@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-20
+- Booking Schedule and Blockout: tables `schedules` and `blockouts` keyed by `(org_id, id)`, routes under `/orgs/{org_id}/schedules` and `/orgs/{org_id}/blockouts`; an rrule recurrence (DTSTART rule start, UNTIL/COUNT rule end) stored as a JSONB string, `starts_at`/`ends_at` as the window of each day, optional provider and resource (foreign keys) and a list of services; an unknown provider or resource is a 400; Service `name` is `Name` again (PR #155, issue #154)
 - Booking Service: table `services` keyed by `(org_id, id)` and routes under `/orgs/{org_id}/services`; setup, cleanup and step durations are ISO 8601 (`iso8601`), each step names up to two provider groups (`provider1`, `provider2`); `Input<T>` and PATCH check every value with `validator` before it is saved (PR #152, issue #151)
 - Booking Client: table `clients` keyed by `(org_id, id)` and routes under `/orgs/{org_id}/clients`; optional birth date, gender with `unknown` as default, address as one nullable JSON column (PR #150, issue #149)
 - Booking Provider: table `providers` keyed by `(org_id, id)` with nullable contact columns and routes under `/orgs/{org_id}/providers`; `Email` (checked by email_address) and `Phone` read straight from text columns; `#[derive(Table)]` adds the columns of `#[sqlx(flatten)]` fields; the CRUD SQL shared by entities lives in `megh::auth::crud` (PR #148, issue #147)

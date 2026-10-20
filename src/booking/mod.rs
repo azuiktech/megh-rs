@@ -2,11 +2,15 @@
 
 pub mod value;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod blockout;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod client;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod provider;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod resource;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod schedule;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod service;
 
@@ -50,5 +54,7 @@ mod api {
             .merge(super::provider::routes())
             .merge(super::client::routes())
             .merge(super::service::routes())
+            .merge(super::schedule::routes())
+            .merge(super::blockout::routes())
     }
 }

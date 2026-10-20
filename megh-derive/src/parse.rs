@@ -126,6 +126,9 @@ fn parse_field(field: &Field, rename_all: Option<&str>) -> Result<Option<ParsedC
                     name = Some(val.value());
                 } else if meta.path.is_ident("json") {
                     is_json = true;
+                    if meta.input.peek(syn::token::Paren) {
+                        meta.parse_nested_meta(|_| Ok(()))?;
+                    }
                 } else if meta.path.is_ident("default") {
                     has_default = true;
                 } else if meta.input.peek(syn::Token![=]) {

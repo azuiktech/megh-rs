@@ -25,7 +25,8 @@ fn phone_is_stored_in_e164_and_must_be_valid() {
 fn gender_is_snake_case_text() {
     assert_eq!(to_value(Gender::Female).unwrap(), json!("female"));
     assert_eq!(from_value::<Gender>(json!("other")).unwrap(), Gender::Other);
-    assert!(from_value::<Gender>(json!("unknown")).is_err());
+    assert_eq!(from_value::<Gender>(json!("unknown")).unwrap(), Gender::Unknown, "gender has an unknown value (spec change, 2026-10-20)");
+    assert!(from_value::<Gender>(json!("robot")).is_err());
 }
 
 #[test]

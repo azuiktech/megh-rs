@@ -24,6 +24,8 @@ pub use entity::{ColumnMeta, Entity, JsonText, Table, NOT_DELETED};
 #[cfg(feature = "postgres")]
 pub use entity::TableEntity;
 pub use megh_derive::Table;
+#[doc(hidden)]
+pub use constcat as __constcat;
 
 pub use auth::{
     build_authorization_url, AuthUrlOptions, BasicClient, BasicTokenResponse, BasicTokenType, ProviderClient,
@@ -79,6 +81,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     sqlx::raw_sql(include_str!("../migrations/0009_booking_resources.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0010_booking_providers.sql"))
         .execute(pool)
         .await?;
     Ok(())

@@ -30,6 +30,8 @@ pub mod http;
 pub mod token;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod crud;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod filter;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod rest;

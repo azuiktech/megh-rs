@@ -63,3 +63,19 @@ fn test_composite_key_and_sqlx_attributes() {
     assert!(update_cols.contains(&"payload"));
     assert!(update_cols.contains(&"status"));
 }
+
+#[derive(Debug, Serialize, Deserialize, Table)]
+#[table(name = "people", keys = ["id"])]
+struct PersonEntity {
+    id: i32,
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    contact: megh::booking::value::Contact,
+    name: String,
+}
+
+#[test]
+fn test_flattened_field_contributes_its_columns() {
+    let names: Vec<&str> = PersonEntity::COLUMNS.iter().map(|c| c.name).collect();
+    assert_eq!(names, ["id", "name", "email", "home_phone", "work_phone", "mobile_phone"]);
+}

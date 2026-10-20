@@ -16,6 +16,8 @@ pub struct TableConfig {
     pub table_name: String,
     pub primary_keys: Vec<String>,
     pub columns: Vec<ParsedColumn>,
+    /// Types of `#[sqlx(flatten)]` fields, whose own columns are part of this table.
+    pub flattened: Vec<syn::Type>,
 }
 
 impl TableConfig {
@@ -32,7 +34,8 @@ impl TableConfig {
         };
 
         let mut columns = Vec::new();
-        for field in fields {
+        let flattened = fields.iter().filter(|field| is_flattened(field)).map(|field| field.ty.clone()).collect();
+        for field in fields.iter().filter(|field| !is_flattened(field)) {
             if let Some(col) = parse_field(field, rename_all.as_deref())? {
                 if col.is_primary_key && !explicit_keys.contains(&col.name) {
                     explicit_keys.push(col.name.clone());
@@ -51,7 +54,7 @@ impl TableConfig {
             }
         }
 
-        Ok(TableConfig { table_name, primary_keys: explicit_keys, columns })
+        Ok(TableConfig { table_name, primary_keys: explicit_keys, columns, flattened })
     }
 }
 
@@ -89,6 +92,20 @@ fn parse_container_attrs(attrs: &[Attribute]) -> Result<(Option<String>, Vec<Str
         }
     }
     Ok((table_name, keys, rename_all))
+}
+
+fn is_flattened(field: &Field) -> bool {
+    field.attrs.iter().filter(|attr| attr.path().is_ident("sqlx")).any(|attr| {
+        let mut flatten = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            flatten |= meta.path.is_ident("flatten");
+            if meta.input.peek(syn::Token![=]) {
+                meta.value()?.parse::<syn::Expr>()?;
+            }
+            Ok(())
+        });
+        flatten
+    })
 }
 
 fn parse_field(field: &Field, rename_all: Option<&str>) -> Result<Option<ParsedColumn>, syn::Error> {

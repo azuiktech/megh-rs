@@ -26,20 +26,26 @@ pub fn generate_table_impl(ident: &Ident, config: &TableConfig) -> TokenStream {
         }
     });
 
+    let own = quote!(&[#(#col_defs),*]);
+    let flattened = &config.flattened;
+    let columns = if flattened.is_empty() {
+        own
+    } else {
+        quote!(#crate_path::__constcat::concat_slices!([#crate_path::ColumnMeta]: #own, #(<#flattened as #crate_path::Table>::COLUMNS),*))
+    };
+
     quote! {
         #[automatically_derived]
         impl #crate_path::Table for #ident {
             const TABLE_NAME: &'static str = #table_name;
             const PRIMARY_KEY: &'static [&'static str] = &[#(#pks),*];
-            const COLUMNS: &'static [#crate_path::ColumnMeta] = &[
-                #(#col_defs),*
-            ];
+            const COLUMNS: &'static [#crate_path::ColumnMeta] = #columns;
         }
     }
 }
 
 fn resolve_crate_path() -> TokenStream {
-    match std::env::var("CARGO_PKG_NAME").as_deref() {
+    match std::env::var("CARGO_CRATE_NAME").as_deref() {
         Ok("megh") => quote!(crate),
         _ => quote!(::megh),
     }

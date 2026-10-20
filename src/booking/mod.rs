@@ -2,6 +2,8 @@
 
 pub mod value;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod provider;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod resource;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
@@ -39,6 +41,8 @@ mod api {
 
     /// All booking routes, to be nested under a prefix such as `/api/v1`.
     pub fn router() -> OpenApiRouter<AppContext> {
-        OpenApiRouter::new().merge(super::resource::routes())
+        OpenApiRouter::new()
+            .merge(super::resource::routes())
+            .merge(super::provider::routes())
     }
 }

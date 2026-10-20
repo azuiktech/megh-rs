@@ -5,6 +5,7 @@ pub mod account;
 pub mod audit;
 pub mod auth;
 pub mod billing;
+pub mod booking;
 pub mod entity;
 pub mod event;
 pub mod money;

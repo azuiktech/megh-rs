@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-21
+- Booking reservations: table `reservations`, one row per place taken from a room, provider or client by an appointment (or, next, a hold), replacing `occupancies`; booking writes rows, cancel deletes them, `:book` and a move update them; slot search reads only its org's requested services, candidate providers and rooms, the schedules and blockouts that apply to them and their reservations in the range, checks open time by binary search, and returns the capacity left per party (PR #166, issue #165)
 - Booking: PATCH of `starts_at`, `ends_at`, `resource_id` or `provider_ids` moves a waitlisted, booked or confirmed appointment only when the booking check passes at the new time, room and providers; its occupancies are written again; client and service cannot change (PR #164, issue #163)
 - Booking fixes: `:book` moves a waitlisted appointment to booked only when a free place is left (same check and lock as booking); slot search start times are one room time apart (setup, client time and cleanup) so consecutive slots can share a room (PR #162, issue #161)
 - Booking: `POST /orgs/{org_id}/appointments` takes the appointment (booked or waitlist) and stores it, with the time it takes from each participant, only when the slot search's check passes for exactly that time, room and providers; one lock per org; 409 when the time is not open (PR #160, issue #158)

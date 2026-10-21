@@ -174,7 +174,7 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<AppointmentDat
     let taken = super::availability::fit(&mut transaction, &data, None).await?;
     let appointment = Entity::new(Uuid::now_v7(), AppointmentData { booked_at: Utc::now(), ..data });
     let saved = TableEntity::insert(&appointment, &mut *transaction).await?;
-    occupy(&mut transaction, &saved, &taken).await?;
+    reserve(&mut transaction, &saved, &taken).await?;
     transaction.commit().await?;
     Ok(saved)
 }
@@ -188,20 +188,32 @@ async fn lock(conn: &mut PgConnection, org_id: Uuid) -> ApiResult<()> {
     Ok(())
 }
 
-/// Stores the time the appointment takes from each participant.
-async fn occupy(conn: &mut PgConnection, appointment: &Appointment, taken: &[(Uuid, (DateTime<Utc>, DateTime<Utc>))]) -> ApiResult<()> {
+/// One reservation per place the appointment takes from each participant; a waitlisted one takes waitlist places.
+async fn reserve(conn: &mut PgConnection, appointment: &Appointment, taken: &[(Uuid, (DateTime<Utc>, DateTime<Utc>))]) -> ApiResult<()> {
     let (participants, starts, ends): (Vec<_>, Vec<_>, Vec<_>) = taken.iter().map(|(id, (start, end))| (*id, *start, *end)).multiunzip();
     sqlx::query(
-        "INSERT INTO occupancies (org_id, appointment_id, participant_id, during) \
-         SELECT $1, $2, participant, tstzrange(starts, ends) FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[]) AS t(participant, starts, ends)",
+        "INSERT INTO reservations (org_id, id, owner_id, participant_id, during, waitlist) \
+         SELECT $1, gen_random_uuid(), $2, participant, tstzrange(starts, ends), $6 \
+         FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[]) AS t(participant, starts, ends)",
     )
     .bind(appointment.data.org_id)
     .bind(appointment.id)
     .bind(participants)
     .bind(starts)
     .bind(ends)
+    .bind(appointment.data.status == Status::Waitlist)
     .execute(conn)
     .await?;
+    Ok(())
+}
+
+/// Gives back every place the appointment takes.
+async fn release(conn: &mut PgConnection, key: &Key) -> ApiResult<()> {
+    sqlx::query("DELETE FROM reservations WHERE org_id = $1 AND owner_id = $2")
+        .bind(key.org_id)
+        .bind(key.id)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
@@ -242,7 +254,7 @@ async fn patch(
 }
 
 /// A move: under the booking lock, the changed appointment must pass the booking check for its status,
-/// leaving out its own time; its occupancies are written again.
+/// leaving out its own time; its reservations are written again.
 async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
     let mut transaction = pool.begin().await?;
     lock(&mut transaction, body.key.org_id).await?;
@@ -261,12 +273,8 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
     moved.data.validate().map_err(|error| bad(error.to_string()))?;
     let taken = super::availability::fit(&mut transaction, &moved.data, Some(moved.id)).await?;
     let saved = TableEntity::update(&moved, &mut *transaction).await?;
-    sqlx::query("DELETE FROM occupancies WHERE org_id = $1 AND appointment_id = $2")
-        .bind(saved.data.org_id)
-        .bind(saved.id)
-        .execute(&mut *transaction)
-        .await?;
-    occupy(&mut transaction, &saved, &taken).await?;
+    release(&mut transaction, &body.key).await?;
+    reserve(&mut transaction, &saved, &taken).await?;
     transaction.commit().await?;
     Ok(saved)
 }
@@ -280,7 +288,11 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
     responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
-    change_status(&mut *ctx.pool.acquire().await?, &key, CANCEL, None).await
+    let mut transaction = ctx.pool.begin().await?;
+    let cancelled = change_status(&mut transaction, &key, CANCEL, None).await?;
+    release(&mut transaction, &key).await?;
+    transaction.commit().await?;
+    Ok(cancelled)
 }
 
 /// `:book` a waitlisted appointment when a free place is left for its time; `:confirm` a booked one;
@@ -321,6 +333,11 @@ async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
         super::availability::fit(&mut transaction, &booked, Some(waiting.id)).await?;
     }
     let booked = change_status(&mut transaction, &action.key, action.verb.transition(), action.payment.as_ref()).await?;
+    sqlx::query("UPDATE reservations SET waitlist = false WHERE org_id = $1 AND owner_id = $2")
+        .bind(action.key.org_id)
+        .bind(action.key.id)
+        .execute(&mut *transaction)
+        .await?;
     transaction.commit().await?;
     Ok(booked)
 }

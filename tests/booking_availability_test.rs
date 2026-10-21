@@ -1,5 +1,6 @@
 //! B9 (docs/TPD-booking.md): open slots. A slot is when every party's client, providers and room are free:
-//! inside a schedule, outside blockouts, with capacity (or only a waitlist place) left by stored occupancies.
+//! inside a schedule, outside blockouts, with capacity (or only a waitlist place) left by stored reservations,
+//! one row per place taken.
 //! A step's provider group matches a provider's role; `providers` and `resources` match fields, not attributes.
 //! Booking (`POST /appointments`) stores an appointment only when the same check passes, and stores its time.
 
@@ -106,7 +107,8 @@ impl Clinic {
         assert_eq!(status, StatusCode::OK, "{saved}");
     }
 
-    /// Time a stored appointment in `status` takes from `participant`, as booking will store it.
+    /// Time a stored appointment in `status` takes from `participant`, as booking stores it: one reservation
+    /// row per place, none once cancelled.
     async fn occupy(&self, status: &str, participant: &str, from: &str, to: &str) {
         let appointment: Uuid = sqlx::query_scalar(
             "INSERT INTO appointments (org_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
@@ -123,15 +125,22 @@ impl Clinic {
         .fetch_one(&self.pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO occupancies (org_id, appointment_id, participant_id, during) VALUES ($1, $2, $3::uuid, tstzrange($4::timestamptz, $5::timestamptz))")
-            .bind(self.org)
-            .bind(appointment)
-            .bind(participant)
-            .bind(from)
-            .bind(to)
-            .execute(&self.pool)
-            .await
-            .unwrap();
+        if status == "cancelled" {
+            return;
+        }
+        sqlx::query(
+            "INSERT INTO reservations (org_id, id, owner_id, participant_id, during, waitlist) \
+             VALUES ($1, gen_random_uuid(), $2, $3::uuid, tstzrange($4::timestamptz, $5::timestamptz), $6)",
+        )
+        .bind(self.org)
+        .bind(appointment)
+        .bind(participant)
+        .bind(from)
+        .bind(to)
+        .bind(status == "waitlist")
+        .execute(&self.pool)
+        .await
+        .unwrap();
     }
 }
 
@@ -163,7 +172,7 @@ async fn dental_slots_take_a_hygienist_a_dentist_and_the_room(pool: PgPool) {
         json!({
             "client": {"id": clinic.ada}, "service_id": clinic.extraction,
             "providers": [{"id": clinic.albert}, {"id": clinic.meera}], "resources": [{"id": clinic.room}],
-            "starts_at": at("09:10"), "ends_at": at("10:25"), "waitlist": false
+            "starts_at": at("09:10"), "ends_at": at("10:25"), "waitlist": false, "capacity": 1
         }),
         "one provider per role: dentist, then hygienist"
     );
@@ -318,7 +327,7 @@ async fn booking_stores_an_open_slot_and_takes_its_time(pool: PgPool) {
     let (status, booked) = clinic.book(extraction.clone()).await;
     assert_eq!((status, booked["status"].clone()), (StatusCode::OK, json!("booked")), "{booked}");
     assert!(booked["booked_at"].as_str().is_some_and(|at| !at.starts_with("1970")), "set by the server");
-    let stretches: i64 = sqlx::query_scalar("SELECT count(*) FROM occupancies WHERE appointment_id = $1::uuid")
+    let stretches: i64 = sqlx::query_scalar("SELECT count(*) FROM reservations WHERE owner_id = $1::uuid")
         .bind(booked["id"].as_str().unwrap())
         .fetch_one(&clinic.pool)
         .await
@@ -436,4 +445,39 @@ async fn patch_moves_an_appointment_only_to_an_open_time(pool: PgPool) {
 
     assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
     assert_eq!(patch(json!({"starts_at": at("13:00"), "ends_at": at("14:00")})).await.0, StatusCode::BAD_REQUEST, "a cancelled appointment does not move");
+}
+
+#[sqlx::test(migrations = false)]
+async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let (_, studio) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/resources", clinic.org), json!({"name": "Studio", "capacity": 2, "waitlist": 1})).await;
+    let studio = studio["id"].as_str().unwrap().to_string();
+    let search = json!({"from": at("09:00"), "to": at("10:00"),
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float, "resources": [{"id": studio}]}]});
+    let left = |found: &Value| {
+        let party = &found["slots"][0]["parties"][0];
+        (party["capacity"].clone(), party["waitlist"].clone())
+    };
+    let mut clients = Vec::new();
+    for name in ["Cy", "Di", "Ed"] {
+        let (_, client) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": name, "last_name": "X", "name": name})).await;
+        clients.push(client["id"].clone());
+    }
+    let class = |client: &Value, status: &str| {
+        let mut body = clinic.appointment(&clinic.float, &studio, &[], "09:00", "10:00", status);
+        body["client_id"] = client.clone();
+        body
+    };
+
+    assert_eq!(left(&clinic.search(search.clone()).await.1), (json!(2), json!(false)));
+    let (_, first) = clinic.book(class(&clients[0], "booked")).await;
+    assert_eq!(left(&clinic.search(search.clone()).await.1), (json!(1), json!(false)));
+    assert_eq!(clinic.book(class(&clients[1], "booked")).await.0, StatusCode::OK);
+    assert_eq!(left(&clinic.search(search.clone()).await.1), (json!(0), json!(true)), "full; the waitlist place is left");
+    assert_eq!(clinic.book(class(&clients[2], "waitlist")).await.0, StatusCode::OK);
+    assert_eq!(clinic.search(search.clone()).await.1["slots"], json!([]), "capacity and waitlist both taken");
+
+    let item = format!("/api/v1/orgs/{}/appointments/{}", clinic.org, first["id"].as_str().unwrap());
+    assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
+    assert_eq!(left(&clinic.search(search).await.1), (json!(1), json!(false)), "the cancel gave one place back");
 }

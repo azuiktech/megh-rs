@@ -2,6 +2,8 @@
 
 pub mod value;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod appointment;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod blockout;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod client;
@@ -15,10 +17,12 @@ pub mod schedule;
 pub mod service;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub use api::{openapi, router};
+pub use api::{openapi, rewrite_aip_136, router};
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 mod api {
+    use axum::extract::{OriginalUri, Request};
+    use axum::http::Uri;
     use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
     use axum_tower_sessions_csrf::TOKEN_HEADER;
     use utoipa::{Modify, OpenApi};
@@ -56,5 +60,26 @@ mod api {
             .merge(super::service::routes())
             .merge(super::schedule::routes())
             .merge(super::blockout::routes())
+            .merge(super::appointment::routes())
+    }
+
+    /// AIP-136 custom methods: routes `…/{id}:verb` as `…/{id}/:verb`, keeping the original URI for the authorizer.
+    ///
+    /// Wraps the whole app, as routing happens before any `Router::layer`:
+    /// `MapRequestLayer::new(megh::booking::rewrite_aip_136).layer(app)`.
+    pub fn rewrite_aip_136(mut request: Request) -> Request {
+        let original = request.uri().clone();
+        if let Some(uri) = custom_method_uri(&original) {
+            request.extensions_mut().get_or_insert_with(|| OriginalUri(original));
+            *request.uri_mut() = uri;
+        }
+        request
+    }
+
+    fn custom_method_uri(uri: &Uri) -> Option<Uri> {
+        let (parent, last) = uri.path().rsplit_once('/')?;
+        let (resource, verb) = last.split_once(':')?;
+        let query = uri.query().map(|query| format!("?{query}")).unwrap_or_default();
+        format!("{parent}/{resource}/:{verb}{query}").parse().ok()
     }
 }

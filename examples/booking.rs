@@ -13,6 +13,8 @@ use megh::auth::{jwt_session, CsrfMiddleware, JwtSession};
 use megh::{auth_router, authorizer, MeghAuthState};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
+use tower::Layer;
+use tower::util::MapRequestLayer;
 use tower_sessions::SessionManagerLayer;
 use tower_sessions_sqlx_store::PostgresStore;
 use utoipa_axum::router::OpenApiRouter;
@@ -40,9 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(basic_login_router(auth, "/auth/login"))
         .merge(Scalar::with_url("/docs", spec))
         .layer(SessionManagerLayer::new(sessions));
+    let app = MapRequestLayer::new(megh::booking::rewrite_aip_136).layer(app);
 
     let address = std::env::var("ADDRESS").unwrap_or_else(|_| "127.0.0.1:8080".into());
     println!("booking API on http://{address}, docs at http://{address}/docs");
-    axum::serve(TcpListener::bind(&address).await?, app).await?;
+    axum::serve(TcpListener::bind(&address).await?, axum::ServiceExt::into_make_service(app)).await?;
     Ok(())
 }

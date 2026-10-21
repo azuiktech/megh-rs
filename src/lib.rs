@@ -101,5 +101,8 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(include_str!("../migrations/0015_booking_availability.sql"))
         .execute(pool)
         .await?;
+    sqlx::raw_sql(include_str!("../migrations/0016_booking_reservations.sql"))
+        .execute(pool)
+        .await?;
     Ok(())
 }

@@ -18,7 +18,7 @@ use crate::{Entity, Table};
 /// A stretch of the client's time and the provider groups it needs (none, one or two).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, ToSchema)]
 pub struct Step {
-    #[schema(value_type = String, example = "PT15M")]
+    #[schema(value_type = String, format = Duration, example = "PT15M")]
     pub duration: Duration,
     #[validate(length(min = 1))]
     pub provider1: Option<String>,
@@ -28,6 +28,7 @@ pub struct Step {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "services", keys = ["org_id", "id"])]
+#[schema(example = json!({"name": "Tooth extraction", "setup": "PT10M", "cleanup": "PT10M", "steps": [{"duration": "PT15M", "provider1": "hygienist"}, {"duration": "PT45M", "provider1": "hygienist", "provider2": "dentist"}, {"duration": "PT15M", "provider1": "hygienist"}]}))]
 pub struct ServiceData {
     pub org_id: Uuid,
     #[sqlx(try_from = "String")]
@@ -37,11 +38,11 @@ pub struct ServiceData {
     pub description: String,
     #[serde(default)]
     #[sqlx(json)]
-    #[schema(value_type = String, example = "PT10M")]
+    #[schema(value_type = String, format = Duration, example = "PT10M")]
     pub setup: Duration,
     #[serde(default)]
     #[sqlx(json)]
-    #[schema(value_type = String, example = "PT10M")]
+    #[schema(value_type = String, format = Duration, example = "PT10M")]
     pub cleanup: Duration,
     #[validate(length(min = 1), nested)]
     #[sqlx(json)]
@@ -66,11 +67,11 @@ pub fn routes() -> OpenApiRouter<AppContext> {
     tag = "services",
     params(
         ("org_id" = Uuid, Path),
-        ("filter" = Option<String>, Query, description = "AIP-160 filter"),
+        ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`. Example: `role = \"hygienist\" AND capacity >= 2`."),
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = Page<Entity<Uuid, ServiceData>>)),
+    responses((status = 200, body = inline(Page<Entity<Uuid, ServiceData>>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -84,7 +85,7 @@ async fn list(
     path = "/orgs/{org_id}/services/{id}",
     tag = "services",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ServiceData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Service> {
     crud::get(&ctx.pool, &key).await
@@ -96,7 +97,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     tag = "services",
     params(("org_id" = Uuid, Path)),
     request_body = ServiceData,
-    responses((status = 200, body = Entity<Uuid, ServiceData>)),
+    responses((status = 200, body = inline(Entity<Uuid, ServiceData>))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
@@ -111,7 +112,7 @@ async fn create(
     tag = "services",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = ServiceData,
-    responses((status = 200, body = Entity<Uuid, ServiceData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
@@ -126,8 +127,8 @@ async fn replace(
     path = "/orgs/{org_id}/services/{id}",
     tag = "services",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = Object,
-    responses((status = 200, body = Entity<Uuid, ServiceData>), (status = 404)),
+    request_body(content = ServiceData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Service> {
     crud::patch(&ctx.pool, body).await
@@ -138,7 +139,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/orgs/{org_id}/services/{id}",
     tag = "services",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ServiceData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Service> {
     crud::delete(&ctx.pool, &key).await

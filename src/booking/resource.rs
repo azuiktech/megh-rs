@@ -15,6 +15,7 @@ use crate::{Entity, Table};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "resources", keys = ["org_id", "id"])]
+#[schema(example = json!({"name": "Room 1", "role": "operatory", "capacity": 1, "waitlist": 0, "attributes": {"sea_facing": true}}))]
 pub struct ResourceData {
     pub org_id: Uuid,
     #[sqlx(try_from = "String")]
@@ -53,11 +54,11 @@ pub fn routes() -> OpenApiRouter<AppContext> {
     tag = "resources",
     params(
         ("org_id" = Uuid, Path),
-        ("filter" = Option<String>, Query, description = "AIP-160 filter"),
+        ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`. Example: `role = \"hygienist\" AND capacity >= 2`."),
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = Page<Entity<Uuid, ResourceData>>)),
+    responses((status = 200, body = inline(Page<Entity<Uuid, ResourceData>>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -71,7 +72,7 @@ async fn list(
     path = "/orgs/{org_id}/resources/{id}",
     tag = "resources",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ResourceData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Resource> {
     crud::get(&ctx.pool, &key).await
@@ -83,7 +84,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     tag = "resources",
     params(("org_id" = Uuid, Path)),
     request_body = ResourceData,
-    responses((status = 200, body = Entity<Uuid, ResourceData>)),
+    responses((status = 200, body = inline(Entity<Uuid, ResourceData>))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
@@ -98,7 +99,7 @@ async fn create(
     tag = "resources",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = ResourceData,
-    responses((status = 200, body = Entity<Uuid, ResourceData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
@@ -113,8 +114,8 @@ async fn replace(
     path = "/orgs/{org_id}/resources/{id}",
     tag = "resources",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = Object,
-    responses((status = 200, body = Entity<Uuid, ResourceData>), (status = 404)),
+    request_body(content = ResourceData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Resource> {
     crud::patch(&ctx.pool, body).await
@@ -125,7 +126,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/orgs/{org_id}/resources/{id}",
     tag = "resources",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ResourceData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Resource> {
     crud::delete(&ctx.pool, &key).await

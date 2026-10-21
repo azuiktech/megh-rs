@@ -22,6 +22,9 @@ pub struct ResourceData {
     pub name: Name,
     #[serde(default)]
     pub description: String,
+    /// What it is, such as operatory; a service step names the role of the provider it needs.
+    #[schema(value_type = Option<String>, example = "operatory")]
+    pub role: Option<Name>,
     #[serde(default)]
     #[sqlx(try_from = "i32")]
     #[schema(value_type = i32, minimum = 1, default = 1)]

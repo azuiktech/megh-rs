@@ -54,7 +54,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
     tag = "resources",
     params(
         ("org_id" = Uuid, Path),
-        ("filter" = Option<String>, Query, description = "AIP-160 filter"),
+        ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`. Example: `role = \"hygienist\" AND capacity >= 2`."),
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
@@ -114,7 +114,7 @@ async fn replace(
     path = "/orgs/{org_id}/resources/{id}",
     tag = "resources",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = Object,
+    request_body(content = ResourceData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
     responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Resource> {

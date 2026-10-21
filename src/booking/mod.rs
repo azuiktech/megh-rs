@@ -27,13 +27,14 @@ pub use api::{openapi, rewrite_aip_136, router};
 mod api {
     use axum::extract::{OriginalUri, Request};
     use axum::http::Uri;
-    use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
+    use utoipa::openapi::path::Operation;
+    use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme};
     use axum_tower_sessions_csrf::TOKEN_HEADER;
     use utoipa::{Modify, OpenApi};
     use utoipa_axum::router::OpenApiRouter;
 
     use crate::auth::rest::AppContext;
-    use crate::auth::JWT_COOKIE;
+    use crate::auth::{JWT_COOKIE, request_grants};
 
     #[derive(OpenApi)]
     #[openapi(
@@ -69,9 +70,33 @@ mod api {
         Booking::openapi()
     }
 
-    /// All booking routes, to be nested under a prefix such as `/api/v1`.
+    /// Each route's grants, as the authorizer derives them from its path, in the session scheme's scopes; a
+    /// write also needs the CSRF token.
+    struct Granted;
+
+    impl Modify for Granted {
+        fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
+            api.paths.paths.iter_mut().for_each(|(path, item)| {
+                [("GET", &mut item.get), ("POST", &mut item.post), ("PUT", &mut item.put), ("PATCH", &mut item.patch), ("DELETE", &mut item.delete)]
+                    .into_iter()
+                    .for_each(|(method, operation)| operation.iter_mut().for_each(|operation| grant(operation, method, path)));
+            });
+        }
+    }
+
+    fn grant(operation: &mut Operation, method: &str, path: &str) {
+        let grants = request_grants(method, path, path).into_iter().map(|grant| grant.0);
+        let session = SecurityRequirement::new("session", grants);
+        let required = match method {
+            "GET" => session,
+            _ => session.add("csrf", Vec::<String>::new()),
+        };
+        operation.security = Some(vec![required]);
+    }
+
+    /// All booking routes, to be nested under a prefix such as `/api/v1`, each documented with its grants.
     pub fn router() -> OpenApiRouter<AppContext> {
-        OpenApiRouter::new()
+        let mut router = OpenApiRouter::new()
             .merge(super::resource::routes())
             .merge(super::provider::routes())
             .merge(super::client::routes())
@@ -80,7 +105,9 @@ mod api {
             .merge(super::blockout::routes())
             .merge(super::appointment::routes())
             .merge(super::availability::routes())
-            .merge(super::reservation::routes())
+            .merge(super::reservation::routes());
+        Granted.modify(router.get_openapi_mut());
+        router
     }
 
     /// AIP-136 custom methods on an item: routes `…/{id}:verb` as `…/{id}/:verb`, keeping the original URI for the

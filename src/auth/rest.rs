@@ -25,6 +25,8 @@ pub enum ApiError {
     NotFound,
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Conflict(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -38,6 +40,7 @@ impl IntoResponse for ApiError {
             Self::Database(sqlx::Error::Database(error)) if error.is_foreign_key_violation() => StatusCode::BAD_REQUEST,
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::Conflict(_) => StatusCode::CONFLICT,
         };
         (status, self.to_string()).into_response()
     }

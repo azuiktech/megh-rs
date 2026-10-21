@@ -133,8 +133,8 @@ async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
     assert_eq!(call(&app, "POST", &step(booked, "cancel"), json!({})).await.0, StatusCode::BAD_REQUEST, "not a custom method");
     assert_eq!(
         call(&app, "POST", &format!("/api/v1/orgs/{mine}/appointments"), json!({})).await.0,
-        StatusCode::METHOD_NOT_ALLOWED,
-        "appointments are created by booking"
+        StatusCode::BAD_REQUEST,
+        "booking takes the whole appointment"
     );
 }
 

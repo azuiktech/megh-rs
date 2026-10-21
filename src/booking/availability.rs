@@ -13,7 +13,7 @@ use itertools::Itertools;
 use rrule::{RRuleSet, Tz};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use sqlx::postgres::types::PgRange;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
@@ -21,7 +21,7 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
-use super::appointment::Status;
+use super::appointment::{AppointmentData, Status};
 use super::blockout::BlockoutData;
 use super::provider::ProviderData;
 use super::resource::ResourceData;
@@ -194,9 +194,9 @@ struct Calendar {
 }
 
 impl Calendar {
-    async fn load(pool: &PgPool, request: &Availability, window: Span) -> ApiResult<Self> {
+    async fn load(conn: &mut PgConnection, request: &Availability, window: Span) -> ApiResult<Self> {
         let horizon = (window.0 - TimeDelta::days(1), window.1 + TimeDelta::days(1));
-        let plans: HashMap<Uuid, Plan> = rows::<ServiceData>(pool, request.org_id)
+        let plans: HashMap<Uuid, Plan> = rows::<ServiceData>(conn, request.org_id)
             .await?
             .iter()
             .map(|service| (service.id, Plan::new(&service.data)))
@@ -204,14 +204,14 @@ impl Calendar {
         if let Some(party) = request.parties.iter().find(|party| !plans.contains_key(&party.service_id)) {
             return Err(ApiError::BadRequest(format!("no service {}", party.service_id)));
         }
-        let providers = rows::<ProviderData>(pool, request.org_id).await?;
-        let resources = rows::<ResourceData>(pool, request.org_id).await?;
+        let providers = rows::<ProviderData>(conn, request.org_id).await?;
+        let resources = rows::<ResourceData>(conn, request.org_id).await?;
         let (fields, limits) = described(&providers, &resources);
-        let schedules = rows::<ScheduleData>(pool, request.org_id).await?.into_iter().map(|s| {
+        let schedules = rows::<ScheduleData>(conn, request.org_id).await?.into_iter().map(|s| {
             let open = windows(&s.data.recurrence, s.data.starts_at, s.data.ends_at, horizon);
             (s.data, open)
         });
-        let blockouts = rows::<BlockoutData>(pool, request.org_id).await?.into_iter().map(|b| {
+        let blockouts = rows::<BlockoutData>(conn, request.org_id).await?.into_iter().map(|b| {
             let closed = windows(&b.data.recurrence, b.data.starts_at, b.data.ends_at, horizon);
             (b.data, closed)
         });
@@ -223,7 +223,7 @@ impl Calendar {
             limits,
             schedules: schedules.collect(),
             blockouts: blockouts.collect(),
-            taken: taken(pool, request.org_id, horizon).await?,
+            taken: taken(conn, request.org_id, horizon).await?,
         })
     }
 
@@ -262,8 +262,20 @@ impl Calendar {
             .collect()
     }
 
-    /// The time the party's client, room and crew take from `start`, if all are open and have a place.
-    fn place(&self, party: &Party, start: DateTime<Utc>, room: Uuid, crew: &[Uuid], held: &[(Who, Taken)]) -> Option<(bool, Vec<(Who, Taken)>)> {
+    /// `provider_ids` as a crew, one per role of the service in the service's order.
+    fn crew(&self, service: Uuid, provider_ids: &[Uuid]) -> Option<Vec<Uuid>> {
+        let roles = &self.plans[&service].roles;
+        let role_of = |id: &Uuid| self.providers.iter().find(|p| p.id == *id).and_then(|p| p.data.role.as_ref());
+        let crew = roles
+            .iter()
+            .map(|(role, _)| provider_ids.iter().copied().find(|id| role_of(id).is_some_and(|r| r.as_ref() == role)))
+            .collect::<Option<Vec<_>>>()?;
+        (crew.len() == provider_ids.len() && crew.iter().all_unique()).then_some(crew)
+    }
+
+    /// The time the party's client, room and crew take from `start`, if all are open and have a place of the
+    /// first of `waitlist` kinds that fits: a free place (`false`) or a waitlist place (`true`).
+    fn place(&self, party: &Party, start: DateTime<Utc>, room: Uuid, crew: &[Uuid], held: &[(Who, Taken)], waitlist: &[bool]) -> Option<(bool, Vec<(Who, Taken)>)> {
         let plan = &self.plans[&party.service_id];
         let client = (Who::from(&party.client), (start, start + plan.client));
         let room_span = (start + plan.room.0, start + plan.room.1);
@@ -281,7 +293,7 @@ impl Calendar {
         let has_place = |waitlist: bool| {
             others.iter().all(|(who, span)| self.busy(who, *span, held, Some(waitlist)) < self.limit(who, waitlist))
         };
-        let waitlist = [false, true].into_iter().find(|waitlist| has_place(*waitlist))?;
+        let waitlist = waitlist.iter().copied().find(|waitlist| has_place(*waitlist))?;
         let taken = once(client).chain(others).map(|(who, span)| (who, Taken { span, waitlist })).collect();
         Some((waitlist, taken))
     }
@@ -380,7 +392,7 @@ impl<'a> Search<'a> {
             .collect();
         let mut free_first = [false, true].into_iter().flat_map(|waitlist_allowed| options.iter().map(move |option| (waitlist_allowed, option)));
         free_first.find_map(|(waitlist_allowed, ((start, room), crew))| {
-            let (waitlist, taken) = self.calendar.place(party, *start, **room, crew, &held)?;
+            let (waitlist, taken) = self.calendar.place(party, *start, **room, crew, &held, &[false, true])?;
             (waitlist_allowed || !waitlist).then_some(())?;
             let next = self.placed(party, *start, **room, crew, waitlist);
             self.extend(first, placed.iter().cloned().chain(once(next)).collect(), held.iter().cloned().chain(taken).collect())
@@ -437,29 +449,62 @@ async fn available(State(ctx): State<AppContext>, Input(request): Input<Availabi
         return Err(ApiError::BadRequest(format!("{field} is not a field; attributes cannot be matched yet")));
     }
     let window = (request.from.to_utc(), request.to.to_utc());
-    let calendar = Calendar::load(&ctx.pool, &request, window).await?;
+    let mut conn = ctx.pool.acquire().await?;
+    let calendar = Calendar::load(&mut conn, &request, window).await?;
     let slots: Vec<Slot> = Search::new(&calendar, &request, window).slots().collect();
     let next_available_day = match slots.is_empty() {
-        true => next_available_day(&ctx.pool, &request, window.1).await?,
+        true => next_available_day(&mut conn, &request, window.1).await?,
         false => None,
     };
     Ok(Slots { slots, next_available_day })
 }
 
-async fn next_available_day(pool: &PgPool, request: &Availability, after: DateTime<Utc>) -> ApiResult<Option<NaiveDate>> {
+async fn next_available_day(conn: &mut PgConnection, request: &Availability, after: DateTime<Utc>) -> ApiResult<Option<NaiveDate>> {
     let window = (after, after + LOOK_AHEAD);
-    let calendar = Calendar::load(pool, request, window).await?;
+    let calendar = Calendar::load(conn, request, window).await?;
     let first = Search::new(&calendar, request, window).slots().next();
     Ok(first.map(|slot| slot.parties[0].starts_at.date_naive()))
 }
 
-async fn rows<T: Row>(pool: &PgPool, org_id: Uuid) -> ApiResult<Vec<Entity<Uuid, T>>> {
+/// The time `appointment` takes from each participant, read in the caller's transaction, if it fits as its
+/// status asks: `booked` needs a free place, `waitlist` a waitlist place.
+pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData) -> ApiResult<Vec<(Uuid, Span)>> {
+    let party = Party {
+        client: Client::Known { id: appointment.client_id },
+        service_id: appointment.service_id,
+        providers: Vec::new(),
+        resources: Vec::new(),
+    };
+    let request = Availability {
+        org_id: appointment.org_id,
+        from: appointment.starts_at.fixed_offset(),
+        to: appointment.ends_at.fixed_offset(),
+        parties: vec![party],
+        service_gap: Duration::default(),
+        client_gap: Duration::default(),
+    };
+    let calendar = Calendar::load(conn, &request, (appointment.starts_at, appointment.ends_at)).await?;
+    let bad = |reason: &str| ApiError::BadRequest(reason.to_string());
+    let length = calendar.plans[&appointment.service_id].client;
+    (appointment.starts_at + length == appointment.ends_at).then_some(()).ok_or_else(|| bad("ends_at must be starts_at plus the service's time"))?;
+    let crew = calendar.crew(appointment.service_id, &appointment.provider_ids).ok_or_else(|| bad("provider_ids must be one provider per role of the service"))?;
+    let waitlist = appointment.status == Status::Waitlist;
+    let (_, taken) = calendar
+        .place(&request.parties[0], appointment.starts_at, appointment.resource_id, &crew, &[], &[waitlist])
+        .ok_or_else(|| ApiError::Conflict(format!("the time is not open for a {:?} appointment", appointment.status)))?;
+    Ok(taken.into_iter().filter_map(|(who, taken)| match who {
+        Who::Id(id) => Some((id, taken.span)),
+        Who::Tag(_) => None,
+    }).collect())
+}
+
+async fn rows<T: Row>(conn: &mut PgConnection, org_id: Uuid) -> ApiResult<Vec<Entity<Uuid, T>>> {
     let query = format!("SELECT * FROM {} WHERE org_id = $1 AND deleted_at IS NULL ORDER BY id", T::TABLE_NAME);
-    Ok(sqlx::query_as(&query).bind(org_id).fetch_all(pool).await?)
+    Ok(sqlx::query_as(&query).bind(org_id).fetch_all(conn).await?)
 }
 
 /// The time stored appointments take, by participant, overlapping `horizon`.
-async fn taken(pool: &PgPool, org_id: Uuid, horizon: Span) -> ApiResult<HashMap<Uuid, Vec<Taken>>> {
+async fn taken(conn: &mut PgConnection, org_id: Uuid, horizon: Span) -> ApiResult<HashMap<Uuid, Vec<Taken>>> {
     let rows: Vec<(Uuid, PgRange<DateTime<Utc>>, Status)> = sqlx::query_as(
         "SELECT o.participant_id, o.during, a.status FROM occupancies o \
          JOIN appointments a ON a.org_id = o.org_id AND a.id = o.appointment_id \
@@ -468,7 +513,7 @@ async fn taken(pool: &PgPool, org_id: Uuid, horizon: Span) -> ApiResult<HashMap<
     )
     .bind(org_id)
     .bind(PgRange::from(horizon.0..horizon.1))
-    .fetch_all(pool)
+    .fetch_all(conn)
     .await?;
     Ok(rows
         .into_iter()

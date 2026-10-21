@@ -1,13 +1,14 @@
 //! Appointment: one client, one service, one room and zero or more providers for the client's time.
 //!
-//! Its status moves only through `:book`, `:confirm`, `:complete` (AIP-136) and DELETE, which cancels.
-//! Appointments are created by booking (availability search and reservations), not by a create route.
+//! Booking creates it only when its time is open (the check of the slot search). Its status then moves only
+//! through `:book`, `:confirm`, `:complete` (AIP-136) and DELETE, which cancels.
 
 use axum::extract::State;
 use axum::routing::post;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use itertools::Itertools;
+use sqlx::{PgConnection, PgPool};
 use sqlx::types::Json;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
@@ -18,7 +19,7 @@ use validator::{Validate, ValidationError};
 use super::value::{Attributes, Name};
 use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
-use crate::{Entity, Table};
+use crate::{Entity, Table, TableEntity};
 
 /// Who pays and how: card, cash, a pass, a voucher, insurance; the details go in `attributes`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, ToSchema)]
@@ -127,7 +128,7 @@ struct Actions;
 
 pub fn routes() -> OpenApiRouter<AppContext> {
     OpenApiRouter::with_openapi(Actions::openapi())
-        .routes(routes!(list))
+        .routes(routes!(list, create))
         .routes(routes!(get, patch, delete))
         .route("/orgs/{org_id}/appointments/{id}/{verb}", post(act))
 }
@@ -149,6 +150,51 @@ async fn list(
     Input(request): Input<ListRequest>,
 ) -> ApiResult<Page<Appointment>> {
     crud::list(&ctx.pool, &request).await
+}
+
+/// Book: stored only if its time is open, with a free place for `booked` or a waitlist place for `waitlist`.
+/// Checked and written under one lock per org, so two bookings cannot take the same place.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org_id}/appointments",
+    tag = "appointments",
+    params(("org_id" = Uuid, Path)),
+    request_body = AppointmentData,
+    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 409)),
+)]
+async fn create(State(ctx): State<AppContext>, Input(data): Input<AppointmentData>) -> ApiResult<Appointment> {
+    [Status::Booked, Status::Waitlist]
+        .contains(&data.status)
+        .then_some(())
+        .ok_or_else(|| ApiError::BadRequest("a new appointment is booked or waitlist".to_string()))?;
+    let mut transaction = ctx.pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+        .bind(data.org_id)
+        .execute(&mut *transaction)
+        .await?;
+    let taken = super::availability::fit(&mut transaction, &data).await?;
+    let appointment = Entity::new(Uuid::now_v7(), AppointmentData { booked_at: Utc::now(), ..data });
+    let saved = TableEntity::insert(&appointment, &mut *transaction).await?;
+    occupy(&mut transaction, &saved, &taken).await?;
+    transaction.commit().await?;
+    Ok(saved)
+}
+
+/// Stores the time the appointment takes from each participant.
+async fn occupy(conn: &mut PgConnection, appointment: &Appointment, taken: &[(Uuid, (DateTime<Utc>, DateTime<Utc>))]) -> ApiResult<()> {
+    let (participants, starts, ends): (Vec<_>, Vec<_>, Vec<_>) = taken.iter().map(|(id, (start, end))| (*id, *start, *end)).multiunzip();
+    sqlx::query(
+        "INSERT INTO occupancies (org_id, appointment_id, participant_id, during) \
+         SELECT $1, $2, participant, tstzrange(starts, ends) FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[]) AS t(participant, starts, ends)",
+    )
+    .bind(appointment.data.org_id)
+    .bind(appointment.id)
+    .bind(participants)
+    .bind(starts)
+    .bind(ends)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 #[utoipa::path(

@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-21
+- Booking OpenAPI: responses inlined instead of generic models; durations marked `format: duration`; each route lists the grants it needs (from `request_grants`); PATCH bodies are the entity data; filter, API, tag descriptions and create examples (PR #170, issue #169)
 - Booking holds: `POST /orgs/{org_id}/reservations` holds a slot's places for 10 minutes, checked like a booking; `DELETE /orgs/{org_id}/reservations/{id}` releases; booking with `reservation_id` takes the hold's places; `POST /orgs/{org_id}/reservations:purge` deletes expired holds and past places (PR #168, issue #167)
 - Booking reservations: table `reservations`, one row per place taken from a room, provider or client by an appointment (or, next, a hold), replacing `occupancies`; booking writes rows, cancel deletes them, `:book` and a move update them; slot search reads only its org's requested services, candidate providers and rooms, the schedules and blockouts that apply to them and their reservations in the range, checks open time by binary search, and returns the capacity left per party (PR #166, issue #165)
 - Booking: PATCH of `starts_at`, `ends_at`, `resource_id` or `provider_ids` moves a waitlisted, booked or confirmed appointment only when the booking check passes at the new time, room and providers; its occupancies are written again; client and service cannot change (PR #164, issue #163)

@@ -19,6 +19,7 @@ use crate::{Entity, Table};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "blockouts", keys = ["org_id", "id"])]
 #[validate(schema(function = "ends_after_start"))]
+#[schema(example = json!({"name": "Lunch", "recurrence": "DTSTART;TZID=Asia/Kolkata:20261023T000000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE", "starts_at": "13:00:00", "ends_at": "14:00:00", "reason": "lunch break"}))]
 pub struct BlockoutData {
     pub org_id: Uuid,
     #[sqlx(try_from = "String")]
@@ -72,7 +73,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = Page<Entity<Uuid, BlockoutData>>)),
+    responses((status = 200, body = inline(Page<Entity<Uuid, BlockoutData>>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -86,7 +87,7 @@ async fn list(
     path = "/orgs/{org_id}/blockouts/{id}",
     tag = "blockouts",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, BlockoutData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Blockout> {
     crud::get(&ctx.pool, &key).await
@@ -98,7 +99,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     tag = "blockouts",
     params(("org_id" = Uuid, Path)),
     request_body = BlockoutData,
-    responses((status = 200, body = Entity<Uuid, BlockoutData>)),
+    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
@@ -113,7 +114,7 @@ async fn create(
     tag = "blockouts",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = BlockoutData,
-    responses((status = 200, body = Entity<Uuid, BlockoutData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
@@ -129,7 +130,7 @@ async fn replace(
     tag = "blockouts",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = Entity<Uuid, BlockoutData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Blockout> {
     crud::patch(&ctx.pool, body).await
@@ -140,7 +141,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/orgs/{org_id}/blockouts/{id}",
     tag = "blockouts",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, BlockoutData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Blockout> {
     crud::delete(&ctx.pool, &key).await

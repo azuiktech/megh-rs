@@ -19,6 +19,7 @@ use crate::{Entity, Table};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "schedules", keys = ["org_id", "id"])]
 #[validate(schema(function = "ends_after_start"))]
+#[schema(example = json!({"name": "Clinic hours", "recurrence": "DTSTART;TZID=Asia/Kolkata:20261023T000000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261230T235959Z", "starts_at": "09:00:00", "ends_at": "16:00:00"}))]
 pub struct ScheduleData {
     pub org_id: Uuid,
     #[sqlx(try_from = "String")]
@@ -70,7 +71,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = Page<Entity<Uuid, ScheduleData>>)),
+    responses((status = 200, body = inline(Page<Entity<Uuid, ScheduleData>>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -84,7 +85,7 @@ async fn list(
     path = "/orgs/{org_id}/schedules/{id}",
     tag = "schedules",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ScheduleData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Schedule> {
     crud::get(&ctx.pool, &key).await
@@ -96,7 +97,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     tag = "schedules",
     params(("org_id" = Uuid, Path)),
     request_body = ScheduleData,
-    responses((status = 200, body = Entity<Uuid, ScheduleData>)),
+    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
@@ -111,7 +112,7 @@ async fn create(
     tag = "schedules",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = ScheduleData,
-    responses((status = 200, body = Entity<Uuid, ScheduleData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
@@ -127,7 +128,7 @@ async fn replace(
     tag = "schedules",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = Entity<Uuid, ScheduleData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Schedule> {
     crud::patch(&ctx.pool, body).await
@@ -138,7 +139,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/orgs/{org_id}/schedules/{id}",
     tag = "schedules",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ScheduleData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Schedule> {
     crud::delete(&ctx.pool, &key).await

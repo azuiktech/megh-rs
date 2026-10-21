@@ -36,7 +36,21 @@ mod api {
     use crate::auth::JWT_COOKIE;
 
     #[derive(OpenApi)]
-    #[openapi(info(title = "megh booking", description = "Booking API of an org."), modifiers(&SignedIn), security(("session" = [], "csrf" = [])))]
+    #[openapi(
+        info(title = "megh booking", description = include_str!("openapi.md")),
+        tags(
+            (name = "resources", description = "Rooms, chairs, seats, tables, pods: what an appointment takes up. `capacity` is how many at once, `waitlist` how many may wait."),
+            (name = "providers", description = "The people an appointment is with. A service step names the `role` it needs."),
+            (name = "clients", description = "Whom an appointment is for: a person or a pet."),
+            (name = "services", description = "What is booked: setup and cleanup take only the room; each step takes the client and up to two provider roles."),
+            (name = "schedules", description = "Open time: the days a recurrence gives, from `starts_at` to `ends_at`, for a provider, a room and services, or any when left out."),
+            (name = "blockouts", description = "Time taken out of the schedules: holidays, lunch, a broken instrument."),
+            (name = "appointments", description = "Booked time of one client, one service, one room and its providers. Status moves through `:book`, `:confirm`, `:complete`, and DELETE cancels."),
+            (name = "reservations", description = "Holds: a slot's places kept for 10 minutes while it is being booked; not an appointment."),
+        ),
+        modifiers(&SignedIn),
+        security(("session" = [], "csrf" = [])),
+    )]
     struct Booking;
 
     /// Every route needs the signed-in user's token, kept in the `jwt_token` cookie; writes also need the CSRF token.

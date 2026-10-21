@@ -34,6 +34,7 @@ use crate::{Entity, Table};
 /// What to find room for: each party is one client wanting one service.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 #[validate(schema(function = "to_after_from"))]
+#[schema(example = json!({"from": "2026-10-26T09:00:00+05:30", "to": "2026-10-26T18:00:00+05:30", "parties": [{"client": {"id": "01a15d4f-446c-711b-8ef2-4634de693900"}, "service_id": "01a15d4f-448f-755a-85d6-3f42464b40df", "providers": [{"role": "dentist"}], "resources": [{"role": "operatory"}]}], "service_gap": "PT15M", "client_gap": "PT0S"}))]
 pub struct Availability {
     pub org_id: Uuid,
     pub from: DateTime<FixedOffset>,
@@ -42,11 +43,11 @@ pub struct Availability {
     pub parties: Vec<Party>,
     /// The longest gap between one client's appointments; zero: back to back.
     #[serde(default)]
-    #[schema(value_type = String, example = "PT15M")]
+    #[schema(value_type = String, format = Duration, example = "PT15M")]
     pub service_gap: Duration,
     /// The longest gap between different clients' start times; zero: together.
     #[serde(default)]
-    #[schema(value_type = String, example = "PT30M")]
+    #[schema(value_type = String, format = Duration, example = "PT30M")]
     pub client_gap: Duration,
 }
 

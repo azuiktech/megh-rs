@@ -16,6 +16,7 @@ use crate::{Entity, Table};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "clients", keys = ["org_id", "id"])]
+#[schema(example = json!({"first_name": "Ada", "last_name": "Lovelace", "name": "Ada", "gender": "female", "birth_date": "1990-12-10", "email": "ada@example.com"}))]
 pub struct ClientData {
     pub org_id: Uuid,
     #[sqlx(try_from = "String")]
@@ -62,7 +63,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = Page<Entity<Uuid, ClientData>>)),
+    responses((status = 200, body = inline(Page<Entity<Uuid, ClientData>>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -76,7 +77,7 @@ async fn list(
     path = "/orgs/{org_id}/clients/{id}",
     tag = "clients",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ClientData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Client> {
     crud::get(&ctx.pool, &key).await
@@ -88,7 +89,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     tag = "clients",
     params(("org_id" = Uuid, Path)),
     request_body = ClientData,
-    responses((status = 200, body = Entity<Uuid, ClientData>)),
+    responses((status = 200, body = inline(Entity<Uuid, ClientData>))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
@@ -103,7 +104,7 @@ async fn create(
     tag = "clients",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = ClientData,
-    responses((status = 200, body = Entity<Uuid, ClientData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
@@ -119,7 +120,7 @@ async fn replace(
     tag = "clients",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = Entity<Uuid, ClientData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Client> {
     crud::patch(&ctx.pool, body).await
@@ -130,7 +131,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/orgs/{org_id}/clients/{id}",
     tag = "clients",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, ClientData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Client> {
     crud::delete(&ctx.pool, &key).await

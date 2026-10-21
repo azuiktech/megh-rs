@@ -84,6 +84,7 @@ fn ends_after_start(appointment: &AppointmentData) -> Result<(), ValidationError
 
 /// A booking: the appointment, and the hold it takes its places from, if any.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
+#[schema(example = json!({"client_id": "01a15d4f-446c-711b-8ef2-4634de693900", "service_id": "01a15d4f-448f-755a-85d6-3f42464b40df", "resource_id": "01a15d4f-4455-7343-a146-5f04bee09dca", "provider_ids": [], "starts_at": "2026-10-26T09:00:00+05:30", "ends_at": "2026-10-26T10:00:00+05:30", "status": "booked", "payment": {"payer_id": "01a15d4f-446c-711b-8ef2-4634de693900", "method": "card"}, "reservation_id": null}))]
 pub struct Booking {
     #[serde(flatten)]
     #[validate(nested)]
@@ -155,7 +156,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = Page<Entity<Uuid, AppointmentData>>)),
+    responses((status = 200, body = inline(Page<Entity<Uuid, AppointmentData>>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -173,7 +174,7 @@ async fn list(
     tag = "appointments",
     params(("org_id" = Uuid, Path)),
     request_body = Booking,
-    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 409)),
+    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 409)),
 )]
 async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -> ApiResult<Appointment> {
     let data = booking.appointment;
@@ -199,7 +200,7 @@ async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -
     path = "/orgs/{org_id}/appointments/{id}",
     tag = "appointments",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
     crud::get(&ctx.pool, &key).await
@@ -213,7 +214,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     tag = "appointments",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(
     State(ctx): State<AppContext>,
@@ -262,7 +263,7 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
     path = "/orgs/{org_id}/appointments/{id}",
     tag = "appointments",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404)),
+    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
     let mut transaction = ctx.pool.begin().await?;
@@ -284,7 +285,7 @@ async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiRes
         ("verb" = String, Path, description = "book, confirm or complete"),
     ),
     request_body(content = Object, description = "`{\"payment\": Payment}` to replace the payment, or `{}`"),
-    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn act(State(ctx): State<AppContext>, Input(action): Input<Action>) -> ApiResult<Appointment> {
     match action.verb {

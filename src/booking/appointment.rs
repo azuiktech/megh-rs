@@ -7,7 +7,6 @@ use axum::extract::State;
 use axum::routing::post;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use itertools::Itertools;
 use sqlx::{PgConnection, PgPool};
 use sqlx::types::Json;
 use utoipa::{OpenApi, ToSchema};
@@ -16,6 +15,8 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
+use super::availability::fit;
+use super::reservation::{claim, give_back, lock, take};
 use super::value::{Attributes, Name};
 use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
@@ -79,6 +80,15 @@ fn ends_after_start(appointment: &AppointmentData) -> Result<(), ValidationError
     (appointment.starts_at < appointment.ends_at)
         .then_some(())
         .ok_or_else(|| ValidationError::new("ends_at must be after starts_at"))
+}
+
+/// A booking: the appointment, and the hold it takes its places from, if any.
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct Booking {
+    #[serde(flatten)]
+    #[validate(nested)]
+    pub appointment: AppointmentData,
+    pub reservation_id: Option<Uuid>,
 }
 
 /// The custom methods; the path segment is `:book`, `:confirm` or `:complete`.
@@ -154,67 +164,34 @@ async fn list(
     crud::list(&ctx.pool, &request).await
 }
 
-/// Book: stored only if its time is open, with a free place for `booked` or a waitlist place for `waitlist`.
-/// Checked and written under one lock per org, so two bookings cannot take the same place.
+/// Book: stored only if its time is open, with a free place for `booked` or a waitlist place for `waitlist`;
+/// with `reservation_id`, from that hold's places. Checked and written under one lock per org, so two bookings
+/// cannot take the same place.
 #[utoipa::path(
     post,
     path = "/orgs/{org_id}/appointments",
     tag = "appointments",
     params(("org_id" = Uuid, Path)),
-    request_body = AppointmentData,
+    request_body = Booking,
     responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 409)),
 )]
-async fn create(State(ctx): State<AppContext>, Input(data): Input<AppointmentData>) -> ApiResult<Appointment> {
+async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -> ApiResult<Appointment> {
+    let data = booking.appointment;
     [Status::Booked, Status::Waitlist]
         .contains(&data.status)
         .then_some(())
         .ok_or_else(|| ApiError::BadRequest("a new appointment is booked or waitlist".to_string()))?;
     let mut transaction = ctx.pool.begin().await?;
     lock(&mut transaction, data.org_id).await?;
-    let taken = super::availability::fit(&mut transaction, &data, None).await?;
+    let places = fit(&mut transaction, &data, booking.reservation_id).await?;
+    if let Some(hold) = booking.reservation_id {
+        claim(&mut transaction, data.org_id, hold, &places).await?;
+    }
     let appointment = Entity::new(Uuid::now_v7(), AppointmentData { booked_at: Utc::now(), ..data });
     let saved = TableEntity::insert(&appointment, &mut *transaction).await?;
-    reserve(&mut transaction, &saved, &taken).await?;
+    take(&mut transaction, saved.data.org_id, saved.id, &places, None).await?;
     transaction.commit().await?;
     Ok(saved)
-}
-
-/// Bookings of one org wait for each other until their transaction ends, so two cannot take one place.
-async fn lock(conn: &mut PgConnection, org_id: Uuid) -> ApiResult<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
-        .bind(org_id)
-        .execute(conn)
-        .await?;
-    Ok(())
-}
-
-/// One reservation per place the appointment takes from each participant; a waitlisted one takes waitlist places.
-async fn reserve(conn: &mut PgConnection, appointment: &Appointment, taken: &[(Uuid, (DateTime<Utc>, DateTime<Utc>))]) -> ApiResult<()> {
-    let (participants, starts, ends): (Vec<_>, Vec<_>, Vec<_>) = taken.iter().map(|(id, (start, end))| (*id, *start, *end)).multiunzip();
-    sqlx::query(
-        "INSERT INTO reservations (org_id, id, owner_id, participant_id, during, waitlist) \
-         SELECT $1, gen_random_uuid(), $2, participant, tstzrange(starts, ends), $6 \
-         FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[]) AS t(participant, starts, ends)",
-    )
-    .bind(appointment.data.org_id)
-    .bind(appointment.id)
-    .bind(participants)
-    .bind(starts)
-    .bind(ends)
-    .bind(appointment.data.status == Status::Waitlist)
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-/// Gives back every place the appointment takes.
-async fn release(conn: &mut PgConnection, key: &Key) -> ApiResult<()> {
-    sqlx::query("DELETE FROM reservations WHERE org_id = $1 AND owner_id = $2")
-        .bind(key.org_id)
-        .bind(key.id)
-        .execute(conn)
-        .await?;
-    Ok(())
 }
 
 #[utoipa::path(
@@ -271,10 +248,10 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
         .ok_or_else(|| bad(format!("a {:?} appointment cannot move", current.data.status)))?;
     let moved = current.patch(&body.changes.into()).map_err(|error| bad(error.to_string()))?;
     moved.data.validate().map_err(|error| bad(error.to_string()))?;
-    let taken = super::availability::fit(&mut transaction, &moved.data, Some(moved.id)).await?;
+    let places = fit(&mut transaction, &moved.data, Some(moved.id)).await?;
     let saved = TableEntity::update(&moved, &mut *transaction).await?;
-    release(&mut transaction, &body.key).await?;
-    reserve(&mut transaction, &saved, &taken).await?;
+    give_back(&mut transaction, body.key.org_id, body.key.id).await?;
+    take(&mut transaction, saved.data.org_id, saved.id, &places, None).await?;
     transaction.commit().await?;
     Ok(saved)
 }
@@ -290,7 +267,7 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
     let mut transaction = ctx.pool.begin().await?;
     let cancelled = change_status(&mut transaction, &key, CANCEL, None).await?;
-    release(&mut transaction, &key).await?;
+    give_back(&mut transaction, key.org_id, key.id).await?;
     transaction.commit().await?;
     Ok(cancelled)
 }
@@ -330,7 +307,7 @@ async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
     .await?;
     if let Some(waiting) = waiting {
         let booked = AppointmentData { status: Status::Booked, ..waiting.data };
-        super::availability::fit(&mut transaction, &booked, Some(waiting.id)).await?;
+        fit(&mut transaction, &booked, Some(waiting.id)).await?;
     }
     let booked = change_status(&mut transaction, &action.key, action.verb.transition(), action.payment.as_ref()).await?;
     sqlx::query("UPDATE reservations SET waitlist = false WHERE org_id = $1 AND owner_id = $2")

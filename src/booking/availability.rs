@@ -82,13 +82,13 @@ pub struct Slots {
     pub next_available_day: Option<NaiveDate>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct Slot {
     pub parties: Vec<Placed>,
 }
 
 /// A party with its providers, room and time filled in.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Placed {
     pub client: Client,
     pub service_id: Uuid,
@@ -99,10 +99,11 @@ pub struct Placed {
     /// Only a waitlist place is free.
     pub waitlist: bool,
     /// Free places left at this time: the fewest among the room and providers.
+    #[serde(default)]
     pub capacity: i32,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
 pub struct Id {
     pub id: Uuid,
 }
@@ -332,6 +333,19 @@ impl Calendar {
             .collect()
     }
 
+    /// Whether `placed` still fits as given, after the places `held`.
+    fn check(&self, party: &Party, placed: &Placed, held: &[(Who, Taken)]) -> ApiResult<Fit> {
+        let bad = |reason: &str| ApiError::BadRequest(reason.to_string());
+        let start = placed.starts_at.to_utc();
+        let length = self.plans[&party.service_id].client;
+        (start + length == placed.ends_at.to_utc()).then_some(()).ok_or_else(|| bad("ends_at must be starts_at plus the service's time"))?;
+        let provider_ids: Vec<Uuid> = placed.providers.iter().map(|provider| provider.id).collect();
+        let crew = self.crew(party.service_id, &provider_ids).ok_or_else(|| bad("providers must be one per role of the service"))?;
+        let room = placed.resources[0].id;
+        self.place(party, start, room, &crew, held, &[placed.waitlist])
+            .ok_or_else(|| ApiError::Conflict(format!("the time is not open for a {} place", if placed.waitlist { "waitlist" } else { "free" })))
+    }
+
     /// `provider_ids` as a crew, one per role of the service in the service's order.
     fn crew(&self, service: Uuid, provider_ids: &[Uuid]) -> Option<Vec<Uuid>> {
         let roles = &self.plans[&service].roles;
@@ -517,37 +531,65 @@ async fn next_available_day(conn: &mut PgConnection, request: &Availability, aft
     Ok(first.map(|slot| slot.parties[0].starts_at.date_naive()))
 }
 
-/// The time `appointment` takes from each participant, read in the caller's transaction, if it fits as its
-/// status asks: `booked` needs a free place, `waitlist` a waitlist place.
-/// `except` leaves out the time of the appointment being booked again.
-pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData, except: Option<Uuid>) -> ApiResult<Vec<(Uuid, Span)>> {
-    let party = Party {
+/// One place taken: the participant, when, and whether it is a waitlist place.
+pub(super) type Place = (Uuid, Span, bool);
+
+/// The places `appointment` takes, read in the caller's transaction, if it fits as its status asks: `booked`
+/// needs a free place, `waitlist` a waitlist place. `except` leaves out the places of the appointment being
+/// booked again, or of the hold it is booked from.
+pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData, except: Option<Uuid>) -> ApiResult<Vec<Place>> {
+    let party = Placed {
         client: Client::Known { id: appointment.client_id },
         service_id: appointment.service_id,
-        providers: Vec::new(),
-        resources: Vec::new(),
+        providers: appointment.provider_ids.iter().map(|id| Id { id: *id }).collect(),
+        resources: vec![Id { id: appointment.resource_id }],
+        starts_at: appointment.starts_at.fixed_offset(),
+        ends_at: appointment.ends_at.fixed_offset(),
+        waitlist: appointment.status == Status::Waitlist,
+        capacity: 0,
     };
+    fit_slot(conn, appointment.org_id, &[party], except).await
+}
+
+/// The places a slot's parties take, if each still fits as given (a free place, or a waitlist place when
+/// `waitlist`), counting the parties before it.
+pub(super) async fn fit_slot(conn: &mut PgConnection, org_id: Uuid, parties: &[Placed], except: Option<Uuid>) -> ApiResult<Vec<Place>> {
+    let bad = |reason: &str| ApiError::BadRequest(reason.to_string());
+    let from = parties.iter().map(|placed| placed.starts_at).min().ok_or_else(|| bad("a slot has parties"))?;
+    let to = parties.iter().map(|placed| placed.ends_at).max().ok_or_else(|| bad("a slot has parties"))?;
     let request = Availability {
-        org_id: appointment.org_id,
-        from: appointment.starts_at.fixed_offset(),
-        to: appointment.ends_at.fixed_offset(),
-        parties: vec![party],
+        org_id,
+        from,
+        to,
+        parties: parties.iter().map(searched).collect::<ApiResult<_>>()?,
         service_gap: Duration::default(),
         client_gap: Duration::default(),
     };
-    let calendar = Calendar::load(conn, &request, (appointment.starts_at, appointment.ends_at), except).await?;
-    let bad = |reason: &str| ApiError::BadRequest(reason.to_string());
-    let length = calendar.plans[&appointment.service_id].client;
-    (appointment.starts_at + length == appointment.ends_at).then_some(()).ok_or_else(|| bad("ends_at must be starts_at plus the service's time"))?;
-    let crew = calendar.crew(appointment.service_id, &appointment.provider_ids).ok_or_else(|| bad("provider_ids must be one provider per role of the service"))?;
-    let waitlist = appointment.status == Status::Waitlist;
-    let fit = calendar
-        .place(&request.parties[0], appointment.starts_at, appointment.resource_id, &crew, &[], &[waitlist])
-        .ok_or_else(|| ApiError::Conflict(format!("the time is not open for a {:?} appointment", appointment.status)))?;
-    Ok(fit.taken.into_iter().filter_map(|(who, taken)| match who {
-        Who::Id(id) => Some((id, taken.span)),
-        Who::Tag(_) => None,
-    }).collect())
+    let calendar = Calendar::load(conn, &request, (from.to_utc(), to.to_utc()), except).await?;
+    let held = parties.iter().zip(&request.parties).try_fold(Vec::new(), |held: Vec<(Who, Taken)>, (placed, party)| {
+        let fit = calendar.check(party, placed, &held)?;
+        Ok::<_, ApiError>(held.into_iter().chain(fit.taken).collect())
+    })?;
+    Ok(held
+        .into_iter()
+        .filter_map(|(who, taken)| match who {
+            Who::Id(id) => Some((id, taken.span, taken.waitlist)),
+            Who::Tag(_) => None,
+        })
+        .collect())
+}
+
+/// A placed party as the search reads it: its one room by id.
+fn searched(placed: &Placed) -> ApiResult<Party> {
+    let [room] = placed.resources.as_slice() else {
+        return Err(ApiError::BadRequest("a party has one room".to_string()));
+    };
+    Ok(Party {
+        client: placed.client.clone(),
+        service_id: placed.service_id,
+        providers: Vec::new(),
+        resources: vec![Map::from_iter([("id".to_string(), Value::String(room.id.to_string()))])],
+    })
 }
 
 /// The ids a search can use, for the queries that read only what applies to them.

@@ -481,3 +481,86 @@ async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
     assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
     assert_eq!(left(&clinic.search(search).await.1), (json!(1), json!(false)), "the cancel gave one place back");
 }
+
+impl Clinic {
+    async fn hold(&self, slot: &Value) -> (StatusCode, Value) {
+        call(&self.app, "POST", &format!("/api/v1/orgs/{}/reservations", self.org), slot.clone()).await
+    }
+
+    async fn first_slot(&self, parties: Value) -> Value {
+        let (_, found) = self.search(json!({"from": at("09:00"), "to": at("12:00"), "parties": parties})).await;
+        found["slots"][0].clone()
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let party = json!([{"client": {"id": clinic.ada}, "service_id": clinic.float, "resources": [{"id": clinic.room}]}]);
+    let slot = clinic.first_slot(party.clone()).await;
+    assert_eq!(slot["parties"][0]["starts_at"], json!(at("09:00")));
+
+    let (status, held) = clinic.hold(&slot).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(clinic.first_slot(party.clone()).await["parties"][0]["starts_at"], json!(at("10:00")), "9:00 is held");
+    let booking = clinic.appointment(&clinic.float, &clinic.room, &[], "09:00", "10:00", "booked");
+    assert_eq!(clinic.book(booking.clone()).await.0, StatusCode::CONFLICT, "only through the hold");
+
+    let mut elsewhere = clinic.appointment(&clinic.float, &clinic.room, &[], "10:00", "11:00", "booked");
+    elsewhere["reservation_id"] = held["id"].clone();
+    assert_eq!(clinic.book(elsewhere).await.0, StatusCode::CONFLICT, "not the held time");
+    let mut from_hold = booking.clone();
+    from_hold["reservation_id"] = held["id"].clone();
+    let (status, booked) = clinic.book(from_hold.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{booked}");
+    let release = format!("/api/v1/orgs/{}/reservations/{}", clinic.org, held["id"].as_str().unwrap());
+    assert_eq!(call(&clinic.app, "DELETE", &release, json!({})).await.0, StatusCode::NOT_FOUND, "the booking took its places");
+    assert_eq!(clinic.book(from_hold).await.0, StatusCode::CONFLICT);
+
+    let slot = clinic.first_slot(party.clone()).await;
+    let (_, held) = clinic.hold(&slot).await;
+    let release = format!("/api/v1/orgs/{}/reservations/{}", clinic.org, held["id"].as_str().unwrap());
+    let (status, released) = call(&clinic.app, "DELETE", &release, json!({})).await;
+    assert_eq!((status, released["places"].clone()), (StatusCode::OK, json!(2)), "the room and Ada");
+    assert_eq!(clinic.first_slot(party.clone()).await["parties"][0]["starts_at"], json!(at("10:00")), "released");
+
+    let (_, held) = clinic.hold(&slot).await;
+    sqlx::query("UPDATE reservations SET expires_at = now() - interval '1 minute' WHERE owner_id = $1::uuid")
+        .bind(held["id"].as_str().unwrap())
+        .execute(&clinic.pool)
+        .await
+        .unwrap();
+    assert_eq!(clinic.first_slot(party).await["parties"][0]["starts_at"], json!(at("10:00")), "an expired hold takes nothing");
+    let mut late = clinic.appointment(&clinic.float, &clinic.room, &[], "10:00", "11:00", "booked");
+    late["reservation_id"] = held["id"].clone();
+    assert_eq!(clinic.book(late).await.0, StatusCode::CONFLICT, "expired");
+
+    let purge = format!("/api/v1/orgs/{}/reservations:purge", clinic.org);
+    let (status, purged) = call(&clinic.app, "POST", &purge, json!({"before": "2026-10-26T05:00:00Z"})).await;
+    assert_eq!((status, purged["places"].clone()), (StatusCode::OK, json!(4)), "the expired hold's two places and the 9:00 booking's two");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_hold_of_two_parties_is_booked_one_appointment_at_a_time(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let (_, bo) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
+    let couple = json!([
+        {"client": {"id": clinic.ada}, "service_id": clinic.float, "resources": [{"role": "pod"}]},
+        {"client": {"id": bo["id"]}, "service_id": clinic.float, "resources": [{"role": "pod"}]}
+    ]);
+    let slot = clinic.first_slot(couple.clone()).await;
+    let (status, held) = clinic.hold(&slot).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    let booking = |party: &Value, client: &Value| {
+        json!({
+            "client_id": client, "service_id": clinic.float, "resource_id": party["resources"][0]["id"],
+            "starts_at": party["starts_at"], "ends_at": party["ends_at"], "status": "booked",
+            "payment": {"payer_id": client, "method": "card"}, "reservation_id": held["id"]
+        })
+    };
+    assert_eq!(clinic.book(booking(&slot["parties"][0], &json!(clinic.ada))).await.0, StatusCode::OK);
+    let (_, still) = clinic.search(json!({"from": at("09:00"), "to": at("10:00"),
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float, "resources": [{"id": slot["parties"][1]["resources"][0]["id"]}]}]})).await;
+    assert_eq!(still["slots"][0]["parties"][0]["waitlist"], json!(true), "Bo's place is still held");
+    assert_eq!(clinic.book(booking(&slot["parties"][1], &bo["id"])).await.0, StatusCode::OK);
+}

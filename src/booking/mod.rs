@@ -12,6 +12,8 @@ pub mod client;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod provider;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod reservation;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod resource;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod schedule;
@@ -64,6 +66,7 @@ mod api {
             .merge(super::blockout::routes())
             .merge(super::appointment::routes())
             .merge(super::availability::routes())
+            .merge(super::reservation::routes())
     }
 
     /// AIP-136 custom methods on an item: routes `…/{id}:verb` as `…/{id}/:verb`, keeping the original URI for the

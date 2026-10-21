@@ -97,6 +97,15 @@ async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
     let mine = org(&pool).await;
     let waiting = appointment(&pool, mine, "waitlist").await;
     let booked = appointment(&pool, mine, "booked").await;
+    sqlx::query(
+        r#"INSERT INTO schedules (org_id, id, name, recurrence, starts_at, ends_at)
+           VALUES ($1, $2, 'Open', '"DTSTART:20261026T000000Z\nRRULE:FREQ=DAILY;COUNT=1"', '00:00', '23:00')"#,
+    )
+    .bind(mine)
+    .bind(Uuid::now_v7())
+    .execute(&pool)
+    .await
+    .unwrap();
     let app = app(pool, mine, &["appointments:*"]);
     let item = |id: Uuid| format!("/api/v1/orgs/{mine}/appointments/{id}");
 

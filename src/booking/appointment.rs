@@ -168,16 +168,22 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<AppointmentDat
         .then_some(())
         .ok_or_else(|| ApiError::BadRequest("a new appointment is booked or waitlist".to_string()))?;
     let mut transaction = ctx.pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
-        .bind(data.org_id)
-        .execute(&mut *transaction)
-        .await?;
-    let taken = super::availability::fit(&mut transaction, &data).await?;
+    lock(&mut transaction, data.org_id).await?;
+    let taken = super::availability::fit(&mut transaction, &data, None).await?;
     let appointment = Entity::new(Uuid::now_v7(), AppointmentData { booked_at: Utc::now(), ..data });
     let saved = TableEntity::insert(&appointment, &mut *transaction).await?;
     occupy(&mut transaction, &saved, &taken).await?;
     transaction.commit().await?;
     Ok(saved)
+}
+
+/// Bookings of one org wait for each other until their transaction ends, so two cannot take one place.
+async fn lock(conn: &mut PgConnection, org_id: Uuid) -> ApiResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+        .bind(org_id)
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 /// Stores the time the appointment takes from each participant.
@@ -237,10 +243,11 @@ async fn patch(
     responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
-    change_status(&ctx.pool, &key, CANCEL, None).await
+    change_status(&mut *ctx.pool.acquire().await?, &key, CANCEL, None).await
 }
 
-/// `:book` a waitlisted appointment; `:confirm` a booked one; `:complete` a booked or confirmed one.
+/// `:book` a waitlisted appointment when a free place is left for its time; `:confirm` a booked one;
+/// `:complete` a booked or confirmed one.
 #[utoipa::path(
     post,
     path = "/orgs/{org_id}/appointments/{id}:{verb}",
@@ -251,15 +258,39 @@ async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiRes
         ("verb" = String, Path, description = "book, confirm or complete"),
     ),
     request_body(content = Object, description = "`{\"payment\": Payment}` to replace the payment, or `{}`"),
-    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404)),
+    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404), (status = 409)),
 )]
 async fn act(State(ctx): State<AppContext>, Input(action): Input<Action>) -> ApiResult<Appointment> {
-    change_status(&ctx.pool, &action.key, action.verb.transition(), action.payment.as_ref()).await
+    match action.verb {
+        Verb::Book => book(&ctx.pool, &action).await,
+        _ => change_status(&mut *ctx.pool.acquire().await?, &action.key, action.verb.transition(), action.payment.as_ref()).await,
+    }
+}
+
+/// Waitlist to booked, under the booking lock, only when the booking check finds a free place for the
+/// appointment's time, leaving out the appointment's own time.
+async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
+    let mut transaction = pool.begin().await?;
+    lock(&mut transaction, action.key.org_id).await?;
+    let waiting: Option<Appointment> = sqlx::query_as(
+        "SELECT * FROM appointments WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'waitlist' FOR UPDATE",
+    )
+    .bind(action.key.org_id)
+    .bind(action.key.id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some(waiting) = waiting {
+        let booked = AppointmentData { status: Status::Booked, ..waiting.data };
+        super::availability::fit(&mut transaction, &booked, Some(waiting.id)).await?;
+    }
+    let booked = change_status(&mut transaction, &action.key, action.verb.transition(), action.payment.as_ref()).await?;
+    transaction.commit().await?;
+    Ok(booked)
 }
 
 /// One guarded UPDATE, so of two requests at once only one can move the status.
 async fn change_status(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     key: &Key,
     (to, from): Transition,
     payment: Option<&Payment>,
@@ -273,18 +304,25 @@ async fn change_status(
     .bind(to)
     .bind(payment.map(Json))
     .bind(from)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await?;
     match changed {
         Some(appointment) => Ok(appointment),
-        None => Err(refusal(pool, key, to).await),
+        None => Err(refusal(conn, key, to).await),
     }
 }
 
 /// Why a status change matched no row: the appointment is missing, or its status cannot move to `to`.
-async fn refusal(pool: &PgPool, key: &Key, to: Status) -> ApiError {
-    match crud::get::<AppointmentData>(pool, key).await {
-        Ok(current) => ApiError::BadRequest(format!("a {:?} appointment cannot become {to:?}", current.data.status)),
-        Err(error) => error,
+async fn refusal(conn: &mut PgConnection, key: &Key, to: Status) -> ApiError {
+    let current: Result<Option<Status>, sqlx::Error> =
+        sqlx::query_scalar("SELECT status FROM appointments WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL")
+            .bind(key.org_id)
+            .bind(key.id)
+            .fetch_optional(conn)
+            .await;
+    match current {
+        Ok(Some(status)) => ApiError::BadRequest(format!("a {status:?} appointment cannot become {to:?}")),
+        Ok(None) => ApiError::NotFound,
+        Err(error) => error.into(),
     }
 }

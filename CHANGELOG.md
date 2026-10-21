@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-21
+- Booking: `POST /orgs/{org_id}/appointments` takes the appointment (booked or waitlist) and stores it, with the time it takes from each participant, only when the slot search's check passes for exactly that time, room and providers; one lock per org; 409 when the time is not open (PR #160, issue #158)
 - Booking open slot search: `POST /orgs/{org_id}/appointments:available` with parties (client by id or tag, service, provider and room fields), `service_gap` and `client_gap`; returns slots with providers, room, times and whether only a waitlist place is free, or `next_available_day`; `role` on providers and resources matches a step's provider group; table `occupancies` (tstzrange, GiST) holds the time each participant is taken (PR #159, issue #158)
 - Booking Appointment: table `appointments` keyed by `(org_id, id)` with a JSONB `Payment` (payer, method, attributes) and `booked_at` set by the server; routes under `/orgs/{org_id}/appointments`: list, get, PATCH of note, payment and attributes, DELETE cancels, and the AIP-136 custom methods `:book`, `:confirm`, `:complete`, each one guarded status change; `megh::booking::rewrite_aip_136` routes `{id}:verb` and keeps the original URI for the authorizer; no create route until booking (PR #157, issue #156)
 

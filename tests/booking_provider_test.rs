@@ -84,7 +84,7 @@ async fn provider_with_contact_columns(pool: PgPool) {
     );
 
     let (_, hygienist) = call(&app, "POST", &collection, json!({
-        "first_name": "Grace", "last_name": "Hopper", "name": "Grace", "attributes": {"role": "hygienist"}
+        "first_name": "Grace", "last_name": "Hopper", "name": "Grace", "role": "hygienist"
     })).await;
     assert_eq!(
         hygienist["email"],

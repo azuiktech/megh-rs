@@ -13,8 +13,10 @@ pub type Attributes = serde_json::Map<String, serde_json::Value>;
     sanitize(trim),
     validate(not_empty, len_char_max = 255),
     derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Serialize, Deserialize),
+    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
     cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
 )]
+#[cfg_attr(feature = "postgres", sqlx(transparent))]
 pub struct Name(String);
 
 /// An international phone number, kept in E.164 (`+15165550100`).

@@ -55,6 +55,7 @@ constcat = "0.6"
 iso8601 = { version = "0.6", features = ["serde"] }
 validator = { version = "0.21", features = ["derive"] }
 rrule = { version = "0.14", features = ["serde"] }
+itertools = "0.15.0"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

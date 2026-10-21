@@ -28,6 +28,9 @@ pub struct ProviderData {
     pub name: Name,
     #[serde(default)]
     pub description: String,
+    /// What it is, such as hygienist; a service step names the role of the provider it needs.
+    #[schema(value_type = Option<String>, example = "hygienist")]
+    pub role: Option<Name>,
     #[serde(flatten)]
     #[sqlx(flatten)]
     pub contact: Contact,

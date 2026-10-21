@@ -4,6 +4,8 @@ pub mod value;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod appointment;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod availability;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod blockout;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod client;
@@ -61,9 +63,12 @@ mod api {
             .merge(super::schedule::routes())
             .merge(super::blockout::routes())
             .merge(super::appointment::routes())
+            .merge(super::availability::routes())
     }
 
-    /// AIP-136 custom methods: routes `…/{id}:verb` as `…/{id}/:verb`, keeping the original URI for the authorizer.
+    /// AIP-136 custom methods on an item: routes `…/{id}:verb` as `…/{id}/:verb`, keeping the original URI for the
+    /// authorizer. A method on a collection (`…/appointments:available`) is one literal segment, routed as it is.
+    /// Any other `:` is rewritten too, so the routed form `…/{id}/:verb` cannot be called directly.
     ///
     /// Wraps the whole app, as routing happens before any `Router::layer`:
     /// `MapRequestLayer::new(megh::booking::rewrite_aip_136).layer(app)`.
@@ -79,6 +84,8 @@ mod api {
     fn custom_method_uri(uri: &Uri) -> Option<Uri> {
         let (parent, last) = uri.path().rsplit_once('/')?;
         let (resource, verb) = last.split_once(':')?;
+        let collection = !resource.is_empty() && uuid::Uuid::try_parse(resource).is_err();
+        (!collection).then_some(())?;
         let query = uri.query().map(|query| format!("?{query}")).unwrap_or_default();
         format!("{parent}/{resource}/:{verb}{query}").parse().ok()
     }

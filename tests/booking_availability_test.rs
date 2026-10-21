@@ -402,3 +402,38 @@ async fn two_bookings_at_once_cannot_take_one_place(pool: PgPool) {
     statuses.sort();
     assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
 }
+
+#[sqlx::test(migrations = false)]
+async fn patch_moves_an_appointment_only_to_an_open_time(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let (pod1, pod2) = (&clinic.pods[0], &clinic.pods[1]);
+    let (_, ada) = clinic.book(clinic.appointment(&clinic.float, pod1, &[], "09:00", "10:00", "booked")).await;
+    let (_, bo) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
+    let mut other = clinic.appointment(&clinic.float, pod1, &[], "11:00", "12:00", "booked");
+    other["client_id"] = bo["id"].clone();
+    assert_eq!(clinic.book(other).await.0, StatusCode::OK);
+    let item = format!("/api/v1/orgs/{}/appointments/{}", clinic.org, ada["id"].as_str().unwrap());
+    let patch = |body: Value| call(&clinic.app, "PATCH", &item, body);
+
+    let (status, moved) = patch(json!({"starts_at": at("10:00"), "ends_at": at("11:00")})).await;
+    assert_eq!((status, moved["starts_at"].clone()), (StatusCode::OK, json!("2026-10-26T04:30:00Z")), "{moved}");
+    let search = json!({"from": at("09:00"), "to": at("10:00"),
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float, "resources": [{"id": pod1}]}]});
+    let (_, found) = clinic.search(search).await;
+    assert_eq!(found["slots"][0]["parties"][0]["waitlist"], json!(false), "9:00 was given back");
+
+    assert_eq!(patch(json!({"starts_at": at("11:00"), "ends_at": at("12:00")})).await.0, StatusCode::CONFLICT, "Bo has the pod");
+    let (status, moved) = patch(json!({"starts_at": at("11:00"), "ends_at": at("12:00"), "resource_id": pod2})).await;
+    assert_eq!((status, moved["resource_id"].clone()), (StatusCode::OK, json!(pod2)), "{moved}");
+    assert_eq!(
+        patch(json!({"starts_at": "2026-10-27T09:00:00+05:30", "ends_at": "2026-10-27T10:00:00+05:30"})).await.0,
+        StatusCode::CONFLICT,
+        "outside the schedule"
+    );
+    assert_eq!(patch(json!({"starts_at": at("13:00")})).await.0, StatusCode::BAD_REQUEST, "ends_at must follow");
+    assert_eq!(patch(json!({"client_id": bo["id"]})).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(patch(json!({"service_id": clinic.extraction})).await.0, StatusCode::BAD_REQUEST);
+
+    assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
+    assert_eq!(patch(json!({"starts_at": at("13:00"), "ends_at": at("14:00")})).await.0, StatusCode::BAD_REQUEST, "a cancelled appointment does not move");
+}

@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-21
+- Booking: PATCH of `starts_at`, `ends_at`, `resource_id` or `provider_ids` moves a waitlisted, booked or confirmed appointment only when the booking check passes at the new time, room and providers; its occupancies are written again; client and service cannot change (PR #164, issue #163)
 - Booking fixes: `:book` moves a waitlisted appointment to booked only when a free place is left (same check and lock as booking); slot search start times are one room time apart (setup, client time and cleanup) so consecutive slots can share a room (PR #162, issue #161)
 - Booking: `POST /orgs/{org_id}/appointments` takes the appointment (booked or waitlist) and stores it, with the time it takes from each participant, only when the slot search's check passes for exactly that time, room and providers; one lock per org; 409 when the time is not open (PR #160, issue #158)
 - Booking open slot search: `POST /orgs/{org_id}/appointments:available` with parties (client by id or tag, service, provider and room fields), `service_gap` and `client_gap`; returns slots with providers, room, times and whether only a waitlist place is free, or `next_available_day`; `role` on providers and resources matches a step's provider group; table `occupancies` (tstzrange, GiST) holds the time each participant is taken (PR #159, issue #158)

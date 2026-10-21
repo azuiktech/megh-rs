@@ -117,8 +117,10 @@ pub struct Action {
     pub payment: Option<Payment>,
 }
 
-/// Fields a PATCH may change until availability search can check a move.
+/// Fields a PATCH may change without moving the appointment.
 const CHANGEABLE: [&str; 5] = ["org_id", "id", "note", "payment", "attributes"];
+/// Fields that move the appointment; a move is checked like a booking.
+const MOVES: [&str; 4] = ["starts_at", "ends_at", "resource_id", "provider_ids"];
 /// Fields only the server sets; a PATCH that sends them keeps the stored values.
 const SERVER_SET: [&str; 2] = ["status", "booked_at"];
 
@@ -214,24 +216,59 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     crud::get(&ctx.pool, &key).await
 }
 
-/// Change the note, payment or attributes (JSON merge patch, RFC 7396). `status` and `booked_at` are ignored.
+/// Change the note, payment or attributes, or move the appointment to another time, room or providers (JSON
+/// merge patch, RFC 7396). A move is checked like a booking. `status` and `booked_at` are ignored.
 #[utoipa::path(
     patch,
     path = "/orgs/{org_id}/appointments/{id}",
     tag = "appointments",
     params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404)),
+    responses((status = 200, body = Entity<Uuid, AppointmentData>), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(
     State(ctx): State<AppContext>,
     Input(mut body): Input<Changes>,
 ) -> ApiResult<Appointment> {
     body.changes.retain(|field, _| !SERVER_SET.contains(&field.as_str()));
-    match body.changes.keys().find(|field| !CHANGEABLE.contains(&field.as_str())) {
-        Some(field) => Err(ApiError::BadRequest(format!("{field} cannot be changed"))),
-        None => crud::patch(&ctx.pool, body).await,
+    let is = |fields: &[&str], field: &String| fields.contains(&field.as_str());
+    if let Some(field) = body.changes.keys().find(|field| !is(&CHANGEABLE, field) && !is(&MOVES, field)) {
+        return Err(ApiError::BadRequest(format!("{field} cannot be changed")));
     }
+    match body.changes.keys().any(|field| is(&MOVES, field)) {
+        true => move_to(&ctx.pool, body).await,
+        false => crud::patch(&ctx.pool, body).await,
+    }
+}
+
+/// A move: under the booking lock, the changed appointment must pass the booking check for its status,
+/// leaving out its own time; its occupancies are written again.
+async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
+    let mut transaction = pool.begin().await?;
+    lock(&mut transaction, body.key.org_id).await?;
+    let current: Appointment = sqlx::query_as("SELECT * FROM appointments WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE")
+        .bind(body.key.org_id)
+        .bind(body.key.id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let bad = |reason: String| ApiError::BadRequest(reason);
+    [Status::Waitlist, Status::Booked, Status::Confirmed]
+        .contains(&current.data.status)
+        .then_some(())
+        .ok_or_else(|| bad(format!("a {:?} appointment cannot move", current.data.status)))?;
+    let moved = current.patch(&body.changes.into()).map_err(|error| bad(error.to_string()))?;
+    moved.data.validate().map_err(|error| bad(error.to_string()))?;
+    let taken = super::availability::fit(&mut transaction, &moved.data, Some(moved.id)).await?;
+    let saved = TableEntity::update(&moved, &mut *transaction).await?;
+    sqlx::query("DELETE FROM occupancies WHERE org_id = $1 AND appointment_id = $2")
+        .bind(saved.data.org_id)
+        .bind(saved.id)
+        .execute(&mut *transaction)
+        .await?;
+    occupy(&mut transaction, &saved, &taken).await?;
+    transaction.commit().await?;
+    Ok(saved)
 }
 
 /// Cancel: a waitlisted, booked or confirmed appointment becomes cancelled.

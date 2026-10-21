@@ -194,7 +194,8 @@ struct Calendar {
 }
 
 impl Calendar {
-    async fn load(conn: &mut PgConnection, request: &Availability, window: Span) -> ApiResult<Self> {
+    /// `except` leaves one appointment's time out, for booking it again.
+    async fn load(conn: &mut PgConnection, request: &Availability, window: Span, except: Option<Uuid>) -> ApiResult<Self> {
         let horizon = (window.0 - TimeDelta::days(1), window.1 + TimeDelta::days(1));
         let plans: HashMap<Uuid, Plan> = rows::<ServiceData>(conn, request.org_id)
             .await?
@@ -223,14 +224,15 @@ impl Calendar {
             limits,
             schedules: schedules.collect(),
             blockouts: blockouts.collect(),
-            taken: taken(conn, request.org_id, horizon).await?,
+            taken: taken(conn, request.org_id, horizon, except).await?,
         })
     }
 
-    /// Every start time the first party's service is scheduled for, one service length apart.
+    /// Every start time the first party's service is scheduled for, one room time (setup, client time and
+    /// cleanup) apart, so that consecutive slots can share a room.
     fn starts(&self, party: &Party, window: Span) -> Vec<DateTime<Utc>> {
         let plan = &self.plans[&party.service_id];
-        let step = plan.client.max(GRID);
+        let step = (plan.room.1 - plan.room.0).max(GRID);
         self.schedules
             .iter()
             .filter(|(schedule, _)| serves(&schedule.service_ids, party.service_id))
@@ -450,7 +452,7 @@ async fn available(State(ctx): State<AppContext>, Input(request): Input<Availabi
     }
     let window = (request.from.to_utc(), request.to.to_utc());
     let mut conn = ctx.pool.acquire().await?;
-    let calendar = Calendar::load(&mut conn, &request, window).await?;
+    let calendar = Calendar::load(&mut conn, &request, window, None).await?;
     let slots: Vec<Slot> = Search::new(&calendar, &request, window).slots().collect();
     let next_available_day = match slots.is_empty() {
         true => next_available_day(&mut conn, &request, window.1).await?,
@@ -461,14 +463,15 @@ async fn available(State(ctx): State<AppContext>, Input(request): Input<Availabi
 
 async fn next_available_day(conn: &mut PgConnection, request: &Availability, after: DateTime<Utc>) -> ApiResult<Option<NaiveDate>> {
     let window = (after, after + LOOK_AHEAD);
-    let calendar = Calendar::load(conn, request, window).await?;
+    let calendar = Calendar::load(conn, request, window, None).await?;
     let first = Search::new(&calendar, request, window).slots().next();
     Ok(first.map(|slot| slot.parties[0].starts_at.date_naive()))
 }
 
 /// The time `appointment` takes from each participant, read in the caller's transaction, if it fits as its
 /// status asks: `booked` needs a free place, `waitlist` a waitlist place.
-pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData) -> ApiResult<Vec<(Uuid, Span)>> {
+/// `except` leaves out the time of the appointment being booked again.
+pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData, except: Option<Uuid>) -> ApiResult<Vec<(Uuid, Span)>> {
     let party = Party {
         client: Client::Known { id: appointment.client_id },
         service_id: appointment.service_id,
@@ -483,7 +486,7 @@ pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData) 
         service_gap: Duration::default(),
         client_gap: Duration::default(),
     };
-    let calendar = Calendar::load(conn, &request, (appointment.starts_at, appointment.ends_at)).await?;
+    let calendar = Calendar::load(conn, &request, (appointment.starts_at, appointment.ends_at), except).await?;
     let bad = |reason: &str| ApiError::BadRequest(reason.to_string());
     let length = calendar.plans[&appointment.service_id].client;
     (appointment.starts_at + length == appointment.ends_at).then_some(()).ok_or_else(|| bad("ends_at must be starts_at plus the service's time"))?;
@@ -504,15 +507,16 @@ async fn rows<T: Row>(conn: &mut PgConnection, org_id: Uuid) -> ApiResult<Vec<En
 }
 
 /// The time stored appointments take, by participant, overlapping `horizon`.
-async fn taken(conn: &mut PgConnection, org_id: Uuid, horizon: Span) -> ApiResult<HashMap<Uuid, Vec<Taken>>> {
+async fn taken(conn: &mut PgConnection, org_id: Uuid, horizon: Span, except: Option<Uuid>) -> ApiResult<HashMap<Uuid, Vec<Taken>>> {
     let rows: Vec<(Uuid, PgRange<DateTime<Utc>>, Status)> = sqlx::query_as(
         "SELECT o.participant_id, o.during, a.status FROM occupancies o \
          JOIN appointments a ON a.org_id = o.org_id AND a.id = o.appointment_id \
-         WHERE o.org_id = $1 AND o.during && $2 AND a.deleted_at IS NULL \
+         WHERE o.org_id = $1 AND o.during && $2 AND a.deleted_at IS NULL AND a.id IS DISTINCT FROM $3 \
          AND a.status IN ('waitlist', 'booked', 'confirmed')",
     )
     .bind(org_id)
     .bind(PgRange::from(horizon.0..horizon.1))
+    .bind(except)
     .fetch_all(conn)
     .await?;
     Ok(rows

@@ -182,10 +182,10 @@ pub trait TableEntity: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postg
         Ok(deleted)
     }
 
-    async fn insert(&self, pool: &sqlx::PgPool) -> Result<Self, sqlx::Error> where Self: Sized {
+    async fn insert<'e>(&self, executor: impl sqlx::PgExecutor<'e>) -> Result<Self, sqlx::Error> where Self: Sized {
         let table = Self::TABLE_NAME;
         let q = format!("INSERT INTO {table} SELECT * FROM json_populate_record(NULL::{table}, $1::json) RETURNING *");
-        sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(pool).await
+        sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_one(executor).await
     }
 }
 

@@ -1,6 +1,7 @@
 //! B9 (docs/TPD-booking.md): open slots. A slot is when every party's client, providers and room are free:
 //! inside a schedule, outside blockouts, with capacity (or only a waitlist place) left by stored occupancies.
 //! A step's provider group matches a provider's role; `providers` and `resources` match fields, not attributes.
+//! Booking (`POST /appointments`) stores an appointment only when the same check passes, and stores its time.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -294,4 +295,107 @@ async fn bad_searches_are_refused(pool: PgPool) {
     let uri = format!("/api/v1/orgs/{}/appointments:available", clinic.org);
     let body = json!({"from": at("09:00"), "to": at("12:00"), "parties": [party]});
     assert_eq!(call(&reader, "POST", &uri, body).await.0, StatusCode::FORBIDDEN, "needs appointments:available");
+}
+
+impl Clinic {
+    async fn book(&self, body: Value) -> (StatusCode, Value) {
+        call(&self.app, "POST", &format!("/api/v1/orgs/{}/appointments", self.org), body).await
+    }
+
+    fn appointment(&self, service: &str, room: &str, providers: &[&str], from: &str, to: &str, status: &str) -> Value {
+        json!({
+            "client_id": self.ada, "service_id": service, "resource_id": room, "provider_ids": providers,
+            "starts_at": at(from), "ends_at": at(to), "status": status,
+            "payment": {"payer_id": self.ada, "method": "card"}
+        })
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn booking_stores_an_open_slot_and_takes_its_time(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let extraction = clinic.appointment(&clinic.extraction, &clinic.room, &[&clinic.meera, &clinic.albert], "09:10", "10:25", "booked");
+    let (status, booked) = clinic.book(extraction.clone()).await;
+    assert_eq!((status, booked["status"].clone()), (StatusCode::OK, json!("booked")), "{booked}");
+    assert!(booked["booked_at"].as_str().is_some_and(|at| !at.starts_with("1970")), "set by the server");
+    let stretches: i64 = sqlx::query_scalar("SELECT count(*) FROM occupancies WHERE appointment_id = $1::uuid")
+        .bind(booked["id"].as_str().unwrap())
+        .fetch_one(&clinic.pool)
+        .await
+        .unwrap();
+    assert_eq!(stretches, 6, "the client, the room, the dentist's step and the hygienist's three steps");
+
+    assert_eq!(clinic.book(extraction).await.0, StatusCode::CONFLICT, "the room and the providers are taken");
+    let search = json!({"from": at("09:00"), "to": at("12:00"),
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.extraction, "resources": [{"role": "operatory"}]}]});
+    let (_, found) = clinic.search(search).await;
+    assert_eq!(found["slots"], json!([]), "the room is taken until 10:35, its cleanup");
+
+    let raj = clinic.appointment(&clinic.extraction, &clinic.room, &[&clinic.meera, &clinic.raj], "10:45", "12:00", "booked");
+    for (bad, why) in [
+        (clinic.appointment(&clinic.extraction, &clinic.room, &[&clinic.meera, &clinic.raj], "10:45", "11:30", "booked"), "ends_at is not the service's time"),
+        (clinic.appointment(&clinic.extraction, &clinic.room, &[&clinic.albert, &clinic.raj], "10:45", "12:00", "booked"), "no hygienist"),
+        (clinic.appointment(&clinic.extraction, &clinic.room, &[&clinic.meera], "10:45", "12:00", "booked"), "no dentist"),
+        (clinic.appointment(&clinic.extraction, &clinic.room, &[&clinic.meera, &clinic.raj], "10:45", "12:00", "confirmed"), "new is booked or waitlist"),
+    ] {
+        assert_eq!(clinic.book(bad).await.0, StatusCode::BAD_REQUEST, "{why}");
+    }
+    assert_eq!(clinic.book(raj).await.0, StatusCode::OK);
+
+    let tuesday = json!({
+        "client_id": clinic.ada, "service_id": clinic.float, "resource_id": clinic.pods[0],
+        "starts_at": "2026-10-27T09:00:00+05:30", "ends_at": "2026-10-27T10:00:00+05:30", "status": "booked",
+        "payment": {"payer_id": clinic.ada, "method": "card"}
+    });
+    assert_eq!(clinic.book(tuesday).await.0, StatusCode::CONFLICT, "outside the schedule");
+}
+
+#[sqlx::test(migrations = false)]
+async fn booking_takes_capacity_then_the_waitlist_and_cancel_frees_it(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let pod = &clinic.pods[0];
+    let float = |status: &str| clinic.appointment(&clinic.float, pod, &[], "09:00", "10:00", status);
+    let other_client = |status: &str| {
+        let mut body = float(status);
+        body["client_id"] = json!(clinic.ada);
+        body
+    };
+    let (status, first) = clinic.book(float("booked")).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(clinic.book(other_client("booked")).await.0, StatusCode::CONFLICT, "Ada is already booked then");
+
+    let guest: String = {
+        let (status, saved) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
+        assert_eq!(status, StatusCode::OK);
+        saved["id"].as_str().unwrap().to_string()
+    };
+    let for_guest = |status: &str| {
+        let mut body = float(status);
+        body["client_id"] = json!(guest);
+        body
+    };
+    assert_eq!(clinic.book(for_guest("booked")).await.0, StatusCode::CONFLICT, "capacity 1 is taken");
+    let (status, waiting) = clinic.book(for_guest("waitlist")).await;
+    assert_eq!((status, waiting["status"].clone()), (StatusCode::OK, json!("waitlist")), "{waiting}");
+
+    let item = format!("/api/v1/orgs/{}/appointments/{}", clinic.org, first["id"].as_str().unwrap());
+    assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
+    let (status, rebooked) = clinic.book(float("booked")).await;
+    assert_eq!((status, rebooked["status"].clone()), (StatusCode::OK, json!("booked")), "cancelling freed the place");
+}
+
+#[sqlx::test(migrations = false)]
+async fn two_bookings_at_once_cannot_take_one_place(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let mut bodies = Vec::new();
+    for name in ["Cy", "Di"] {
+        let (_, client) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": name, "last_name": "X", "name": name})).await;
+        let mut body = clinic.appointment(&clinic.float, &clinic.pods[1], &[], "09:00", "10:00", "booked");
+        body["client_id"] = client["id"].clone();
+        bodies.push(body);
+    }
+    let (first, second) = tokio::join!(clinic.book(bodies[0].clone()), clinic.book(bodies[1].clone()));
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
 }

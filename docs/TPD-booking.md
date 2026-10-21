@@ -141,7 +141,9 @@ here, because it was not the user's requirement.
   massage, or two back to back appointment for a single client)." "A slot books N appointments." "4 people
   at a table is 4 appointments."
 
-### 4.9 Hold
+### 4.9 Reservation
+
+Called "hold" until 2026-10-21, when the user renamed hold/held/held_id to reserve/reservation/reservation_id.
 
 - "hold is not a booking state. a hold is a semi formed booking, it may not have client, or payment etc. it
   just a temporary block on the schedule." Like bus or airline booking: while held, it is not offered to
@@ -338,8 +340,8 @@ Third round, same day:
 
 Fourth round, same day:
 
-- **Hold.** Approved: a separate `holds` table with `expires_at`, as cal.diy's `SelectedSlots` (`releaseAt`);
-  expired holds are filtered by the query and removed by a periodic job. Appointment transitions: waitlist →
+- **Reservation** (then called hold). Approved: a separate `reservations` table with `expires_at`, as cal.diy's `SelectedSlots` (`releaseAt`);
+  expired reservations are filtered by the query and removed by a periodic job. Appointment transitions: waitlist →
   booked or cancelled; booked → confirmed, cancelled or completed; confirmed → cancelled or completed.
 - **Org hierarchy.** Deferred: "Not satisfied with any of them. It can be done in a limited scope far simple
   way." The user will come back to it. Until then every entity still carries a mandatory `org_id`.
@@ -460,9 +462,9 @@ yet approved is listed in the row and asked before that PR starts.
 | B5 | Client: `ClientData { org_id, first_name, last_name, name, contact, gender, birth_date: Option, address: Option<Address>, attributes }`, table `clients` keyed by `(org_id, id)`; `gender` text with a CHECK, `male | female | other | unknown`, default `unknown` (`Gender::Unknown` added, 2026-10-20); `address` one nullable jsonb column (a flattened `Option<Address>` would silently drop a partial address; decided 2026-10-20), complete when given; routes like Provider. `#[derive(Table)]` accepts `#[sqlx(json(nullable))]` | — | `[x]` PR #150 |
 | B6 | Service: `ServiceData { org_id, name: Name, description, setup: iso8601::Duration, cleanup: iso8601::Duration, steps: Vec<Step>, attributes }`; setup and cleanup take only the room, each `Step { duration, provider1: Option<String>, provider2: Option<String> }` takes the client and the provider groups it names (dental: hygienist; hygienist + dentist; hygienist. Hair colour: stylist; none; stylist). Decided 2026-10-20: "setup duration 0 is no setup", no `Option` where a default exists; no wrapper types: the contract is checked on construction by `validator` 0.21 annotations (name 1–255 chars, at least one step, provider names not empty), in `Input` and again on the patched result; durations ISO 8601 through `iso8601` 0.6, written in its canonical form (zero is `P0D`). Table `services` (setup, cleanup, steps jsonb) | how a group name matches a provider (for B10) | `[x]` PR #152 |
 | B7 | Schedule and Blockout, like NexHealth working hours: `ScheduleData { org_id, name: Name, provider_id: Option<Uuid>, resource_id: Option<Uuid>, service_ids: Vec<Uuid>, recurrence: rrule::RRuleSet, starts_at: NaiveTime, ends_at: NaiveTime, attributes }`; `BlockoutData` adds `reason`. No provider, no resource or no services means any. Decided 2026-10-20: DTSTART is the rule start and UNTIL/COUNT the rule end; `starts_at`/`ends_at` are the window of each day, so it is known without expanding the rule; a window ends the same day (overnight is a known limitation, checked by `validator`); the time in DTSTART is not used; the recurrence is a JSONB string (rrule 0.14 writes the RFC text, adding BYHOUR/BYMINUTE/BYSECOND); provider and resource are foreign keys, `service_ids` a `UUID[]`. Service `name` back to `Name` | — | `[x]` PR #155 |
-| B8 | Payment type; Appointment: entity, table, CRUD, status verbs (`:confirm`, `:complete`, `:book`), DELETE cancels | payment fields | `[ ]` |
-| B9 | Hold: table with `expires_at`, create and release endpoints, cleanup job | job runner | `[ ]` |
-| B10 | Availability search (POST): Schedule − Blockout − Appointment − Hold, capacity and waitlist counts | counters vs indexed ranges | `[ ]` |
+| B8 | Appointment: `AppointmentData { org_id, client_id, service_id, resource_id, provider_ids: Vec<Uuid>, starts_at, ends_at, status: Status, note, payment: Payment, booked_at, attributes }`, `Payment { payer_id, method: Name, attributes }` in one jsonb column, `Status { waitlist, booked, confirmed, completed, cancelled }`. Decided 2026-10-21: `booked_at` is set by the server at insert and never empty; no other status timestamps (status and `updated_at` say it); status and `booked_at` sent on PATCH are ignored. Routes: list, get, PATCH of `note`, `payment`, `attributes`, DELETE cancels, `POST /appointments/{id}:book`, `:confirm`, `:complete` (AIP-136; optional `payment`), each one guarded UPDATE: waitlist → booked or cancelled; booked → confirmed, cancelled or completed; confirmed → cancelled or completed. `megh::booking::rewrite_aip_136` routes `{id}:verb` as `{id}/:verb` and keeps the original URI for the authorizer. No create route: booking comes with B9 (checked payload) and B10 (reservation id) | — | `[x]` PR #157 |
+| B9 | Availability search (POST): Schedule − Blockout − Appointment − Reservation, capacity and waitlist counts; booking from a full payload checked by the same query; PATCH that moves an appointment | counters vs indexed ranges | `[ ]` |
+| B10 | Reservation: table with `expires_at`, reserve an open slot by id, book with the `reservation_id`, release, cleanup job (order set 2026-10-21: entities and CRUD, then availability search, then reservation and booking) | job runner; how booking passes the reservation id | `[ ]` |
 | B11 | Server example mounting the whole API with a browsable OpenAPI (request, response, authentication) | done with B3: `examples/booking.rs`, unchanged as entities are added | `[x]` PR #146 |
 | — | Org hierarchy (DAG, inheritance upward) | deferred by the user | `[!]` waiting on the user |
 

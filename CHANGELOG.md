@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-21
+- Booking Appointment: table `appointments` keyed by `(org_id, id)` with a JSONB `Payment` (payer, method, attributes) and `booked_at` set by the server; routes under `/orgs/{org_id}/appointments`: list, get, PATCH of note, payment and attributes, DELETE cancels, and the AIP-136 custom methods `:book`, `:confirm`, `:complete`, each one guarded status change; `megh::booking::rewrite_aip_136` routes `{id}:verb` and keeps the original URI for the authorizer; no create route until booking (PR #157, issue #156)
+
 ## 2026-10-20
 - Booking Schedule and Blockout: tables `schedules` and `blockouts` keyed by `(org_id, id)`, routes under `/orgs/{org_id}/schedules` and `/orgs/{org_id}/blockouts`; an rrule recurrence (DTSTART rule start, UNTIL/COUNT rule end) stored as a JSONB string, `starts_at`/`ends_at` as the window of each day, optional provider and resource (foreign keys) and a list of services; an unknown provider or resource is a 400; Service `name` is `Name` again (PR #155, issue #154)
 - Booking Service: table `services` keyed by `(org_id, id)` and routes under `/orgs/{org_id}/services`; setup, cleanup and step durations are ISO 8601 (`iso8601`), each step names up to two provider groups (`provider1`, `provider2`); `Input<T>` and PATCH check every value with `validator` before it is saved (PR #152, issue #151)

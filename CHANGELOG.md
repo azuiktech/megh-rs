@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-22
+- Billing document tables (migration 0017): `billing_taxes`, `billing_payment_terms`, `billing_series`, `billing_vendors`, `billing_orders`, `billing_order_lines`, `billing_invoices`, `billing_invoice_lines`, `billing_payments`, `billing_applications`, keyed by `(org_id, id)` with composite foreign keys, lines and applications cascading from their document, and CHECKs for kinds, statuses and the rules the types state; prefixed `billing_` so a library table cannot meet an application's own `orders` or `payments` (PR #174, issue #173)
 - Billing document types in `megh::billing`: values (`Micros`, `Currency`, `Quantity`, `Percent`, `ExchangeRate`, `Days`, `TaxMode`, `PaymentMethod`) and entities `Tax`, `PaymentTerm`, `Series`, `Vendor`, `Order` and `OrderLine`, `Invoice` and `InvoiceLine` (one entity, `kind` invoice, credit note, bill or vendor credit), `Payment` and `Application`; types only, no tables or routes yet; sqlx and nutype `rust_decimal` features (PR #172, issue #171)
 
 ## 2026-10-21

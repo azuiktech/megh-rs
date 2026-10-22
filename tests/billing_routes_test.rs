@@ -1,5 +1,5 @@
-//! B5b (docs/TPD-billing.md): CRUD over HTTP for taxes, paymentTerms, series and vendors, scoped to the org in the path
-//! and checked by `authorizer`, like the booking collections.
+//! B5b (docs/TPD-billing.md): CRUD over HTTP for taxes, scoped to the org in the path and checked by `authorizer`, like
+//! the booking collections. (Payment terms, series and vendors were cut when billing was simplified.)
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -34,38 +34,6 @@ fn kinds() -> Vec<Kind> {
             patched: ("rate", json!("8")),
             bad: vec![json!({"name": "T", "rate": "101"}), json!({"name": "T", "rate": "-1"}), json!({"name": " ", "rate": "5"}), json!({})],
         },
-        Kind {
-            segment: "paymentTerms",
-            minimal: json!({"name": "Net 30", "net_days": 30}),
-            defaults: vec![("description", json!(""))],
-            replace: json!({"name": "Net 60", "net_days": 60}),
-            patch: json!({"net_days": 45}),
-            patched: ("net_days", json!(45)),
-            bad: vec![json!({"name": "T", "net_days": -1}), json!({"name": "T"}), json!({"net_days": 5})],
-        },
-        Kind {
-            segment: "series",
-            minimal: json!({"name": "Invoices", "next": 1}),
-            defaults: vec![("prefix", json!("")), ("padding", json!(0))],
-            replace: json!({"name": "Bills", "prefix": "B-", "next": 10, "padding": 3}),
-            patch: json!({"next": 7}),
-            patched: ("next", json!(7)),
-            bad: vec![json!({"name": "S", "next": 0}), json!({"name": "S", "next": 1, "padding": -1}), json!({"next": 1})],
-        },
-        Kind {
-            segment: "vendors",
-            minimal: json!({"name": "Acme Supplies", "email": "ap@acme.example"}),
-            defaults: vec![("description", json!("")), ("attributes", json!({})), ("address", Value::Null), ("currency", Value::Null)],
-            replace: json!({"name": "Acme Ltd", "currency": "EUR"}),
-            patch: json!({"currency": "GBP"}),
-            patched: ("currency", json!("GBP")),
-            bad: vec![
-                json!({"name": "V", "email": "not-an-email"}),
-                json!({"name": "V", "currency": "ZZZ"}),
-                json!({"name": "V", "payment_term_id": Uuid::now_v7()}),
-                json!({}),
-            ],
-        },
     ]
 }
 
@@ -82,7 +50,7 @@ fn app(pool: PgPool, grants: &[String]) -> Router {
 }
 
 fn grants(org: Uuid) -> Vec<String> {
-    ["taxes", "paymentTerms", "series", "vendors"].iter().map(|resource| format!("{resource}:*")).chain([format!("orgs:read:{org}")]).collect()
+    ["taxes"].iter().map(|resource| format!("{resource}:*")).chain([format!("orgs:read:{org}")]).collect()
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -162,20 +130,6 @@ async fn get_put_patch_delete_one_row(pool: PgPool) {
         assert_eq!(call(&mine_app, "DELETE", &item, Value::Null).await.0, StatusCode::NOT_FOUND, "{ctx}");
         assert_eq!(call(&mine_app, "PUT", &item, kind.replace.clone()).await.0, StatusCode::NOT_FOUND, "{ctx}: a deleted row stays deleted");
     }
-}
-
-#[sqlx::test(migrations = false)]
-async fn a_vendor_names_a_payment_term_of_its_org(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
-    let (mine, other) = (org(&pool).await, org(&pool).await);
-    let app = app(pool, &[grants(mine), grants(other)].concat());
-    let (_, term) = call(&app, "POST", &format!("/api/v1/orgs/{mine}/paymentTerms"), json!({"name": "Net 30", "net_days": 30})).await;
-    let (_, theirs) = call(&app, "POST", &format!("/api/v1/orgs/{other}/paymentTerms"), json!({"name": "Net 10", "net_days": 10})).await;
-    let vendors = format!("/api/v1/orgs/{mine}/vendors");
-    let (status, vendor) = call(&app, "POST", &vendors, json!({"name": "Acme", "payment_term_id": term["id"]})).await;
-    assert_eq!((status, vendor["payment_term_id"].clone()), (StatusCode::OK, term["id"].clone()));
-    let (status, _) = call(&app, "POST", &vendors, json!({"name": "Acme", "payment_term_id": theirs["id"]})).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "another org's payment term");
 }
 
 #[sqlx::test(migrations = false)]

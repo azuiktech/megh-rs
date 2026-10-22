@@ -10,6 +10,18 @@ use uuid::Uuid;
 use crate::money::{from_micros, iso, Money, MoneyError};
 use crate::{JsonText, Table};
 
+pub mod value;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod invoice;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod order;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod payment;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod tax;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod vendor;
+
 #[cfg(feature = "postgres")]
 mod subscriptions;
 #[cfg(feature = "postgres")]

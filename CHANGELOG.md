@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-22
+- Billing document types in `megh::billing`: values (`Micros`, `Currency`, `Quantity`, `Percent`, `ExchangeRate`, `Days`, `TaxMode`, `PaymentMethod`) and entities `Tax`, `PaymentTerm`, `Series`, `Vendor`, `Order` and `OrderLine`, `Invoice` and `InvoiceLine` (one entity, `kind` invoice, credit note, bill or vendor credit), `Payment` and `Application`; types only, no tables or routes yet; sqlx and nutype `rust_decimal` features (PR #172, issue #171)
+
 ## 2026-10-21
 - Booking OpenAPI: responses inlined instead of generic models; durations marked `format: duration`; each route lists the grants it needs (from `request_grants`); PATCH bodies are the entity data; filter, API, tag descriptions and create examples (PR #170, issue #169)
 - Booking holds: `POST /orgs/{org_id}/reservations` holds a slot's places for 10 minutes, checked like a booking; `DELETE /orgs/{org_id}/reservations/{id}` releases; booking with `reservation_id` takes the hold's places; `POST /orgs/{org_id}/reservations:purge` deletes expired holds and past places (PR #168, issue #167)

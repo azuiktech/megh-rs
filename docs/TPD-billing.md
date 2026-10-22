@@ -11,7 +11,7 @@
 | B1 | `megh::money` and the billing row types with `Money` accessors | `[x]` | #47 / #45 |
 | B2 | `Subscriptions`: plans, prices, add-ons, subscribe, change seats, cancel, add-on attach and detach | `[x]` | #48 / #46 |
 | B3 to B5e | A first, larger document model (vendors, orders, credit notes, applications, payment terms, series): types, migration 0017 and CRUD routes, with the shared OpenAPI modifiers in `megh::auth::openapi`. Cut to the simple model of section 6 in S1; the history is in `CHANGELOG.md` | `[x]` | #172 to #184 |
-| S1 | Simplify: tax, invoice, invoice line, payment only; migration `0018_billing_simplified.sql` replaces 0017 (the old shape is dropped once when found); helpers use `T::TABLE_NAME`; routes and tests rewritten | `[~]` | — / #185 |
+| S1 | Simplify: tax, invoice, invoice line, payment only; migration `0018_billing_simplified.sql` replaces 0017 (the old shape is dropped once when found); helpers use `T::TABLE_NAME`; routes and tests rewritten | `[~]` | #186 / #185 |
 | S2 | Numbering: the `Ids` function, a counter row per org, kind and scope, taken atomically | `[ ]` | — |
 | S3 | `:open` (number, totals, `bill_to`, lock) and `:void`; tax rounding with `rusty_money::Money::round` | `[ ]` | — |
 | S4 | Payments against the invoice balance: `amount_paid`, `balance_due`, refunds on the payment | `[ ]` | — |

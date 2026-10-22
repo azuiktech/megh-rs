@@ -4,8 +4,10 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::{Validate, ValidationError};
 use uuid::Uuid;
 
+use super::party::Party;
 use super::value::{Currency, ExchangeRate, Micros, Percent, Quantity, TaxMode};
 use crate::booking::value::{Address, Attributes, Name};
 use crate::{Entity, Table};
@@ -21,6 +23,15 @@ pub enum OrderKind {
     PurchaseOrder,
 }
 
+impl OrderKind {
+    pub fn party(self) -> Party {
+        match self {
+            Self::SalesOrder => Party::Client,
+            Self::PurchaseOrder => Party::Vendor,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -30,7 +41,7 @@ pub enum OrderStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_orders", keys = ["org_id", "id"])]
 pub struct OrderData {
     pub org_id: Uuid,
@@ -81,8 +92,9 @@ pub struct OrderData {
 pub type Order = Entity<Uuid, OrderData>;
 
 /// A product or a service ordered. A line names at most one of them; a free line names neither.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_order_lines", keys = ["org_id", "id"])]
+#[validate(schema(function = "names_one_target"))]
 pub struct OrderLineData {
     pub org_id: Uuid,
     pub order_id: Uuid,
@@ -108,3 +120,9 @@ pub struct OrderLineData {
 }
 
 pub type OrderLine = Entity<Uuid, OrderLineData>;
+
+fn names_one_target(line: &OrderLineData) -> Result<(), ValidationError> {
+    (line.product_id.is_none() || line.service_id.is_none())
+        .then_some(())
+        .ok_or_else(|| ValidationError::new("a line names a product or a service, not both"))
+}

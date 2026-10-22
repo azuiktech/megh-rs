@@ -12,9 +12,13 @@ use crate::{JsonText, Table};
 
 pub mod value;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod draft;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod invoice;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod order;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod party;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod payment;
 #[cfg(all(feature = "axum", feature = "postgres"))]

@@ -2,13 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::Validate;
 use uuid::Uuid;
 
 use super::value::Currency;
 use crate::booking::value::{Address, Attributes, Contact, Name};
 use crate::{Entity, Table};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_vendors", keys = ["org_id", "id"])]
 #[schema(example = json!({"name": "Acme Supplies", "email": "ap@acme.example", "tax_id": "12-3456789"}))]
 pub struct VendorData {

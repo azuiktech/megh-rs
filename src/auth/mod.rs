@@ -34,6 +34,8 @@ pub mod crud;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod filter;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod openapi;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod rest;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]

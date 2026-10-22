@@ -7,8 +7,10 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::{Validate, ValidationError};
 use uuid::Uuid;
 
+use super::party::Party;
 use super::value::{Currency, ExchangeRate, Micros, Percent, Quantity, TaxMode};
 use crate::booking::value::{Address, Attributes, Name};
 use crate::{Entity, Table};
@@ -27,6 +29,24 @@ pub enum InvoiceKind {
     VendorCredit,
 }
 
+impl InvoiceKind {
+    /// What a credit note or vendor credit credits.
+    pub fn credits(self) -> Option<InvoiceKind> {
+        match self {
+            Self::CreditNote => Some(Self::Invoice),
+            Self::VendorCredit => Some(Self::Bill),
+            Self::Invoice | Self::Bill => None,
+        }
+    }
+
+    pub fn party(self) -> Party {
+        match self {
+            Self::Invoice | Self::CreditNote => Party::Client,
+            Self::Bill | Self::VendorCredit => Party::Vendor,
+        }
+    }
+}
+
 /// HubSpot's `hs_invoice_status` without `paid`, which is derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
@@ -37,8 +57,9 @@ pub enum InvoiceStatus {
     Void,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_invoices", keys = ["org_id", "id"])]
+#[validate(schema(function = "credits_only_a_credit"))]
 pub struct InvoiceData {
     pub org_id: Uuid,
     pub kind: InvoiceKind,
@@ -89,8 +110,9 @@ pub struct InvoiceData {
 pub type Invoice = Entity<Uuid, InvoiceData>;
 
 /// What is billed: a product, a service (with the appointment it was for), or neither for a free line.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_invoice_lines", keys = ["org_id", "id"])]
+#[validate(schema(function = "names_one_target"))]
 pub struct InvoiceLineData {
     pub org_id: Uuid,
     pub invoice_id: Uuid,
@@ -116,3 +138,15 @@ pub struct InvoiceLineData {
 }
 
 pub type InvoiceLine = Entity<Uuid, InvoiceLineData>;
+
+fn credits_only_a_credit(invoice: &InvoiceData) -> Result<(), ValidationError> {
+    (invoice.credited_invoice_id.is_none() || invoice.kind.credits().is_some())
+        .then_some(())
+        .ok_or_else(|| ValidationError::new("only a credit note or a vendor credit credits an invoice"))
+}
+
+fn names_one_target(line: &InvoiceLineData) -> Result<(), ValidationError> {
+    (line.product_id.is_none() || line.service_id.is_none())
+        .then_some(())
+        .ok_or_else(|| ValidationError::new("a line names a product or a service, not both"))
+}

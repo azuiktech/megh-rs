@@ -50,40 +50,6 @@ pub struct Quantity(Decimal);
 #[cfg_attr(feature = "axum", schema(value_type = String, example = "7.5"))]
 pub struct Percent(Decimal);
 
-/// Units of the base currency for one unit of the document's currency; 1 when they are the same.
-#[nutype(
-    validate(predicate = |rate: &Decimal| *rate > Decimal::ZERO),
-    default = Decimal::ONE,
-    derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, TryFrom, Into, Serialize, Deserialize),
-    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
-    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
-)]
-#[cfg_attr(feature = "postgres", sqlx(transparent))]
-#[cfg_attr(feature = "axum", schema(value_type = String, example = "1"))]
-pub struct ExchangeRate(Decimal);
-
-/// A number of days, not negative: net payment terms.
-#[nutype(
-    validate(greater_or_equal = 0),
-    default = 0,
-    derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, TryFrom, Into, Serialize, Deserialize),
-    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
-    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
-)]
-#[cfg_attr(feature = "postgres", sqlx(transparent))]
-pub struct Days(i32);
-
-/// Whether prices on a document include their tax.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
-#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum TaxMode {
-    #[default]
-    Exclusive,
-    Inclusive,
-}
-
 /// How money moved: HubSpot's `hs_payment_method_type`, with its bank rails grouped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]

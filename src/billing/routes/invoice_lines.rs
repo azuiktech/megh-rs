@@ -6,14 +6,15 @@ use utoipa_axum::routes;
 
 use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
-use crate::billing::draft::{ensure_draft, ensure_line_draft, refuse_changes, Document};
 use crate::billing::invoice::{InvoiceLine, InvoiceLineData};
-use sqlx::PgPool;
+use crate::billing::draft::{ensure_draft, ensure_line_draft, refuse_changes};
+use crate::billing::invoice::InvoiceData;
 use crate::Entity;
+use sqlx::PgPool;
 
 /// The line's invoice must be an invoice of the org (a bad request if not) and still a draft (a conflict if not).
 async fn in_draft_invoice(pool: &PgPool, line: &InvoiceLineData) -> ApiResult<()> {
-    match ensure_draft(pool, Document::Invoice, line.org_id, line.invoice_id).await {
+    match ensure_draft::<InvoiceData>(pool, line.org_id, line.invoice_id).await {
         Err(ApiError::NotFound) => Err(ApiError::BadRequest("invoice_id is not an invoice of the org".into())),
         other => other,
     }
@@ -58,7 +59,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     tag = "invoiceLines",
     params(("org_id" = Uuid, Path)),
     request_body = InvoiceLineData,
-    responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 400)),
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 400), (status = 409)),
 )]
 async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceLineData>) -> ApiResult<InvoiceLine> {
     in_draft_invoice(&ctx.pool, &data).await?;
@@ -74,7 +75,7 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceLineDat
     responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceLineData>>) -> ApiResult<InvoiceLine> {
-    ensure_line_draft(&ctx.pool, Document::Invoice, body.data.org_id, body.id).await?;
+    ensure_line_draft::<InvoiceLineData>(&ctx.pool, body.data.org_id, body.id).await?;
     in_draft_invoice(&ctx.pool, &body.data).await?;
     crud::replace(&ctx.pool, body).await
 }
@@ -89,7 +90,7 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Invoice
     responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<InvoiceLine> {
-    ensure_line_draft(&ctx.pool, Document::Invoice, body.key.org_id, body.key.id).await?;
+    ensure_line_draft::<InvoiceLineData>(&ctx.pool, body.key.org_id, body.key.id).await?;
     refuse_changes(&body, &["invoice_id"])?;
     crud::patch(&ctx.pool, body).await
 }
@@ -102,6 +103,6 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 404), (status = 409)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<InvoiceLine> {
-    ensure_line_draft(&ctx.pool, Document::Invoice, key.org_id, key.id).await?;
+    ensure_line_draft::<InvoiceLineData>(&ctx.pool, key.org_id, key.id).await?;
     crud::delete(&ctx.pool, &key).await
 }

@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-22
+- Billing routes for invoices: `/api/v1/orgs/{org_id}/invoices` and `/invoiceLines` with the rules of orders (created only as a draft, changed or deleted only while a draft, lines locked, party a client for an invoice or credit note and a vendor for a bill or vendor credit); a credit note or vendor credit may name `credited_invoice_id`, a live invoice or bill of the org, set by PUT only (PR #182, issue #181)
 - Billing routes for orders: `/api/v1/orgs/{org_id}/orders` and `/orderLines`; an order is created only as a draft and changed or deleted only while a draft (409 after), its lines are locked with it, its party must be a client (sales order) or vendor (purchase order) of the org, and `kind`, `party_id` and `status` are not patched; a line names a product or a service, not both (PR #180, issue #179)
 - Billing routes: CRUD under `/api/v1/orgs/{org_id}/` for `taxes`, `paymentTerms`, `series` and `vendors` (list with AIP-160 filter and cursor paging, get, PUT, PATCH as JSON merge, soft DELETE), `megh::billing::{router, openapi}` with the grants of each route, `examples/booking.rs` serving booking and billing; a series' `next` must be at least 1 and `padding` not negative (PR #178, issue #177)
 - OpenAPI `SignedIn` (session cookie and CSRF header security) and `Granted` (each route's grants) moved from `booking` to `megh::auth::openapi`, shared with the billing router; no behaviour change (PR #176, issue #175)

@@ -38,7 +38,7 @@ pub enum InvoiceStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "invoices", keys = ["org_id", "id"])]
+#[table(name = "billing_invoices", keys = ["org_id", "id"])]
 pub struct InvoiceData {
     pub org_id: Uuid,
     pub kind: InvoiceKind,
@@ -90,7 +90,7 @@ pub type Invoice = Entity<Uuid, InvoiceData>;
 
 /// What is billed: a product, a service (with the appointment it was for), or neither for a free line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "invoice_lines", keys = ["org_id", "id"])]
+#[table(name = "billing_invoice_lines", keys = ["org_id", "id"])]
 pub struct InvoiceLineData {
     pub org_id: Uuid,
     pub invoice_id: Uuid,

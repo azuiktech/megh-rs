@@ -10,7 +10,7 @@ use crate::{Entity, Table};
 
 /// A percentage tax on a line (Odoo `account.tax`, Zoho `Tax`, HubSpot `taxes`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "taxes", keys = ["org_id", "id"])]
+#[table(name = "billing_taxes", keys = ["org_id", "id"])]
 #[schema(example = json!({"name": "Sales tax", "rate": "7.5"}))]
 pub struct TaxData {
     pub org_id: Uuid,
@@ -30,7 +30,7 @@ pub type Tax = Entity<Uuid, TaxData>;
 /// Days after the invoice date that payment is due (Odoo `account.payment.term`, Zoho `payment_terms`,
 /// HubSpot `hs_net_payment_term`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "payment_terms", keys = ["org_id", "id"])]
+#[table(name = "billing_payment_terms", keys = ["org_id", "id"])]
 #[schema(example = json!({"name": "Net 30", "net_days": 30}))]
 pub struct PaymentTermData {
     pub org_id: Uuid,
@@ -45,7 +45,7 @@ pub type PaymentTerm = Entity<Uuid, PaymentTermData>;
 
 /// A named run of numbers for documents (`INV-0001`): the next number is taken when a document is opened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "series", keys = ["org_id", "id"])]
+#[table(name = "billing_series", keys = ["org_id", "id"])]
 #[schema(example = json!({"name": "Invoices", "prefix": "INV-", "next": 1, "padding": 4}))]
 pub struct SeriesData {
     pub org_id: Uuid,

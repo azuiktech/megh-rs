@@ -31,7 +31,7 @@ pub enum OrderStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "orders", keys = ["org_id", "id"])]
+#[table(name = "billing_orders", keys = ["org_id", "id"])]
 pub struct OrderData {
     pub org_id: Uuid,
     pub kind: OrderKind,
@@ -82,7 +82,7 @@ pub type Order = Entity<Uuid, OrderData>;
 
 /// A product or a service ordered. A line names at most one of them; a free line names neither.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "order_lines", keys = ["org_id", "id"])]
+#[table(name = "billing_order_lines", keys = ["org_id", "id"])]
 pub struct OrderLineData {
     pub org_id: Uuid,
     pub order_id: Uuid,

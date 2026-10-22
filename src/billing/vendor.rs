@@ -9,7 +9,7 @@ use crate::booking::value::{Address, Attributes, Contact, Name};
 use crate::{Entity, Table};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "vendors", keys = ["org_id", "id"])]
+#[table(name = "billing_vendors", keys = ["org_id", "id"])]
 #[schema(example = json!({"name": "Acme Supplies", "email": "ap@acme.example", "tax_id": "12-3456789"}))]
 pub struct VendorData {
     pub org_id: Uuid,

@@ -10,8 +10,8 @@
 |---|---|---|---|
 | B1 | `megh::money` and the billing row types with `Money` accessors | `[x]` | #47 / #45 |
 | B2 | `Subscriptions`: plans, prices, add-ons, subscribe, change seats, cancel, add-on attach and detach | `[x]` | #48 / #46 |
-| B3 | Document types (section 6): values and entities, no tables yet | `[~]` | — / #171 |
-| B4 | Migration for the document tables and their CHECKs | `[ ]` | — |
+| B3 | Document types (section 6): values and entities, no tables yet | `[x]` | #172 / #171 |
+| B4 | Migration `0017_billing_documents.sql`: the ten tables, named `billing_taxes`, `billing_payment_terms`, `billing_series`, `billing_vendors`, `billing_orders`, `billing_order_lines`, `billing_invoices`, `billing_invoice_lines`, `billing_payments`, `billing_applications` (a library's tables prefixed so `CREATE TABLE IF NOT EXISTS` cannot silently meet an application's `orders` or `payments`), composite keys, CHECKs; test stores and reads back every entity | `[~]` | — / #173 |
 | B5 | Routes, totals and numbering (open, void), applications | `[ ]` | — |
 
 ## 2. Money (`megh::money`)

@@ -27,14 +27,11 @@ pub use api::{openapi, rewrite_aip_136, router};
 mod api {
     use axum::extract::{OriginalUri, Request};
     use axum::http::Uri;
-    use utoipa::openapi::path::Operation;
-    use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme};
-    use axum_tower_sessions_csrf::TOKEN_HEADER;
     use utoipa::{Modify, OpenApi};
     use utoipa_axum::router::OpenApiRouter;
 
     use crate::auth::rest::AppContext;
-    use crate::auth::{JWT_COOKIE, request_grants};
+    use crate::auth::openapi::{Granted, SignedIn};
 
     #[derive(OpenApi)]
     #[openapi(
@@ -54,44 +51,9 @@ mod api {
     )]
     struct Booking;
 
-    /// Every route needs the signed-in user's token, kept in the `jwt_token` cookie; writes also need the CSRF token.
-    struct SignedIn;
-
-    impl Modify for SignedIn {
-        fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
-            let components = api.components.get_or_insert_with(Default::default);
-            components.add_security_scheme("session", SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(JWT_COOKIE))));
-            components.add_security_scheme("csrf", SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new(TOKEN_HEADER))));
-        }
-    }
-
     /// The booking API's OpenAPI description: title and how requests are signed in.
     pub fn openapi() -> utoipa::openapi::OpenApi {
         Booking::openapi()
-    }
-
-    /// Each route's grants, as the authorizer derives them from its path, in the session scheme's scopes; a
-    /// write also needs the CSRF token.
-    struct Granted;
-
-    impl Modify for Granted {
-        fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
-            api.paths.paths.iter_mut().for_each(|(path, item)| {
-                [("GET", &mut item.get), ("POST", &mut item.post), ("PUT", &mut item.put), ("PATCH", &mut item.patch), ("DELETE", &mut item.delete)]
-                    .into_iter()
-                    .for_each(|(method, operation)| operation.iter_mut().for_each(|operation| grant(operation, method, path)));
-            });
-        }
-    }
-
-    fn grant(operation: &mut Operation, method: &str, path: &str) {
-        let grants = request_grants(method, path, path).into_iter().map(|grant| grant.0);
-        let session = SecurityRequirement::new("session", grants);
-        let required = match method {
-            "GET" => session,
-            _ => session.add("csrf", Vec::<String>::new()),
-        };
-        operation.security = Some(vec![required]);
     }
 
     /// All booking routes, to be nested under a prefix such as `/api/v1`, each documented with its grants.

@@ -33,7 +33,7 @@ pub enum PaymentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "payments", keys = ["org_id", "id"])]
+#[table(name = "billing_payments", keys = ["org_id", "id"])]
 pub struct PaymentData {
     pub org_id: Uuid,
     pub kind: PaymentKind,
@@ -68,7 +68,7 @@ pub type Payment = Entity<Uuid, PaymentData>;
 /// Part of a payment, or of a credit note or vendor credit, set against an invoice or bill (Zoho
 /// `invoices[].amount_applied`, Odoo's reconciliation). Exactly one of `payment_id` and `credit_id` is set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "applications", keys = ["org_id", "id"])]
+#[table(name = "billing_applications", keys = ["org_id", "id"])]
 pub struct ApplicationData {
     pub org_id: Uuid,
     pub invoice_id: Uuid,

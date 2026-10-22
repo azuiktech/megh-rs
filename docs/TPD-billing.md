@@ -10,6 +10,9 @@
 |---|---|---|---|
 | B1 | `megh::money` and the billing row types with `Money` accessors | `[x]` | #47 / #45 |
 | B2 | `Subscriptions`: plans, prices, add-ons, subscribe, change seats, cancel, add-on attach and detach | `[x]` | #48 / #46 |
+| B3 | Document types (section 6): values and entities, no tables yet | `[~]` | — / #171 |
+| B4 | Migration for the document tables and their CHECKs | `[ ]` | — |
+| B5 | Routes, totals and numbering (open, void), applications | `[ ]` | — |
 
 ## 2. Money (`megh::money`)
 
@@ -72,3 +75,15 @@ Behaviour follows megh-go: `subscribe` replaces the organization's subscription 
 
 - Postgres only, like the rest of megh-rs (the `Table` derive builds Postgres SQL).
 - No price arithmetic beyond `Money`: no amount-due, proration or invoices (megh-go has none).
+
+## 6. Documents: orders, invoices, payments (B3, types only)
+
+What customers owe the org and what the org owes vendors. Fields come from Odoo (`account.move`, `account.payment`, `sale.order`, `purchase.order`), Zoho Inventory (Invoice, Bill, Credit Note, Vendor Credit, Sales Order, Purchase Order, Payment) and HubSpot commerce (`invoices`, `line_items`, `commerce_payments`; sell side only). Module `megh::billing` (`value`, `tax`, `vendor`, `order`, `invoice`, `payment`); every entity is `Entity<Uuid, XData>` keyed by `(org_id, id)` like `Client`; `Address`, `Contact`, `Name` and `Attributes` are those of `booking::value` (a common module is for later).
+
+- **Values** (`billing::value`): `Micros` (millionths of the document's currency, as the other billing tables), `Currency` (ISO 4217 by `rusty_money::iso`), `Quantity`, `Percent`, `ExchangeRate` (rust_decimal), `Days`, `TaxMode`, `PaymentMethod` (`cash | cheque | card | bank_transfer | other`).
+- **Setup:** `Tax` (name, percent rate), `PaymentTerm` (net days), `Series` (prefix, next, padding), `Vendor` (name, contact, address, tax id, payment term, currency). The customer is `booking::client::Client`.
+- **`Order` + `OrderLine`:** `kind` `sales_order | purchase_order`, status `draft | open | cancelled` (a draft is a quote); `party_id` is the client or the vendor.
+- **`Invoice` + `InvoiceLine`:** one entity, `kind` `invoice | credit_note | bill | vendor_credit` (Zoho's names); status `draft | open | void`. Paid, partly paid and overdue are derived from applications and `due_date`, never stored. An open invoice is not changed; a credit note or vendor credit (`credited_invoice_id`) corrects it. Lines name at most one of product or service (and the appointment).
+- **`Payment` + `Application`:** `kind` `inbound | outbound` (Odoo), status `processing | succeeded | failed | void`; a refund is a payment the other way. An application sets part of a payment or a credit against an invoice.
+- **Money:** exact `Decimal` and `Micros`; a percent tax on a price needs rounding to the currency's minor unit, done with `rusty_money::Money::round` (Odoo offers per line or once overall, default once). The choice is open.
+- **Left out for now:** compound and fixed taxes, tax groups, payment-term instalments, header discounts and shipping (extra lines), region tax fields, gateways, e-mail and PDF tracking, recurring invoices, chart of accounts. Needs sqlx and nutype `rust_decimal` features.

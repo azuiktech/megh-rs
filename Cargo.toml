@@ -28,8 +28,8 @@ aes-gcm = { version = "0.11", features = ["getrandom"], optional = true }
 base64 = { version = "0.22", optional = true }
 bcrypt = { version = "0.19", optional = true }
 rusty-money = { version = "0.5", features = ["iso"] }
-rust_decimal = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"], optional = true }
+rust_decimal = { version = "1", features = ["serde"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "rust_decimal"], optional = true }
 axum = { version = "0.8", optional = true }
 html-escape = { version = "0.2", optional = true }
 tracing = { version = "0.1", optional = true }
@@ -41,7 +41,7 @@ axum-tower-sessions-csrf = { version = "=0.1.1", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
-nutype = { version = "0.8.0", features = ["serde", "derive_unchecked"] }
+nutype = { version = "0.8.0", features = ["serde", "derive_unchecked", "rust_decimal"] }
 email_address = "0.2.9"
 celes = "3.0.0"
 phonenumber = "0.3.10"

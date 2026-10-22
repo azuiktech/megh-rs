@@ -11,6 +11,7 @@ use validator::{Validate, ValidationError};
 use uuid::Uuid;
 
 use super::party::Party;
+use super::payment::PaymentKind;
 use super::value::{Currency, ExchangeRate, Micros, Percent, Quantity, TaxMode};
 use crate::booking::value::{Address, Attributes, Name};
 use crate::{Entity, Table};
@@ -36,6 +37,15 @@ impl InvoiceKind {
             Self::CreditNote => Some(Self::Invoice),
             Self::VendorCredit => Some(Self::Bill),
             Self::Invoice | Self::Bill => None,
+        }
+    }
+
+    /// The payments that settle it: money in for an invoice, out for a bill; a credit is applied, not paid.
+    pub fn settled_by(self) -> Option<PaymentKind> {
+        match self {
+            Self::Invoice => Some(PaymentKind::Inbound),
+            Self::Bill => Some(PaymentKind::Outbound),
+            Self::CreditNote | Self::VendorCredit => None,
         }
     }
 

@@ -4,8 +4,10 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use validator::{Validate, ValidationError};
 use uuid::Uuid;
 
+use super::party::Party;
 use super::value::{Currency, ExchangeRate, Micros, PaymentMethod};
 use crate::booking::value::{Attributes, Name};
 use crate::{Entity, Table};
@@ -21,7 +23,16 @@ pub enum PaymentKind {
     Outbound,
 }
 
-/// HubSpot's `hs_latest_status` without the refund and dispute states: a refund is a payment the other way.
+impl PaymentKind {
+    pub fn party(self) -> Party {
+        match self {
+            Self::Inbound => Party::Client,
+            Self::Outbound => Party::Vendor,
+        }
+    }
+}
+
+/// HubSpot's `hs_latest_status` without the refund and dispute states (refunds are designed in B6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -32,8 +43,9 @@ pub enum PaymentStatus {
     Void,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_payments", keys = ["org_id", "id"])]
+#[validate(schema(function = "amount_and_fees"))]
 pub struct PaymentData {
     pub org_id: Uuid,
     pub kind: PaymentKind,
@@ -67,8 +79,9 @@ pub type Payment = Entity<Uuid, PaymentData>;
 
 /// Part of a payment, or of a credit note or vendor credit, set against an invoice or bill (Zoho
 /// `invoices[].amount_applied`, Odoo's reconciliation). Exactly one of `payment_id` and `credit_id` is set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_applications", keys = ["org_id", "id"])]
+#[validate(schema(function = "one_source_and_amount"))]
 pub struct ApplicationData {
     pub org_id: Uuid,
     pub invoice_id: Uuid,
@@ -79,3 +92,15 @@ pub struct ApplicationData {
 }
 
 pub type Application = Entity<Uuid, ApplicationData>;
+
+fn amount_and_fees(payment: &PaymentData) -> Result<(), ValidationError> {
+    (i64::from(payment.amount) > 0 && i64::from(payment.fees) >= 0)
+        .then_some(())
+        .ok_or_else(|| ValidationError::new("the amount must be positive and the fees not negative"))
+}
+
+fn one_source_and_amount(application: &ApplicationData) -> Result<(), ValidationError> {
+    (application.payment_id.is_some() != application.credit_id.is_some() && i64::from(application.amount) > 0)
+        .then_some(())
+        .ok_or_else(|| ValidationError::new("an application is of a payment or a credit, and its amount is positive"))
+}

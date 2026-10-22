@@ -8,16 +8,18 @@ use crate::auth::rest::AppContext;
 
 mod invoice_lines;
 mod invoices;
+mod applications;
 mod order_lines;
 mod orders;
 mod payment_terms;
+mod payments;
 mod series;
 mod taxes;
 mod vendors;
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "megh billing", description = "Taxes, payment terms, number series, vendors, orders and invoices; payments follow."),
+    info(title = "megh billing", description = "Taxes, payment terms, number series, vendors, orders, invoices and payments."),
     tags(
         (name = "taxes", description = "Percentage taxes a line can carry."),
         (name = "paymentTerms", description = "Days after the invoice date that payment is due."),
@@ -26,6 +28,8 @@ mod vendors;
         (name = "orderLines", description = "The products and services of an order, with quantity, unit price, discount and taxes. Changed only while the order is a draft."),
         (name = "invoices", description = "Invoices and bills, credit notes and vendor credits (`kind`). Created as a draft and changed only while a draft."),
         (name = "invoiceLines", description = "The products and services billed on an invoice, with quantity, unit price, discount and taxes. Changed only while the invoice is a draft."),
+        (name = "payments", description = "Money received from a client (inbound) or paid to a vendor (outbound), by cash, cheque, card or bank transfer."),
+        (name = "applications", description = "Part of a payment, or of a credit note or vendor credit, set against an open invoice or bill."),
         (name = "vendors", description = "Whom the org buys from: contact, address, tax id, default payment term and currency."),
     ),
     modifiers(&SignedIn),
@@ -46,7 +50,9 @@ pub fn router() -> OpenApiRouter<AppContext> {
         .merge(invoice_lines::routes())
         .merge(orders::routes())
         .merge(order_lines::routes())
+        .merge(applications::routes())
         .merge(payment_terms::routes())
+        .merge(payments::routes())
         .merge(series::routes())
         .merge(vendors::routes());
     Granted.modify(router.get_openapi_mut());

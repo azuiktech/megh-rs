@@ -1,7 +1,7 @@
-//! Booking API server with OpenAPI docs at `/docs`.
+//! Booking and billing API server with OpenAPI docs at `/docs`.
 //!
 //! `cargo run --example booking`. Sign in with `POST /auth/login` (Basic credentials and the token from
-//! `GET /auth/csrf-token`); the session then carries the `jwt_token` cookie every booking route needs.
+//! `GET /auth/csrf-token`); the session then carries the `jwt_token` cookie every booking and billing route needs.
 
 use std::time::Duration;
 
@@ -30,7 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let jwt = JwtSession::new(std::env::var("JWT_SECRET")?.as_bytes(), Duration::from_secs(15 * 60), pool.clone());
     let auth = MeghAuthState::new(pool.clone());
 
-    let (api, spec) = OpenApiRouter::with_openapi(megh::booking::openapi()).nest("/api/v1", megh::booking::router()).split_for_parts();
+    let routes = megh::booking::router().merge(megh::billing::router());
+    let (api, spec) = OpenApiRouter::with_openapi(megh::booking::openapi()).nest("/api/v1", routes).split_for_parts();
     let api = api
         .layer(from_fn(authorizer))
         .layer(from_fn_with_state(jwt, jwt_session))
@@ -45,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = MapRequestLayer::new(megh::booking::rewrite_aip_136).layer(app);
 
     let address = std::env::var("ADDRESS").unwrap_or_else(|_| "127.0.0.1:8080".into());
-    println!("booking API on http://{address}, docs at http://{address}/docs");
+    println!("booking and billing API on http://{address}, docs at http://{address}/docs");
     axum::serve(TcpListener::bind(&address).await?, axum::ServiceExt::into_make_service(app)).await?;
     Ok(())
 }

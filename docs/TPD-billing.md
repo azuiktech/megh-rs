@@ -13,7 +13,7 @@
 | B3 | Document types (section 6): values and entities, no tables yet | `[x]` | #172 / #171 |
 | B4 | Migration `0017_billing_documents.sql`: the ten tables, named `billing_taxes`, `billing_payment_terms`, `billing_series`, `billing_vendors`, `billing_orders`, `billing_order_lines`, `billing_invoices`, `billing_invoice_lines`, `billing_payments`, `billing_applications` (a library's tables prefixed so `CREATE TABLE IF NOT EXISTS` cannot silently meet an application's `orders` or `payments`), composite keys, CHECKs; test stores and reads back every entity | `[x]` | #174 / #173 |
 | B5a | `SignedIn` and `Granted` OpenAPI modifiers move from `booking` to `megh::auth::openapi`, shared with the billing router | `[x]` | #176 / #175 |
-| B5b | CRUD routes (like Client, `/orgs/{org_id}/…`, lowerCamelCase) for `taxes`, `paymentTerms`, `series`, `vendors`, one file each in `src/billing/routes`; `megh::billing::{router, openapi}`; `examples/booking.rs` mounts booking and billing; `Series.next >= 1` and `padding >= 0` are checked on input (400) | `[~]` | — / #177 |
+| B5b | CRUD routes (like Client, `/orgs/{org_id}/…`, lowerCamelCase) for `taxes`, `paymentTerms`, `series`, `vendors`, one file each in `src/billing/routes`; `megh::billing::{router, openapi}`; `examples/booking.rs` mounts booking and billing; `Series.next >= 1` and `padding >= 0` are checked on input (400) | `[~]` | #178 / #177 |
 | B5c | `orders`, `orderLines`; documents are created as `draft` and changed only while draft (409 otherwise), `party_id` must be the org's client or vendor (400), `kind` and `party_id` are not patched | `[ ]` | — |
 | B5d | `invoices`, `invoiceLines`, same rules | `[ ]` | — |
 | B5e | `payments`, `applications` | `[ ]` | — |

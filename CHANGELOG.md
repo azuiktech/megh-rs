@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-23
+- Open and void an invoice: `POST /orgs/{org_id}/invoices/{id}:open` (needs a line and live taxes; takes the number from the app's invoice `Ids`, fixes the totals of the lines and the invoice with per-line half-up rounding to the currency's minor unit, owes the total, locks the invoice) and `:void` (an open invoice nothing was paid on); `billing::totals`; the app gives the router `Formats` as an axum `Extension`; `docs/clarifications.md` (PR #190, issue #189)
+
 ## 2026-10-22
 - Ids of invoices and payments: `billing::ids` with the `Ids` function the app implements (`scope`, `id`), `Numbering::new(prefix, separator, Middle, padding)` for the common format (`INV-0001`, `INV-2026-0001`, `ACME-20261022-001`) and `issue`, which takes the next number from `billing_counters` (migration 0019, one row per org, kind and scope) in the caller's transaction, so numbers are never skipped or repeated (PR #188, issue #187)
 - Billing simplified to tax, invoice, invoice line and payment (migration 0018 replaces the unreleased 0017): the customer is an org; an invoice is a draft until opened and then not changed, with stored `sub_total`, `tax_total`, `total`, `amount_paid`, `balance_due` and a `bill_to` address; a payment pays one open invoice and keeps its `refunded` part; vendors, orders, credit notes, applications, payment terms, series, exchange rates and the purchase side are removed; helpers use the entities' `T::TABLE_NAME` (PR #186, issue #185)

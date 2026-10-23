@@ -16,6 +16,8 @@ pub mod draft;
 #[cfg(feature = "postgres")]
 pub mod ids;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod lifecycle;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod invoice;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod payment;
@@ -25,6 +27,7 @@ pub mod routes;
 pub use routes::{openapi, router};
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod tax;
+pub mod totals;
 
 #[cfg(feature = "postgres")]
 mod subscriptions;

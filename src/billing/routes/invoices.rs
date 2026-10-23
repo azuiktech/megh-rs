@@ -1,6 +1,11 @@
 //! Invoice: created as a draft, changed only while a draft.
 
 use axum::extract::State;
+use axum::routing::post;
+use axum::Extension;
+use serde::Deserialize;
+use utoipa::OpenApi;
+use validator::Validate;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -8,6 +13,8 @@ use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
 use crate::billing::invoice::{Invoice, InvoiceData};
 use crate::billing::draft::{ensure_draft, refuse_changes};
+use crate::billing::ids::Formats;
+use crate::billing::lifecycle;
 use crate::billing::invoice::InvoiceStatus;
 use crate::Entity;
 
@@ -19,10 +26,52 @@ fn check(invoice: &InvoiceData) -> ApiResult<()> {
     invoice.number.is_none().then_some(()).ok_or_else(|| ApiError::BadRequest("the number is made when the invoice is opened".into()))
 }
 
+/// The custom methods; the path segment is `:open` or `:void`.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub enum Verb {
+    #[serde(rename = ":open")]
+    Open,
+    #[serde(rename = ":void")]
+    Void,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct Action {
+    #[serde(flatten)]
+    pub key: Key,
+    pub verb: Verb,
+}
+
+#[derive(OpenApi)]
+#[openapi(paths(act))]
+struct Actions;
+
 pub fn routes() -> OpenApiRouter<AppContext> {
-    OpenApiRouter::new()
+    OpenApiRouter::with_openapi(Actions::openapi())
         .routes(routes!(list, create))
         .routes(routes!(get, replace, patch, delete))
+        .route("/orgs/{org_id}/invoices/{id}/{verb}", post(act))
+}
+
+/// `:open` a draft: it needs a line, takes its number from the app's `Ids`, works out the totals of its lines and
+/// of itself, keeps its `bill_to`, owes its total and is no longer changed. `:void` an open invoice nothing was paid
+/// on; it keeps its number.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org_id}/invoices/{id}:{verb}",
+    tag = "invoices",
+    params(
+        ("org_id" = Uuid, Path),
+        ("id" = Uuid, Path),
+        ("verb" = String, Path, description = "open or void"),
+    ),
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
+)]
+async fn act(State(ctx): State<AppContext>, Extension(formats): Extension<Formats>, Input(action): Input<Action>) -> ApiResult<Invoice> {
+    match action.verb {
+        Verb::Open => lifecycle::open(&ctx.pool, &formats, &action.key).await,
+        Verb::Void => lifecycle::void(&ctx.pool, &action.key).await,
+    }
 }
 
 #[utoipa::path(

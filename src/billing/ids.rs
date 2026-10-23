@@ -2,6 +2,8 @@
 //! `Name` like any other. `Numbering` is the ready-made format: prefix, separator, an optional date part and a
 //! zero-padded sequence. A counter row per org, kind of document and scope numbers them; no format is stored.
 
+use std::sync::Arc;
+
 use chrono::NaiveDate;
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -97,7 +99,7 @@ impl Ids for Numbering {
 
 /// The next id of the org's documents of that kind: the counter of the `ids.scope(on)` is taken atomically
 /// (`next = next + 1`, created at 1), in the caller's transaction, so a rolled back document gives its number back.
-pub async fn issue<I: Ids>(connection: &mut PgConnection, org_id: Uuid, document: Numbered, on: NaiveDate, ids: &I) -> Result<Name, sqlx::Error> {
+pub async fn issue<I: Ids + ?Sized>(connection: &mut PgConnection, org_id: Uuid, document: Numbered, on: NaiveDate, ids: &I) -> Result<Name, sqlx::Error> {
     let sequence: i64 = sqlx::query_scalar(
         "INSERT INTO billing_counters (org_id, document, scope, next) VALUES ($1, $2, $3, 2) \
          ON CONFLICT (org_id, document, scope) DO UPDATE SET next = billing_counters.next + 1, updated_at = now() \
@@ -109,4 +111,18 @@ pub async fn issue<I: Ids>(connection: &mut PgConnection, org_id: Uuid, document
     .fetch_one(connection)
     .await?;
     Ok(ids.id(on, sequence))
+}
+
+/// The ids of an org's invoices and payments, given to the billing router by the app as an axum `Extension`:
+/// `.layer(Extension(Formats::new(invoice_ids, payment_ids)))`.
+#[derive(Clone)]
+pub struct Formats {
+    pub invoice: Arc<dyn Ids + Send + Sync>,
+    pub payment: Arc<dyn Ids + Send + Sync>,
+}
+
+impl Formats {
+    pub fn new(invoice: impl Ids + Send + Sync + 'static, payment: impl Ids + Send + Sync + 'static) -> Self {
+        Self { invoice: Arc::new(invoice), payment: Arc::new(payment) }
+    }
 }

@@ -3,6 +3,14 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-10-24 — the customer is an org that belongs to the seller (S5, approved)
+
+- `parent_id` on `organizations` is the interim hierarchy (one parent, or none).
+- "A client's org has the client's id (trigger plus backfill)": creating a client, by any path, also creates an org with the client's own id, named like the client, under the business that has the client; existing clients are backfilled.
+- "The customer check on create and PUT only": an invoice's `customer_id` must be an org whose parent is the seller (400 otherwise); it is not checked again at `:open`.
+- "The invoice tests updated for it."
+- "No need to do any changes in megh-go. Want to have an implementation for megh-rs only. Will come to megh-go later." So megh-rs may add columns to `organizations` (`parent_id`) that megh-go does not have; the parity test lists it.
+
 ## 2026-10-23 — payments keep the invoice balance (S4, approved)
 
 - Processing and succeeded payments count toward `amount_paid` (the sum of `amount` less `refunded`); a failed or void payment does not. `balance_due` is the total less `amount_paid`.

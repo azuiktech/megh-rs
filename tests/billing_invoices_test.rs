@@ -16,6 +16,11 @@ async fn org(pool: &PgPool, name: &str) -> Uuid {
     sqlx::query_scalar("INSERT INTO organizations (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
+/// An org that belongs to `seller`, as the org of a client does.
+async fn customer_of(pool: &PgPool, seller: Uuid) -> Uuid {
+    sqlx::query_scalar("INSERT INTO organizations (name, parent_id) VALUES ('Customer', $1) RETURNING id").bind(seller).fetch_one(pool).await.unwrap()
+}
+
 async fn service(pool: &PgPool, org: Uuid) -> Uuid {
     sqlx::query_scalar(r#"INSERT INTO services (org_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
         .bind(org)
@@ -69,7 +74,8 @@ async fn open(pool: &PgPool, id: impl ToString) {
 #[sqlx::test(migrations = false)]
 async fn an_invoice_is_created_as_a_draft_for_a_customer_org(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await);
+    let (mine, other) = (org(&pool, "Clinic").await, org(&pool, "Other").await);
+    let ada = customer_of(&pool, mine).await;
     let app = app(pool.clone(), &grants(mine));
     let invoices = format!("/api/v1/orgs/{mine}/invoices");
 
@@ -100,7 +106,8 @@ async fn an_invoice_is_created_as_a_draft_for_a_customer_org(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada, bea) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await, org(&pool, "Bea").await);
+    let (mine, other) = (org(&pool, "Clinic").await, org(&pool, "Other").await);
+    let (ada, bea) = (customer_of(&pool, mine).await, customer_of(&pool, mine).await);
     let (mine_app, other_app) = (app(pool.clone(), &grants(mine)), app(pool.clone(), &grants(other)));
     let (_, created) = call(&mine_app, "POST", &format!("/api/v1/orgs/{mine}/invoices"), invoice(ada)).await;
     let id = created["id"].as_str().unwrap().to_string();
@@ -131,7 +138,8 @@ async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_draft_invoice_is_deleted_with_its_lines(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, ada) = (org(&pool, "Clinic").await, org(&pool, "Ada").await);
+    let mine = org(&pool, "Clinic").await;
+    let ada = customer_of(&pool, mine).await;
     let app = app(pool.clone(), &grants(mine));
     let (_, created) = call(&app, "POST", &format!("/api/v1/orgs/{mine}/invoices"), invoice(ada)).await;
     let id: Uuid = created["id"].as_str().unwrap().parse().unwrap();
@@ -143,7 +151,8 @@ async fn a_draft_invoice_is_deleted_with_its_lines(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_line_belongs_to_a_draft_invoice_of_the_org(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada, theirs_customer) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await, org(&pool, "Cy").await);
+    let (mine, other) = (org(&pool, "Clinic").await, org(&pool, "Other").await);
+    let (ada, theirs_customer) = (customer_of(&pool, mine).await, customer_of(&pool, other).await);
     let app = app(pool.clone(), &[grants(mine), grants(other)].concat());
     let new = |org: Uuid, customer: Uuid| {
         let app = app.clone();
@@ -193,7 +202,8 @@ async fn a_line_belongs_to_a_draft_invoice_of_the_org(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn authorizer_guards_invoices_and_lines(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await);
+    let (mine, other) = (org(&pool, "Clinic").await, org(&pool, "Other").await);
+    let ada = customer_of(&pool, mine).await;
     for (segment, body) in [("invoices", invoice(ada)), ("invoiceLines", line(Uuid::now_v7()))] {
         let collection = format!("/api/v1/orgs/{mine}/{segment}");
         let read_only = app(pool.clone(), &[format!("orgs:read:{mine}"), format!("{segment}:read")]);

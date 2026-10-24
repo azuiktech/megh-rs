@@ -16,6 +16,8 @@ pub struct Org {
     pub trial_ends_at: Option<DateTime<Utc>>,
     pub plan_id: Option<Uuid>,
     pub created_by: Option<Uuid>,
+    /// The org this one belongs to: a client's org, for one, belongs to the business that has the client.
+    pub parent_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: Option<DateTime<Utc>>,
 }

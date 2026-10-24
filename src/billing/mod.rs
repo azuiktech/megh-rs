@@ -14,6 +14,8 @@ pub mod value;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod balance;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod customer;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod draft;
 #[cfg(feature = "postgres")]
 pub mod ids;

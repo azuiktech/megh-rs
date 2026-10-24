@@ -34,7 +34,7 @@ async fn tables_match_megh_go(pool: PgPool) {
     const TS: &str = "timestamp with time zone";
     assert_eq!(
         columns(&pool, "organizations").await,
-        format!("created_at:{TS},created_by:uuid,description:text,id:uuid,name:text,plan_id:uuid,sub_status:text,timezone:text,trial_ends_at:{TS},updated_at:{TS}")
+        format!("created_at:{TS},created_by:uuid,description:text,id:uuid,name:text,parent_id:uuid,plan_id:uuid,sub_status:text,timezone:text,trial_ends_at:{TS},updated_at:{TS}")
     );
     assert_eq!(
         columns(&pool, "organization_members").await,

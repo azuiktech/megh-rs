@@ -12,18 +12,22 @@ use utoipa_axum::routes;
 use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
 use crate::billing::invoice::{Invoice, InvoiceData};
+use crate::billing::customer::ensure_customer;
 use crate::billing::draft::{ensure_draft, refuse_changes};
 use crate::billing::ids::Formats;
 use crate::billing::lifecycle;
 use crate::billing::invoice::InvoiceStatus;
 use crate::Entity;
+use sqlx::PgPool;
 
-/// What a new or replaced invoice must be: a draft, and without a number, which `:open` gives it.
-fn check(invoice: &InvoiceData) -> ApiResult<()> {
+/// What a new or replaced invoice must be: a draft, without a number (which `:open` gives it), for an org that
+/// belongs to the seller.
+async fn check(pool: &PgPool, invoice: &InvoiceData) -> ApiResult<()> {
     (invoice.status == InvoiceStatus::Draft)
         .then_some(())
         .ok_or_else(|| ApiError::BadRequest("an invoice is a draft until it is opened".into()))?;
-    invoice.number.is_none().then_some(()).ok_or_else(|| ApiError::BadRequest("the number is made when the invoice is opened".into()))
+    invoice.number.is_none().then_some(()).ok_or_else(|| ApiError::BadRequest("the number is made when the invoice is opened".into()))?;
+    ensure_customer(pool, invoice.org_id, invoice.customer_id).await
 }
 
 /// The custom methods; the path segment is `:open` or `:void`.
@@ -110,7 +114,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 409)),
 )]
 async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) -> ApiResult<Invoice> {
-    check(&data)?;
+    check(&ctx.pool, &data).await?;
     crud::create(&ctx.pool, data).await
 }
 
@@ -124,7 +128,7 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) 
 )]
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceData>>) -> ApiResult<Invoice> {
     ensure_draft::<InvoiceData>(&ctx.pool, body.data.org_id, body.id).await?;
-    check(&body.data)?;
+    check(&ctx.pool, &body.data).await?;
     crud::replace(&ctx.pool, body).await
 }
 

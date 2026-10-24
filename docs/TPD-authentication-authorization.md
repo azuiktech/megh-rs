@@ -324,7 +324,7 @@ pub fn basic_login_router(state: MeghAuthState, path: &str) -> Router;   // POST
 pub struct BasicLoginResponse { pub user: User, pub memberships: Vec<Member> }
 ```
 
-`Authorization: Basic base64(email:password)` via `axum-extra`'s `TypedHeader<Authorization<Basic>>`; verifies with `UserRepo::verify_password` (F13). Success: 200 `BasicLoginResponse`, session gets `cycle_id()` and `user_id`, exactly like the OAuth callback. Failure: a missing header and every `PasswordError` variant (`UserNotFound`, `NoPassword`, `WrongPassword`) all give the same 401 `{"error":"invalid credentials"}`; login never creates an account. A database or session failure is 500 with a fixed message, logged. The route carries its own `CsrfMiddleware` layer, so it is protected standalone; merge it with `auth_router` for `/auth/me`, `/auth/logout` and `/auth/csrf-token`, which it needs but does not provide itself.
+`Authorization: Basic base64(email:password)` via `axum-extra`'s `TypedHeader<Authorization<Basic>>`; verifies with `UserRepo::verify_password` (F13). Success: 200 `BasicLoginResponse`, session gets `cycle_id()` and `user_id`, exactly like the OAuth callback. Failure: a missing header and every `PasswordError` variant (`UserNotFound`, `NoPassword`, `WrongPassword`) all give the same 401 `{"error":"invalid credentials"}`; login never creates an account. A database or session failure is 500 with a fixed message, logged. The route carries its own `CsrfLayer` (F21), so it is protected standalone; merge it with `auth_router` for `/auth/me` and `/auth/logout`, which it needs but does not provide itself.
 
 Memberships come from `Orgs::memberships`, earliest first (O1). `/auth/me` (the OAuth path) does not return memberships; that is O5, still open.
 

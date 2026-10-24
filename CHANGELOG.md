@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-24
+- Billing follows booking's layout: each entity's routes are in its own file (`tax.rs`, `invoice.rs` with `:open` and `:void`, `invoice_line.rs`, `payment.rs`), the router and OpenAPI are in `billing/mod.rs`, and the `routes` folder is gone; no names or behaviour change (PR #196, issue #195)
 - Payments keep the invoice balance: recording, changing or deleting a payment refreshes the invoice in one transaction (`amount_paid` is the sum of `amount` less `refunded` over processing and succeeded payments, `balance_due` the total less that); a payment for an invoice that is not open, or that pays more than is owed, is a 409 and uses no number; the payment's number comes from the app's payment `Ids` when it is recorded and never changes; a refund is a PATCH of `refunded` (PR #192, issue #191)
 
 ## 2026-10-23

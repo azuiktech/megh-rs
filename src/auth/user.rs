@@ -65,7 +65,7 @@ impl<'a> UserRepo<'a> {
 
     /// Fetches a user by UUID.
     pub async fn get_by_id(&self, id: Uuid) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(self.pool)
             .await
@@ -73,7 +73,7 @@ impl<'a> UserRepo<'a> {
 
     /// Finds a user by email.
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL")
             .bind(email)
             .fetch_optional(self.pool)
             .await
@@ -81,7 +81,7 @@ impl<'a> UserRepo<'a> {
 
     /// Finds a user by the identity of the provider that first created it.
     pub async fn find_by_account(&self, provider: &str, account_id: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE provider = $1 AND account_id = $2")
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE provider = $1 AND account_id = $2 AND deleted_at IS NULL")
             .bind(provider)
             .bind(account_id)
             .fetch_optional(self.pool)
@@ -130,7 +130,7 @@ impl<'a> UserRepo<'a> {
     /// The user with that email if the password matches, otherwise the reason it does not. megh-go stores an
     /// unset password as an empty string, which counts as no password.
     pub async fn verify_password(&self, email: &str, password: &str) -> Result<User, PasswordError> {
-        let stored: Option<Option<String>> = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1")
+        let stored: Option<Option<String>> = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1 AND deleted_at IS NULL")
             .bind(email)
             .fetch_optional(self.pool)
             .await?;

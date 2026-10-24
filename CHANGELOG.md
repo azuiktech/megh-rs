@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-24
+- Payments keep the invoice balance: recording, changing or deleting a payment refreshes the invoice in one transaction (`amount_paid` is the sum of `amount` less `refunded` over processing and succeeded payments, `balance_due` the total less that); a payment for an invoice that is not open, or that pays more than is owed, is a 409 and uses no number; the payment's number comes from the app's payment `Ids` when it is recorded and never changes; a refund is a PATCH of `refunded` (PR #192, issue #191)
+
 ## 2026-10-23
 - Open and void an invoice: `POST /orgs/{org_id}/invoices/{id}:open` (needs a line and live taxes; takes the number from the app's invoice `Ids`, fixes the totals of the lines and the invoice with per-line half-up rounding to the currency's minor unit, owes the total, locks the invoice) and `:void` (an open invoice nothing was paid on); `billing::totals`; the app gives the router `Formats` as an axum `Extension`; `docs/clarifications.md` (PR #190, issue #189)
 

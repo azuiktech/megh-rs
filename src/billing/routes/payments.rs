@@ -1,28 +1,16 @@
 //! Payment: money received for an open invoice.
 
 use axum::extract::State;
+use axum::Extension;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::auth::crud;
-use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
 use crate::billing::payment::{Payment, PaymentData};
-use crate::billing::draft::refuse_changes;
-use crate::billing::invoice::{InvoiceData, InvoiceStatus};
-use crate::Table;
+use crate::billing::balance;
+use crate::billing::ids::Formats;
 use crate::Entity;
-use sqlx::PgPool;
-
-/// A payment is for an invoice of the org (a bad request if not) that is open (a conflict if not).
-async fn for_open_invoice(pool: &PgPool, payment: &PaymentData) -> ApiResult<()> {
-    let query = format!("SELECT status FROM {} WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL", InvoiceData::TABLE_NAME);
-    let status: Option<InvoiceStatus> = sqlx::query_scalar(&query).bind(payment.org_id).bind(payment.invoice_id).fetch_optional(pool).await?;
-    match status {
-        None => Err(ApiError::BadRequest("invoice_id is not an invoice of the org".into())),
-        Some(InvoiceStatus::Open) => Ok(()),
-        Some(_) => Err(ApiError::Conflict("the invoice is not open".into())),
-    }
-}
 
 pub fn routes() -> OpenApiRouter<AppContext> {
     OpenApiRouter::new()
@@ -65,9 +53,8 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     request_body = PaymentData,
     responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 400), (status = 409)),
 )]
-async fn create(State(ctx): State<AppContext>, Input(data): Input<PaymentData>) -> ApiResult<Payment> {
-    for_open_invoice(&ctx.pool, &data).await?;
-    crud::create(&ctx.pool, data).await
+async fn create(State(ctx): State<AppContext>, Extension(formats): Extension<Formats>, Input(data): Input<PaymentData>) -> ApiResult<Payment> {
+    balance::record(&ctx.pool, &formats, data).await
 }
 
 #[utoipa::path(
@@ -79,8 +66,7 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<PaymentData>) 
     responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<PaymentData>>) -> ApiResult<Payment> {
-    for_open_invoice(&ctx.pool, &body.data).await?;
-    crud::replace(&ctx.pool, body).await
+    balance::replace(&ctx.pool, body).await
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -93,8 +79,7 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Payment
     responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Payment> {
-    refuse_changes(&body, &["invoice_id"])?;
-    crud::patch(&ctx.pool, body).await
+    balance::patch(&ctx.pool, body).await
 }
 
 #[utoipa::path(
@@ -105,5 +90,5 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 404), (status = 409)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Payment> {
-    crud::delete(&ctx.pool, &key).await
+    balance::remove(&ctx.pool, &key).await
 }

@@ -3,6 +3,14 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-10-23 — payments keep the invoice balance (S4, approved)
+
+- Processing and succeeded payments count toward `amount_paid` (the sum of `amount` less `refunded`); a failed or void payment does not. `balance_due` is the total less `amount_paid`.
+- "No overpaying with 409": a payment that would pay more than is owed is refused.
+- "Refund via PATCH `refunded`": the refund is the refunded part of the payment; no new verb.
+- "Number set when recorded and never changed": the payment's number comes from the app's payment `Ids` when it is recorded; a body that sets `number` is refused.
+- "The payment tests updated for the number and Formats."
+
 ## 2026-10-23 — open and void an invoice (S3, approved)
 
 - Totals: "per-line half-up rounding" (each line's base, tax and total are rounded to the currency's minor unit, halves up; the invoice is the sum of its lines). `:open` and `:void` as described: `:open` needs a line, takes the number from the app's `Ids`, fixes the totals and locks the invoice; `:void` only for an open invoice with nothing paid.

@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-25
+- Fix: a soft-deleted user (`deleted_at` set) is not found by `get_by_id`, `find_by_email` or `find_by_account`, cannot log in with a password, cannot sign in through a provider (the callback answers 403; `upsert` leaves the row as it is) and cannot renew a token from an old session (`Orgs::memberships` is empty for it) (PR #200, issue #199)
 - CSRF on the login routes is stateless: `auth_router` and `basic_login_router` use `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) instead of the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins). Removed `GET /auth/csrf-token`, the `csrf` OpenAPI scheme, the `CsrfMiddleware`/`get_or_create_token`/`TOKEN_HEADER`/`TOKEN_KEY` re-exports and `axum-tower-sessions-csrf`; the UI SDK no longer fetches or sends a CSRF token (PR #198, issue #197)
 
 ## 2026-10-24

@@ -2,9 +2,8 @@ Booking for any kind of business: rooms and other resources, providers, clients,
 blockouts, open slots, holds and appointments. Every path is under an org: `/api/v1/orgs/{org_id}/...`; the
 org in the path always wins over one in the body.
 
-**Signing in.** `GET /auth/csrf-token` gives a CSRF token; `POST /auth/login` with Basic credentials and the
-token in the `x-csrf-token` header sets the `jwt_token` cookie. Every route needs the cookie; every write also
-needs the `x-csrf-token` header. Each route needs a grant derived from its path: `orgs:read:{org_id}`, then
+**Signing in.** `POST /auth/login` with Basic credentials sets the `jwt_token` cookie. Every route needs the
+cookie. A browser write from another site is refused (403) unless its origin is trusted. Each route needs a grant derived from its path: `orgs:read:{org_id}`, then
 `<resource>:<action>` or `<resource>:<action>:{id}`, where the action is `read`, `create`, `update`, `delete`,
 or the custom method after `:` (`appointments:book`, `appointments:available`, `reservations:purge`).
 

@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11 and F13–F20 shipped (F12 is superseded by F16). Features are not delivered in number order.
+**Status:** F1–F11 and F13–F21 shipped (F12 is superseded by F16). Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -20,7 +20,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | `[x]` | #53 / #22 |
 | F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
 | F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
-| F21 | Stateless CSRF on the login routes: `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) replaces the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins); `GET /auth/csrf-token`, the `csrf` OpenAPI scheme and `axum-tower-sessions-csrf` are removed | `[~]` | #197 |
+| F21 | Stateless CSRF on the login routes: `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) replaces the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins); `GET /auth/csrf-token`, the `csrf` OpenAPI scheme and `axum-tower-sessions-csrf` are removed | `[x]` | #198 / #197 |
 | F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | `[x]` | #59 / #58 |
 | F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns memberships | `[x]` | #60 / #30 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |

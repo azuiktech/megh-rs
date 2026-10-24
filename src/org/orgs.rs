@@ -24,9 +24,9 @@ impl Orgs {
         Self { pool }
     }
 
-    /// All memberships of a user, earliest first.
+    /// All memberships of a user, earliest first; none for a deleted user.
     pub async fn memberships(&self, user_id: Uuid) -> Result<Vec<Member>, OrgError> {
-        Ok(sqlx::query_as::<_, Member>("SELECT * FROM organization_members WHERE user_id = $1 ORDER BY joined_at ASC")
+        Ok(sqlx::query_as::<_, Member>("SELECT * FROM organization_members WHERE user_id = $1 AND NOT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NOT NULL) ORDER BY joined_at ASC")
             .bind(user_id)
             .fetch_all(&self.pool)
             .await?)

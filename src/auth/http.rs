@@ -183,6 +183,14 @@ impl<E: std::error::Error> From<E> for AuthError {
     }
 }
 
+/// `upsert` returns no row for a deleted user.
+fn disabled(error: sqlx::Error) -> AuthError {
+    match error {
+        sqlx::Error::RowNotFound => AuthError(StatusCode::FORBIDDEN, "this account is disabled"),
+        other => other.into(),
+    }
+}
+
 fn internal(cause: impl std::fmt::Display) -> AuthError {
     tracing::error!("{cause}");
     AuthError(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
@@ -353,7 +361,7 @@ pub async fn oauth_callback(
             display_name: info.name.clone(),
             photo_url: info.picture.clone(),
         };
-        let user = UserRepo::new(&state.pool).upsert(&login).await?;
+        let user = UserRepo::new(&state.pool).upsert(&login).await.map_err(disabled)?;
         save_account(&state, &provider_id, info, &tokens).await?;
         sign_in(&session, user.id).await?;
         serde_json::json!({ "type": "oauth_success", "user": user })

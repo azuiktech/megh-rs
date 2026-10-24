@@ -131,3 +131,14 @@ async fn logout_clears_the_token_cookie() {
     let cleared = response.headers().get_all(header::SET_COOKIE).iter().map(|v| v.to_str().unwrap()).find(|v| v.starts_with(JWT_COOKIE)).unwrap();
     assert!(cleared.starts_with(&format!("{JWT_COOKIE}=;")) && cleared.contains("Max-Age=0") && cleared.contains("Path=/"), "{cleared}");
 }
+
+#[sqlx::test]
+async fn a_deleted_users_session_cannot_renew_a_token(pool: PgPool) {
+    let (user_id, _) = reader(&pool).await;
+    let app = app(pool.clone());
+    let session = session_cookie(&app, user_id).await;
+    assert_eq!(send(&app, "GET", "/invoices", &session).await.status(), StatusCode::OK);
+    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1").bind(user_id).execute(&pool).await.unwrap();
+
+    assert_eq!(send(&app, "GET", "/invoices", &session).await.status(), StatusCode::UNAUTHORIZED);
+}

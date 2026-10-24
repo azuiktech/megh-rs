@@ -88,7 +88,8 @@ impl<'a> UserRepo<'a> {
             .await
     }
 
-    /// Upserts user by email: one user across providers. The first provider identity is kept (only filled in
+    /// Upserts user by email: one user across providers. A deleted user is left as it is and gives `RowNotFound`.
+    /// The first provider identity is kept (only filled in
     /// when unset); non-empty display name/photo are updated; inserts if not existing.
     pub async fn upsert(&self, input: &UpsertUserInput) -> Result<User, sqlx::Error> {
         let display_name = input.display_name.as_deref().unwrap_or("");
@@ -104,6 +105,7 @@ impl<'a> UserRepo<'a> {
                 display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE users.display_name END,
                 photo_url = CASE WHEN EXCLUDED.photo_url <> '' THEN EXCLUDED.photo_url ELSE users.photo_url END,
                 updated_at = NOW()
+            WHERE users.deleted_at IS NULL
             RETURNING *
             "#,
         )

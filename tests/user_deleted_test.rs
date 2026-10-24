@@ -41,3 +41,15 @@ async fn a_deleted_user_cannot_log_in_with_the_right_password(pool: PgPool) {
 
     assert!(matches!(result, Err(PasswordError::UserNotFound)), "{result:?}");
 }
+
+#[sqlx::test]
+async fn signing_in_again_does_not_bring_a_deleted_user_back(pool: PgPool) {
+    let ann = deleted_ann(&pool).await;
+    let login = UpsertUserInput { provider: "google".into(), account_id: "1".into(), email: "ann@example.com".into(), display_name: None, photo_url: None };
+
+    let result = UserRepo::new(&pool).upsert(&login).await;
+
+    assert!(result.is_err(), "{result:?}");
+    let still_deleted: bool = sqlx::query_scalar("SELECT deleted_at IS NOT NULL FROM users WHERE id = $1").bind(ann.id).fetch_one(&pool).await.unwrap();
+    assert!(still_deleted);
+}

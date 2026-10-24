@@ -211,3 +211,15 @@ async fn a_configured_token_encryptor_encrypts_what_the_callback_saves(pool: PgP
     assert!(stored.0 != "at" && Encryptor::new(&[5u8; 32]).decrypt(&stored.0).unwrap() == "at");
     assert_eq!(Encryptor::new(&[5u8; 32]).decrypt(&stored.1).unwrap(), "rt");
 }
+
+#[sqlx::test]
+async fn a_deleted_user_cannot_sign_in_through_the_provider(pool: PgPool) {
+    sqlx::query("INSERT INTO users (provider, account_id, email, deleted_at) VALUES ('stub', '1', 'ann@example.com', NOW())").execute(&pool).await.unwrap();
+    let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
+    let (cookie, state, _) = start_login(&app).await;
+
+    let response = get_page(&app, &format!("/auth/stub/callback?code=abc&state={state}"), &cookie).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(get_page(&app, "/auth/me", &cookie).await.status(), StatusCode::UNAUTHORIZED);
+}

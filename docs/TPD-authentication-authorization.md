@@ -20,6 +20,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | `[x]` | #53 / #22 |
 | F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
 | F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
+| F21 | Stateless CSRF on the login routes: `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) replaces the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins); `GET /auth/csrf-token`, the `csrf` OpenAPI scheme and `axum-tower-sessions-csrf` are removed | `[~]` | #197 |
 | F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | `[x]` | #59 / #58 |
 | F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns memberships | `[x]` | #60 / #30 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
@@ -46,7 +47,7 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 
 ## 3. Architecture
 
-- **Stack:** axum 0.8, `tower-sessions` 0.14 with `axum-tower-sessions-csrf` =0.1.1, sqlx 0.8 (Postgres; held back, see `AGENTS.md`), `oauth2` 5 (no bundled HTTP client; `oauth_http_client` adapts the caller's `reqwest` 0.13 client), `reqwest` 0.13 (rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
+- **Stack:** axum 0.8, `tower-sessions` 0.14, sqlx 0.8 (Postgres; held back, see `AGENTS.md`), `oauth2` 5 (no bundled HTTP client; `oauth_http_client` adapts the caller's `reqwest` 0.13 client), `reqwest` 0.13 (rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
 - **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
 - **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `session.cycle_id()` and `user_id` stored in the `tower-sessions` session (cookie set by the app's `SessionManagerLayer`). Later requests: session `user_id` → `UserRepo::get_by_id` → `AuthUser`.
 - **Authorization path:** the application puts a `Member` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
@@ -227,8 +228,7 @@ pub use axum::extract::FromRef;                         // replaces the former h
 | `GET /auth/{provider}`, `GET /auth/{provider}/login` | 303 to the provider authorization URL (`access_type=offline`, `include_granted_scopes=true`, `prompt=select_account`, provider default scopes). 404 unknown provider; 500 bad callback URL. |
 | `GET /auth/{provider}/callback`, `GET /auth/{provider}/token` | Same handler. Query: `code`, `state`, `error`, `error_description`. Exchanges the code, fetches userinfo, upserts the user, saves the `connected_accounts` row, starts the session (`cycle_id`, `user_id`). 200 HTML. 400 provider `error` or missing `code`; 404 unknown provider; 502 exchange or userinfo failure; 500 database or session failure. Callback URL defaults to `{app_origin}/auth/{provider}/token` unless `redirect_url` is set. |
 | `GET /auth/me` | 200 `AuthMeResponse`. 401 no `user_id` in the session or missing user; 500 database or session error. |
-| `POST /auth/logout` | Flushes the session, 200 `{"status":"ok"}`. Needs the CSRF token (F16). |
-| `GET /auth/csrf-token` | 200 with the session's CSRF token as the body (F16). |
+| `POST /auth/logout` | Flushes the session, 200 `{"status":"ok"}`. Refused (403) when a browser sends it from another site (F21). |
 
 The session cookie, its name, lifetime and `Secure`/`SameSite` flags are the `SessionManagerLayer`'s settings, not megh's.
 
@@ -267,9 +267,9 @@ let store = PostgresStore::new(pool.clone());            // tower-sessions-sqlx-
 let app = megh::auth_router(state).layer(SessionManagerLayer::new(store));
 ```
 
-`auth_router` puts `CsrfMiddleware::middleware` on every route it serves (inside the session layer). A client calls `GET /auth/csrf-token` once per session and sends the value as `x-csrf-token` on every POST, PUT, PATCH and DELETE; a missing or wrong token gets 403. The token lives in the session (constant-time comparison, no cookie of its own), so it dies with `logout`. `GET`, `HEAD` and `OPTIONS` are not checked, so the OAuth login redirect and callback are outside the check (they are covered by F8).
+**F21 replaced the token CSRF of F16 with the stateless `tower-http` `CsrfLayer` again** (the token check read the session store on every request). `auth_router` and `basic_login_router` put `CsrfLayer::new()` on their routes: `GET`, `HEAD` and `OPTIONS` pass; a write passes when `Sec-Fetch-Site` is `same-origin` or `none`, when its `Origin` is a trusted origin or matches `Host`, or when it has neither header (servers, `curl`, LLM and MCP clients); any other gets 403. `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer, e.g. `CsrfLayer::new().add_trusted_origin("https://xyz.com")` for a frontend on a subdomain. The OAuth login redirect and callback are `GET`s, so they are covered by F8. Behind a proxy that rewrites `Host` or strips `Origin`, `Sec-Fetch-Site` is the only defence left.
 
-Versions are held back (`AGENTS.md`): the only Postgres store for `tower-sessions` is `tower-sessions-sqlx-store` 0.15, which needs `tower-sessions-core` 0.14 and `sqlx` 0.8; `axum-tower-sessions-csrf` 0.1.3+ needs `tower-sessions` 0.15. The store's `tower_sessions.session` table (`id`, `data`, `expiry_date`) cannot match megh-go's `sessions` table. `events_router` (`POST /sub`) is not covered (§9).
+Versions are held back (`AGENTS.md`): the only Postgres store for `tower-sessions` is `tower-sessions-sqlx-store` 0.15, which needs `tower-sessions-core` 0.14 and `sqlx` 0.8; The store's `tower_sessions.session` table (`id`, `data`, `expiry_date`) cannot match megh-go's `sessions` table. `events_router` (`POST /sub`) is not covered (§9).
 
 ### F17 — JWT access token (`auth::token`, features `axum` + `postgres`; #50 / #49)
 
@@ -330,7 +330,7 @@ Memberships come from `Orgs::memberships`, earliest first (O1). `/auth/me` (the 
 
 ## 6. Test coverage (shipped)
 
-`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16); `jwt_session_test.rs` (F17); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
+`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16, F21); `jwt_session_test.rs` (F17); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
 
 ## 7. F8 — OAuth callback hardening (`auth::http`; #53 / #22)
 
@@ -362,7 +362,7 @@ Found while auditing the shipped stack. F8 has closed the OAuth `state`, PKCE, `
 | Gap | Note | Candidate |
 |---|---|---|
 | `AuthUser` is not linked to `Member`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
-| `events_router` `POST /sub` has no CSRF check | F16 covers `auth_router` only; `events_router` has no session layer, so protecting it changes its signature | F16's `CsrfMiddleware` |
+| `events_router` `POST /sub` has no CSRF check | F16 covers `auth_router` only; `events_router` has no session layer, so protecting it changes its signature | `events_router_with_csrf` |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |
 | No rate limiting on `/auth/*` | | `tower_governor` (axum compatibility unverified) |
 | `connected_accounts` has no `user_id` link | Per-user disconnect cannot be authorized | — |

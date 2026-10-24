@@ -24,12 +24,51 @@ pub mod invoice;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod payment;
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub mod routes;
+pub mod invoice_line;
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub use routes::{openapi, router};
+pub use api::{openapi, router};
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod tax;
 pub mod totals;
+
+#[cfg(all(feature = "axum", feature = "postgres"))]
+mod api {
+    use utoipa::{Modify, OpenApi};
+    use utoipa_axum::router::OpenApiRouter;
+
+    use crate::auth::openapi::{Granted, SignedIn};
+    use crate::auth::rest::AppContext;
+
+    #[derive(OpenApi)]
+    #[openapi(
+        info(title = "megh billing", description = "Taxes, invoices and payments."),
+        tags(
+            (name = "taxes", description = "Percentage taxes a line can carry."),
+            (name = "invoices", description = "A request for payment from a customer org. Created as a draft and changed only while a draft."),
+            (name = "invoiceLines", description = "The products and services billed on an invoice, with quantity, unit price, discount and taxes. Changed only while the invoice is a draft."),
+            (name = "payments", description = "Money received for an open invoice, by cash, cheque, card or bank transfer; a refund is the `refunded` part of the payment."),
+        ),
+        modifiers(&SignedIn),
+        security(("session" = [], "csrf" = [])),
+    )]
+    struct Billing;
+
+    /// The billing API's OpenAPI description: title and how requests are signed in.
+    pub fn openapi() -> utoipa::openapi::OpenApi {
+        Billing::openapi()
+    }
+
+    /// All billing routes, to be nested under a prefix such as `/api/v1`, each documented with its grants.
+    pub fn router() -> OpenApiRouter<AppContext> {
+        let mut router = OpenApiRouter::with_openapi(Billing::openapi())
+            .merge(super::invoice::routes())
+            .merge(super::invoice_line::routes())
+            .merge(super::payment::routes())
+            .merge(super::tax::routes());
+        Granted.modify(router.get_openapi_mut());
+        router
+    }
+}
 
 #[cfg(feature = "postgres")]
 mod subscriptions;

@@ -13,6 +13,13 @@ Read before proposing or changing anything.
 - No token endpoint on the existing provider routes: "/token, /revoke, /login endpoints" already exist there (identity provider flow).
 - CSRF: "you can replace csrf with Sec-Fetch-Site check. I am not really bothered about old browsers." The stateless check must not read the DB per request.
 - Browser callers from a subdomain are allowed: "xyz.com can call apis api.xyz.com". The login routes' CSRF check must let a configured site through.
+- Client credentials for machines: "do hand roll this case. likely safer bet." The token endpoint is written in megh (no `oxide-auth`), with the `oauth2` crate's response types.
+- A machine is another user: `account_id` is the client id, and "email can also be made client_id so pk remains same". The secret is stored on the user (`password_hash`).
+- "No need to store generated jwt in connected_accounts. it is not calling api via this token, it is generating the token."
+- The request is `grant_type=client_credentials&scope=...`; nothing prevents the `scope` parameter.
+- "Always A. one token for one org." A token carries the grants of one org only (decided after the cross-org problem was explained: grants of one org must never count in another).
+- Machine creation is just a function for now ("will have admin api later").
+- "Can have an admin api" to create machines.
 - "I do NOT want Claude to invent any of its own imaginary solution": propose only what is backed by a reference.
 
 ## 2026-10-23 — payments keep the invoice balance (S4, approved)

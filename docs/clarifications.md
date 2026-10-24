@@ -11,6 +11,12 @@ Read before proposing or changing anything.
 - "Number set when recorded and never changed": the payment's number comes from the app's payment `Ids` when it is recorded; a body that sets `number` is refused.
 - "The payment tests updated for the number and Formats."
 
+## 2026-10-24 — S5 discarded; one convention across the project
+
+- PR #194 (S5: `parent_id` on `organizations`, a trigger that gives every client an org, the customer check) was discarded: "Discard it. Totally bogus." Reason given: "It was not discussed, and you implemented without informing me. Do not try to hide things. Be very explicit with decisions." The branch and the PR were closed and deleted; `main` never had it. How a customer is identified, and who may be invoiced, is open again and must be discussed before any design or code.
+- "No need to do any changes in megh-go. Want to have an implementation for megh-rs only. Will come to megh-go later."
+- "Every part of the project should use similar convention." Billing follows booking: an entity's type and its routes in one file (like `client.rs`), the router and OpenAPI in the module's `mod.rs`, the same naming. "Do not do things on your own": a choice of structure, naming or layout is asked, never decided; the file layout is shown with the types for approval. Every decision is stated explicitly, including what a change does to existing data.
+
 ## 2026-10-23 — open and void an invoice (S3, approved)
 
 - Totals: "per-line half-up rounding" (each line's base, tax and total are rounded to the currency's minor unit, halves up; the invoice is the sum of its lines). `:open` and `:void` as described: `:open` needs a line, takes the number from the app's `Ids`, fixes the totals and locks the invoice; `:void` only for an open invoice with nothing paid.

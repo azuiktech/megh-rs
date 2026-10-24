@@ -2,14 +2,23 @@
 //! number and fixes its totals, and an open invoice is not changed. Whether it is paid or overdue follows from
 //! `amount_paid`, `balance_due` and `due_date`.
 
+use axum::extract::State;
+use axum::routing::post;
+use axum::Extension;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{OpenApi, ToSchema};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 use uuid::Uuid;
-use validator::{Validate, ValidationError};
+use validator::Validate;
 
-use super::draft::Line;
-use super::value::{Currency, Micros, Percent, Quantity};
+use super::draft::{ensure_draft, refuse_changes};
+use super::ids::Formats;
+use super::lifecycle;
+use super::value::{Currency, Micros};
+use crate::auth::crud;
+use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
 use crate::booking::value::{Address, Attributes, Name};
 use crate::{Entity, Table};
 
@@ -62,40 +71,139 @@ pub struct InvoiceData {
 
 pub type Invoice = Entity<Uuid, InvoiceData>;
 
-/// What is billed: a product, a service (with the appointment it was for), or neither for a free line.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "billing_invoice_lines", keys = ["org_id", "id"])]
-#[validate(schema(function = "names_one_target"))]
-pub struct InvoiceLineData {
-    pub org_id: Uuid,
-    pub invoice_id: Uuid,
-    pub position: i32,
-    pub product_id: Option<Uuid>,
-    pub service_id: Option<Uuid>,
-    pub appointment_id: Option<Uuid>,
-    #[schema(value_type = String, example = "Tooth cleaning")]
-    pub description: Name,
-    pub quantity: Quantity,
-    pub unit_price: Micros,
-    #[serde(default)]
-    pub discount: Percent,
-    #[serde(default)]
-    pub tax_ids: Vec<Uuid>,
-    #[serde(default)]
-    pub sub_total: Micros,
-    #[serde(default)]
-    pub total: Micros,
-}
-
-pub type InvoiceLine = Entity<Uuid, InvoiceLineData>;
-
-impl Line for InvoiceLineData {
-    type Parent = InvoiceData;
-    const PARENT_ID: &'static str = "invoice_id";
-}
-
-fn names_one_target(line: &InvoiceLineData) -> Result<(), ValidationError> {
-    (line.product_id.is_none() || line.service_id.is_none())
+/// What a new or replaced invoice must be: a draft, and without a number, which `:open` gives it.
+fn check(invoice: &InvoiceData) -> ApiResult<()> {
+    (invoice.status == InvoiceStatus::Draft)
         .then_some(())
-        .ok_or_else(|| ValidationError::new("a line names a product or a service, not both"))
+        .ok_or_else(|| ApiError::BadRequest("an invoice is a draft until it is opened".into()))?;
+    invoice.number.is_none().then_some(()).ok_or_else(|| ApiError::BadRequest("the number is made when the invoice is opened".into()))
+}
+
+/// The custom methods; the path segment is `:open` or `:void`.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub enum Verb {
+    #[serde(rename = ":open")]
+    Open,
+    #[serde(rename = ":void")]
+    Void,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct Action {
+    #[serde(flatten)]
+    pub key: Key,
+    pub verb: Verb,
+}
+
+#[derive(OpenApi)]
+#[openapi(paths(act))]
+struct Actions;
+
+pub fn routes() -> OpenApiRouter<AppContext> {
+    OpenApiRouter::with_openapi(Actions::openapi())
+        .routes(routes!(list, create))
+        .routes(routes!(get, replace, patch, delete))
+        .route("/orgs/{org_id}/invoices/{id}/{verb}", post(act))
+}
+
+/// `:open` a draft: it needs a line, takes its number from the app's `Ids`, works out the totals of its lines and
+/// of itself, keeps its `bill_to`, owes its total and is no longer changed. `:void` an open invoice nothing was paid
+/// on; it keeps its number.
+#[utoipa::path(
+    post,
+    path = "/orgs/{org_id}/invoices/{id}:{verb}",
+    tag = "invoices",
+    params(
+        ("org_id" = Uuid, Path),
+        ("id" = Uuid, Path),
+        ("verb" = String, Path, description = "open or void"),
+    ),
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
+)]
+async fn act(State(ctx): State<AppContext>, Extension(formats): Extension<Formats>, Input(action): Input<Action>) -> ApiResult<Invoice> {
+    match action.verb {
+        Verb::Open => lifecycle::open(&ctx.pool, &formats, &action.key).await,
+        Verb::Void => lifecycle::void(&ctx.pool, &action.key).await,
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/orgs/{org_id}/invoices",
+    tag = "invoices",
+    params(
+        ("org_id" = Uuid, Path),
+        ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`."),
+        ("page_size" = Option<u16>, Query),
+        ("page_token" = Option<String>, Query),
+    ),
+    responses((status = 200, body = inline(Page<Entity<Uuid, InvoiceData>>))),
+)]
+async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>) -> ApiResult<Page<Invoice>> {
+    crud::list(&ctx.pool, &request).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/orgs/{org_id}/invoices/{id}",
+    tag = "invoices",
+    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 404)),
+)]
+async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
+    crud::get(&ctx.pool, &key).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/orgs/{org_id}/invoices",
+    tag = "invoices",
+    params(("org_id" = Uuid, Path)),
+    request_body = InvoiceData,
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 409)),
+)]
+async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) -> ApiResult<Invoice> {
+    check(&data)?;
+    crud::create(&ctx.pool, data).await
+}
+
+#[utoipa::path(
+    put,
+    path = "/orgs/{org_id}/invoices/{id}",
+    tag = "invoices",
+    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    request_body = InvoiceData,
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
+)]
+async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceData>>) -> ApiResult<Invoice> {
+    ensure_draft::<InvoiceData>(&ctx.pool, body.data.org_id, body.id).await?;
+    check(&body.data)?;
+    crud::replace(&ctx.pool, body).await
+}
+
+/// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
+#[utoipa::path(
+    patch,
+    path = "/orgs/{org_id}/invoices/{id}",
+    tag = "invoices",
+    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    request_body = Object,
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
+)]
+async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Invoice> {
+    ensure_draft::<InvoiceData>(&ctx.pool, body.key.org_id, body.key.id).await?;
+    refuse_changes(&body, &["status", "customer_id", "number"])?;
+    crud::patch(&ctx.pool, body).await
+}
+
+#[utoipa::path(
+    delete,
+    path = "/orgs/{org_id}/invoices/{id}",
+    tag = "invoices",
+    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 404), (status = 409)),
+)]
+async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
+    ensure_draft::<InvoiceData>(&ctx.pool, key.org_id, key.id).await?;
+    crud::delete(&ctx.pool, &key).await
 }

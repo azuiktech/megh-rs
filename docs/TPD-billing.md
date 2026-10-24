@@ -82,7 +82,7 @@ Behaviour follows megh-go: `subscribe` replaces the organization's subscription 
 
 ## 6. Invoices and payments (the simple model)
 
-Fields follow HubSpot's invoice, line item and payment objects (the stored amounts, `bill_to`, the refund kept on the payment); product and inventory come from Odoo and Zoho. Module `megh::billing` (`value`, `tax`, `invoice`, `payment`, `draft`, `routes`); every entity is `Entity<Uuid, XData>` keyed by `(org_id, id)` like `Client`; `Address`, `Attributes` and `Name` are those of `booking::value`. Tables `billing_taxes`, `billing_invoices`, `billing_invoice_lines`, `billing_payments` (prefixed so `CREATE TABLE IF NOT EXISTS` cannot meet an application's own `invoices` or `payments`).
+Fields follow HubSpot's invoice, line item and payment objects (the stored amounts, `bill_to`, the refund kept on the payment); product and inventory come from Odoo and Zoho. Module `megh::billing`: one file per entity with its routes, as booking does (`tax`, `invoice` with `:open` and `:void`, `invoice_line`, `payment`), the router and OpenAPI in `mod.rs`, and `value`, `ids`, `totals`, `lifecycle`, `balance`, `draft`; every entity is `Entity<Uuid, XData>` keyed by `(org_id, id)` like `Client`; `Address`, `Attributes` and `Name` are those of `booking::value`. Tables `billing_taxes`, `billing_invoices`, `billing_invoice_lines`, `billing_payments` (prefixed so `CREATE TABLE IF NOT EXISTS` cannot meet an application's own `invoices` or `payments`).
 
 - **Values** (`billing::value`): `Micros` (millionths of the invoice's currency), `Currency` (ISO 4217), `Quantity`, `Percent`, `PaymentMethod` (`cash | cheque | card | bank_transfer | other`).
 - **`Tax`:** name and a percentage.

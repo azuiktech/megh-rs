@@ -7,7 +7,8 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::ids::{issue, Formats, Numbered};
-use super::invoice::{Invoice, InvoiceData, InvoiceLine, InvoiceLineData, InvoiceStatus};
+use super::invoice::{Invoice, InvoiceData, InvoiceStatus};
+use super::invoice_line::{InvoiceLine, InvoiceLineData};
 use super::tax::TaxData;
 use super::totals::{self, Amounts, TotalsError};
 use super::value::Percent;

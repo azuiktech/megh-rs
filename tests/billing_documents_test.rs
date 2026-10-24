@@ -1,7 +1,8 @@
 //! B4 (docs/TPD-billing.md): the billing tables store and return every entity, and refuse what the types say cannot be.
 
 use chrono::NaiveDate;
-use megh::billing::invoice::{InvoiceData, InvoiceLineData, InvoiceStatus};
+use megh::billing::invoice::{InvoiceData, InvoiceStatus};
+use megh::billing::invoice_line::InvoiceLineData;
 use megh::billing::payment::{PaymentData, PaymentStatus};
 use megh::billing::tax::TaxData;
 use megh::billing::value::{Currency, Micros, PaymentMethod, Percent, Quantity};

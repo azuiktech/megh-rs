@@ -1,6 +1,7 @@
 //! Short-lived JWT access tokens (RFC 9068, the claims megh-go uses) that answer requests without a database
-//! lookup. When the token is missing or has expired it is renewed from the session, so the token is a cache in
-//! front of the session. Revocation is the token's lifetime: ending the session stops renewal, not the current token.
+//! lookup. The token comes from `Authorization: Bearer` or, failing that, the cookie. A cookie token that is missing
+//! or has expired is renewed from the session, so it is a cache in front of the session; a bearer token is never
+//! renewed. Revocation is the token's lifetime: ending the session stops renewal, not the current token.
 
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use axum_extra::headers::{authorization::Bearer, Authorization, HeaderMapExt};
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{decode, encode, get_current_timestamp, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -75,6 +77,10 @@ impl JwtSession {
         Self { encoding: EncodingKey::from_secret(secret), decoding: DecodingKey::from_secret(secret), validation, ttl, orgs: Orgs::new(pool) }
     }
 
+    fn decode(&self, jwt: &str) -> Result<AccessToken, jsonwebtoken::errors::Error> {
+        decode::<AccessToken>(jwt, &self.decoding, &self.validation).map(|token| token.claims)
+    }
+
     /// A new token for the user's first membership, taken from the session.
     async fn renew(&self, jar: CookieJar, session: &Session) -> Result<(CookieJar, Vec<Grant>), StatusCode> {
         let user_id: Uuid = session.get(USER_ID).await.map_err(internal)?.ok_or(StatusCode::UNAUTHORIZED)?;
@@ -85,8 +91,9 @@ impl JwtSession {
     }
 }
 
-/// Puts the grants of a valid token into the request for `authorizer`; renews a missing or expired token from the
-/// session. A token that fails any other check is rejected. Mount it inside the session layer.
+/// Puts the grants of a valid token into the request for `authorizer`. A bearer token must be valid; a missing or
+/// expired cookie token is renewed from the session. A token that fails any other check is rejected. Mount it inside
+/// the session layer.
 pub async fn jwt_session(
     State(jwt): State<JwtSession>,
     jar: CookieJar,
@@ -94,14 +101,20 @@ pub async fn jwt_session(
     mut request: Request,
     next: Next,
 ) -> Result<(CookieJar, Response), StatusCode> {
-    let token = jar.get(JWT_COOKIE).map(|cookie| decode::<AccessToken>(cookie.value(), &jwt.decoding, &jwt.validation));
-    let (jar, grants) = match token {
-        Some(Ok(token)) => (jar, token.claims.grants()),
-        Some(Err(error)) if !matches!(error.kind(), ErrorKind::ExpiredSignature) => return Err(StatusCode::UNAUTHORIZED),
-        _ => jwt.renew(jar, &session).await?,
+    let (jar, grants) = match request.headers().typed_get::<Authorization<Bearer>>() {
+        Some(Authorization(bearer)) => (jar, jwt.decode(bearer.token()).map_err(|_| StatusCode::UNAUTHORIZED)?.grants()),
+        None => from_cookie(&jwt, jar, &session).await?,
     };
     request.extensions_mut().insert(grants);
     Ok((jar, next.run(request).await))
+}
+
+async fn from_cookie(jwt: &JwtSession, jar: CookieJar, session: &Session) -> Result<(CookieJar, Vec<Grant>), StatusCode> {
+    match jar.get(JWT_COOKIE).map(|cookie| jwt.decode(cookie.value())) {
+        Some(Ok(token)) => Ok((jar, token.grants())),
+        Some(Err(error)) if !matches!(error.kind(), ErrorKind::ExpiredSignature) => Err(StatusCode::UNAUTHORIZED),
+        _ => jwt.renew(jar, session).await,
+    }
 }
 
 fn cookie(token: String, ttl: Duration) -> Cookie<'static> {

@@ -2,17 +2,18 @@
 
 use utoipa::Modify;
 use utoipa::openapi::path::Operation;
-use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme};
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
 
 use crate::auth::{JWT_COOKIE, request_grants};
 
-/// Every route needs the signed-in user's token, kept in the `jwt_token` cookie.
+/// Every route needs the signed-in user's token, in the `jwt_token` cookie or as an `Authorization: Bearer` header.
 pub struct SignedIn;
 
 impl Modify for SignedIn {
     fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
         let components = api.components.get_or_insert_with(Default::default);
         components.add_security_scheme("session", SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(JWT_COOKIE))));
+        components.add_security_scheme("bearer", SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Bearer).bearer_format("JWT").build()));
     }
 }
 
@@ -30,6 +31,6 @@ impl Modify for Granted {
 }
 
 fn grant(operation: &mut Operation, method: &str, path: &str) {
-    let grants = request_grants(method, path, path).into_iter().map(|grant| grant.0);
-    operation.security = Some(vec![SecurityRequirement::new("session", grants)]);
+    let grants: Vec<String> = request_grants(method, path, path).into_iter().map(|grant| grant.0).collect();
+    operation.security = Some(["session", "bearer"].map(|scheme| SecurityRequirement::new(scheme, grants.clone())).to_vec());
 }

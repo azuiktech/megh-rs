@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-25
+- CSRF on the login routes is stateless: `auth_router` and `basic_login_router` use `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) instead of the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins). Removed `GET /auth/csrf-token`, the `csrf` OpenAPI scheme, the `CsrfMiddleware`/`get_or_create_token`/`TOKEN_HEADER`/`TOKEN_KEY` re-exports and `axum-tower-sessions-csrf`; the UI SDK no longer fetches or sends a CSRF token (PR #198, issue #197)
+
 ## 2026-10-24
 - Billing follows booking's layout: each entity's routes are in its own file (`tax.rs`, `invoice.rs` with `:open` and `:void`, `invoice_line.rs`, `payment.rs`), the router and OpenAPI are in `billing/mod.rs`, and the `routes` folder is gone; no names or behaviour change (PR #196, issue #195)
 - Payments keep the invoice balance: recording, changing or deleting a payment refreshes the invoice in one transaction (`amount_paid` is the sum of `amount` less `refunded` over processing and succeeded payments, `balance_due` the total less that); a payment for an invoice that is not open, or that pays more than is owed, is a 409 and uses no number; the payment's number comes from the app's payment `Ids` when it is recorded and never changes; a refund is a PATCH of `refunded` (PR #192, issue #191)

@@ -47,7 +47,7 @@ mod api {
             (name = "reservations", description = "Holds: a slot's places kept for 10 minutes while it is being booked; not an appointment."),
         ),
         modifiers(&SignedIn),
-        security(("session" = [], "csrf" = [])),
+        security(("session" = [])),
     )]
     struct Booking;
 

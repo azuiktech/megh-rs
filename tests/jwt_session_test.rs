@@ -121,11 +121,8 @@ async fn a_token_signed_with_another_secret_is_rejected_even_with_a_session(pool
 async fn logout_clears_the_token_cookie() {
     let state = MeghAuthState::new(PgPool::connect_lazy("postgres://localhost/test").unwrap());
     let app = auth_router(state).layer(SessionManagerLayer::new(MemoryStore::default()));
-    let issued = send(&app, "GET", "/auth/csrf-token", "").await;
-    let session = issued.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_string();
-    let csrf = String::from_utf8(axum::body::to_bytes(issued.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
 
-    let request = Request::post("/auth/logout").header(header::COOKIE, format!("{session}; {JWT_COOKIE}=issued-earlier")).header("x-csrf-token", csrf);
+    let request = Request::post("/auth/logout").header(header::COOKIE, format!("{JWT_COOKIE}=issued-earlier"));
     let response = app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
 
     let cleared = response.headers().get_all(header::SET_COOKIE).iter().map(|v| v.to_str().unwrap()).find(|v| v.starts_with(JWT_COOKIE)).unwrap();

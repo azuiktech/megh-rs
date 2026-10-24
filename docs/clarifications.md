@@ -3,6 +3,18 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-10-24 — authentication of an API server called by browsers, servers and LLM/MCP clients
+
+- megh is an API server; "I am least bothered if a frontend hosts on a entirely different domain, or another server calls." Nothing may disallow a call from another server.
+- App scopes (grants) cannot be stored in the identity provider (Google); they are megh's own, carried in megh's JWT `scope`. `connected_accounts` keeps the provider's tokens and scopes (a separate thing) so megh can renew them and fetch the provider's resources (calendar, mail).
+- Bearer or cookie: "perfectly fine to use bearer or cookie."
+- Browser user: "oauth via google via authorization_code -> a short lived access token."
+- Server to server: "own oauth -> access token via client credentials."
+- No token endpoint on the existing provider routes: "/token, /revoke, /login endpoints" already exist there (identity provider flow).
+- CSRF: "you can replace csrf with Sec-Fetch-Site check. I am not really bothered about old browsers." The stateless check must not read the DB per request.
+- Browser callers from a subdomain are allowed: "xyz.com can call apis api.xyz.com". The login routes' CSRF check must let a configured site through.
+- "I do NOT want Claude to invent any of its own imaginary solution": propose only what is backed by a reference.
+
 ## 2026-10-23 — payments keep the invoice balance (S4, approved)
 
 - Processing and succeeded payments count toward `amount_paid` (the sum of `amount` less `refunded`); a failed or void payment does not. `balance_due` is the total less `amount_paid`.

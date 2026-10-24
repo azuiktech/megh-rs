@@ -1,7 +1,6 @@
 //! Booking and billing API server with OpenAPI docs at `/docs`.
 //!
-//! `cargo run --example booking`. Sign in with `POST /auth/login` (Basic credentials and the token from
-//! `GET /auth/csrf-token`); the session then carries the `jwt_token` cookie every booking and billing route needs.
+//! `cargo run --example booking`. Sign in with `POST /auth/login` (Basic credentials); the session then carries the `jwt_token` cookie every booking and billing route needs.
 
 use std::time::Duration;
 
@@ -9,11 +8,12 @@ use axum::middleware::{from_fn, from_fn_with_state};
 use axum::Router;
 use megh::auth::rest::AppContext;
 use megh::auth::http::basic_login_router;
-use megh::auth::{jwt_session, CsrfMiddleware, JwtSession};
+use megh::auth::{jwt_session, JwtSession};
 use megh::{auth_router, authorizer, MeghAuthState};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tower::Layer;
+use tower_http::csrf::CsrfLayer;
 use tower::util::MapRequestLayer;
 use tower_sessions::SessionManagerLayer;
 use tower_sessions_sqlx_store::PostgresStore;
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = api
         .layer(from_fn(authorizer))
         .layer(from_fn_with_state(jwt, jwt_session))
-        .route_layer(from_fn(CsrfMiddleware::middleware))
+        .route_layer(CsrfLayer::new())
         .with_state(AppContext { pool });
     let app = Router::new()
         .merge(api)

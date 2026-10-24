@@ -49,7 +49,7 @@ mod api {
             (name = "payments", description = "Money received for an open invoice, by cash, cheque, card or bank transfer; a refund is the `refunded` part of the payment."),
         ),
         modifiers(&SignedIn),
-        security(("session" = [], "csrf" = [])),
+        security(("session" = [])),
     )]
     struct Billing;
 

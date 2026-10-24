@@ -88,10 +88,8 @@ async fn connect(app: &Router, cookie: &str) -> Response<Body> {
 }
 
 async fn post_json(app: &Router, uri: &str, cookie: &str, body: Value) -> Response<Body> {
-    let token = text(get_page(app, "/auth/csrf-token", cookie).await).await;
     let request = Request::post(uri)
         .header(header::COOKIE, cookie)
-        .header("x-csrf-token", token)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
         .unwrap();

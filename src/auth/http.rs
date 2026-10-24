@@ -9,7 +9,6 @@ use axum::{
     extract::{FromRequestParts, Path, Query, State},
     http::{request::Parts, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
-    middleware,
     routing::{get, post},
     Json, Router,
 };
@@ -17,9 +16,9 @@ use axum_extra::extract::cookie::{Cookie, CookieJar};
 use axum_extra::extract::Query as ListQuery;
 use axum_extra::headers::{authorization::Basic, Authorization};
 use axum_extra::TypedHeader;
-use axum_tower_sessions_csrf::{get_or_create_token, CsrfMiddleware};
 use oauth2::{AccessToken, AuthorizationCode, TokenResponse};
 use serde::{Deserialize, Serialize};
+use tower_http::csrf::CsrfLayer;
 use tower_sessions::Session;
 use uuid::Uuid;
 
@@ -200,8 +199,15 @@ fn bad_gateway(cause: impl std::fmt::Display) -> AuthError {
     AuthError(StatusCode::BAD_GATEWAY, "sign-in failed")
 }
 
-/// Builds an Axum router with all authentication and session endpoints.
+/// Builds an Axum router with all authentication and session endpoints. Writes from another site are refused
+/// ([`CsrfLayer`]: `Sec-Fetch-Site` and `Origin`, no state); use [`auth_router_with_csrf`] to trust an origin.
 pub fn auth_router(state: MeghAuthState) -> Router {
+    auth_router_with_csrf(state, CsrfLayer::new())
+}
+
+/// [`auth_router`] with a caller-configured [`CsrfLayer`], for a web app served from another origin than this router
+/// (`csrf.add_trusted_origin("https://xyz.com")`).
+pub fn auth_router_with_csrf(state: MeghAuthState, csrf: CsrfLayer) -> Router {
     Router::new()
         .route("/auth/{provider}", get(oauth_login))
         .route("/auth/{provider}/login", get(oauth_login))
@@ -212,18 +218,19 @@ pub fn auth_router(state: MeghAuthState) -> Router {
         .route("/auth/{provider}/token", get(oauth_callback))
         .route("/auth/me", get(auth_me))
         .route("/auth/logout", post(auth_logout))
-        .route("/auth/csrf-token", get(csrf_token))
-        .route_layer(middleware::from_fn(CsrfMiddleware::middleware))
+        .route_layer(csrf)
         .with_state(state)
 }
 
-/// A `POST <path>` route for email/password sign-in, CSRF-protected. Merge it with [`auth_router`], which
-/// provides `/auth/me`, `/auth/logout` and the session/CSRF plumbing this route needs. Never creates an account.
+/// A `POST <path>` route for email/password sign-in, CSRF-protected like [`auth_router`]. Merge it with
+/// [`auth_router`], which provides `/auth/me`, `/auth/logout` and the session this route needs. Never creates an account.
 pub fn basic_login_router(state: MeghAuthState, path: &str) -> Router {
-    Router::new()
-        .route(path, post(basic_login))
-        .route_layer(middleware::from_fn(CsrfMiddleware::middleware))
-        .with_state(state)
+    basic_login_router_with_csrf(state, path, CsrfLayer::new())
+}
+
+/// [`basic_login_router`] with a caller-configured [`CsrfLayer`].
+pub fn basic_login_router_with_csrf(state: MeghAuthState, path: &str, csrf: CsrfLayer) -> Router {
+    Router::new().route(path, post(basic_login)).route_layer(csrf).with_state(state)
 }
 
 /// Response returned by a successful [`basic_login_router`] sign-in.
@@ -454,10 +461,6 @@ pub async fn auth_logout(session: Session, jar: CookieJar) -> Result<(CookieJar,
     Ok((jar.remove(Cookie::build(JWT_COOKIE).path("/")), Json(serde_json::json!({ "status": "ok" }))))
 }
 
-/// The token a client sends back in the `x-csrf-token` header on every write.
-pub async fn csrf_token(session: Session) -> Result<String, AuthError> {
-    get_or_create_token(&session).await.map_err(internal)
-}
 
 fn attempt_key(provider: &str) -> String {
     format!("oauth:{provider}")

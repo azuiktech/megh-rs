@@ -158,7 +158,8 @@ impl<'a> UserRepo<'a> {
     }
 
     /// A machine in `org_id` holding `grants`: a user (the client id as account id and email, the bcrypt of the secret
-    /// as password) and its membership (role `machine`), in one statement.
+    /// as password) and its membership (role `machine`), in one statement. As for any member, the grants must include
+    /// `orgs:read:{org_id}` for the `authorizer` to let its token into the org's routes.
     pub async fn register_machine(&self, org_id: Uuid, name: &str, grants: Vec<String>) -> Result<Registered, PasswordError> {
         let client_id = Uuid::new_v4().to_string();
         let secret = oauth2::CsrfToken::new_random_len(32).secret().clone();

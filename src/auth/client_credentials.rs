@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Form, Json, Router};
 use axum_extra::headers::{authorization::Basic, Authorization};
+use axum_extra::typed_header::TypedHeaderRejection;
 use axum_extra::TypedHeader;
 use oauth2::basic::{BasicErrorResponseType, BasicTokenResponse, BasicTokenType};
 use oauth2::{AccessToken, EmptyExtraTokenFields, Scope, StandardErrorResponse};
@@ -33,11 +34,11 @@ pub fn token_router(state: MeghAuthState, jwt: JwtSession) -> Router {
 
 async fn token(
     State((pool, jwt)): State<(PgPool, JwtSession)>,
-    credentials: Option<TypedHeader<Authorization<Basic>>>,
+    credentials: Result<TypedHeader<Authorization<Basic>>, TypedHeaderRejection>,
     request: Result<Form<TokenRequest>, FormRejection>,
 ) -> Result<Response, TokenError> {
-    let TypedHeader(Authorization(basic)) = credentials.ok_or(TokenError::CLIENT)?;
-    let member = machine(&pool, basic.username(), basic.password()).await?;
+    let TypedHeader(Authorization(basic)) = credentials.map_err(|_| TokenError::CLIENT)?;
+    let member = authenticate(&pool, basic.username(), basic.password()).await?;
     let Form(request) = request.map_err(|_| TokenError::bad(BasicErrorResponseType::InvalidRequest))?;
     (request.grant_type == "client_credentials").then_some(()).ok_or(TokenError::bad(BasicErrorResponseType::UnsupportedGrantType))?;
     let requested: Vec<Grant> = request.scope.unwrap_or_default().split_whitespace().map(Grant::new).collect();
@@ -46,11 +47,11 @@ async fn token(
     let mut body = BasicTokenResponse::new(AccessToken::new(issued.jwt), BasicTokenType::Bearer, EmptyExtraTokenFields {});
     body.set_expires_in(Some(&issued.expires_in));
     body.set_scopes(Some(issued.scope.iter().map(|grant| Scope::new(grant.as_str().into())).collect()));
-    Ok(([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response())
+    Ok(([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(body)).into_response())
 }
 
 /// The membership of the machine whose client id and secret these are.
-async fn machine(pool: &PgPool, client_id: &str, secret: &str) -> Result<Member, TokenError> {
+async fn authenticate(pool: &PgPool, client_id: &str, secret: &str) -> Result<Member, TokenError> {
     let user = UserRepo::new(pool).verify_password(client_id, secret).await.map_err(|error| match error {
         PasswordError::UserNotFound | PasswordError::NoPassword | PasswordError::WrongPassword => TokenError::CLIENT,
         other => internal(other),

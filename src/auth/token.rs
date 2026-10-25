@@ -58,8 +58,7 @@ impl AccessToken {
     }
 }
 
-/// A signed access token with the lifetime and grants it carries.
-#[derive(Debug, Clone)]
+/// A signed access token with the lifetime and grants it carries. No `Debug`: the token is a secret.
 pub struct IssuedToken {
     pub jwt: String,
     pub expires_in: Duration,

@@ -77,7 +77,7 @@ async fn the_secret_is_traded_for_an_access_token_the_api_accepts_as_a_bearer_to
     let response = exchange(&app, Some((&registered.client_id, &registered.secret)), "grant_type=client_credentials").await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!((response.headers()[header::CACHE_CONTROL].to_str().unwrap(), response.headers()[header::PRAGMA].to_str().unwrap()), ("no-store", "no-cache"));
     let body = json(response).await;
     assert!(body["token_type"].as_str().unwrap().eq_ignore_ascii_case("bearer"));
     assert_eq!((body["expires_in"].as_u64(), body["scope"].as_str()), (Some(300), Some("invoices:read")));
@@ -175,4 +175,24 @@ async fn the_oauth2_client_library_gets_a_token_from_the_endpoint(pool: PgPool) 
 
     assert_eq!(response.expires_in(), Some(Duration::from_secs(300)));
     assert_eq!(call(&app, "GET", response.access_token().secret()).await, StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn an_authorization_header_that_is_not_basic_is_invalid_client(pool: PgPool) {
+    let app = app(pool);
+    let request = Request::post("/auth/megh/token").header(header::CONTENT_TYPE, FORM).header(header::AUTHORIZATION, "Bearer abc");
+
+    let response = app.oneshot(request.body(Body::from("grant_type=client_credentials")).unwrap()).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json(response).await["error"], "invalid_client");
+}
+
+#[sqlx::test]
+async fn registering_in_an_organization_that_does_not_exist_leaves_no_user(pool: PgPool) {
+    let result = UserRepo::new(&pool).register_machine(Uuid::new_v4(), "ci", vec![]).await;
+
+    assert!(result.is_err());
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&pool).await.unwrap();
+    assert_eq!(users, 0);
 }

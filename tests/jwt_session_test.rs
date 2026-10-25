@@ -139,3 +139,53 @@ async fn a_deleted_users_session_cannot_renew_a_token(pool: PgPool) {
 
     assert_eq!(send(&app, "GET", "/invoices", &session).await.status(), StatusCode::UNAUTHORIZED);
 }
+
+async fn send_with(app: &Router, method: &str, uri: &str, headers: &[(header::HeaderName, String)]) -> Response<Body> {
+    let request = headers.iter().fold(Request::builder().method(method).uri(uri), |request, (name, value)| request.header(name, value));
+    app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap()
+}
+
+fn bearer(token: &AccessToken, secret: &[u8]) -> (header::HeaderName, String) {
+    (header::AUTHORIZATION, format!("Bearer {}", signed(token, secret).trim_start_matches(&format!("{JWT_COOKIE}="))))
+}
+
+#[sqlx::test]
+async fn a_bearer_token_answers_alone_with_no_cookie_set(pool: PgPool) {
+    let (_, member) = reader(&pool).await;
+    let app = app(pool);
+    let token = AccessToken::new(&member, Duration::from_secs(60));
+
+    let read = send_with(&app, "GET", "/invoices", &[bearer(&token, SECRET)]).await;
+    let write = send_with(&app, "POST", "/invoices", &[bearer(&token, SECRET)]).await;
+
+    assert_eq!(read.status(), StatusCode::OK);
+    assert!(read.headers().get(header::SET_COOKIE).is_none());
+    assert_eq!(write.status(), StatusCode::FORBIDDEN, "the grants in the bearer token decide");
+}
+
+#[sqlx::test]
+async fn a_bad_or_expired_bearer_token_is_rejected_even_with_a_valid_session_and_cookie(pool: PgPool) {
+    let (user_id, member) = reader(&pool).await;
+    let app = app(pool);
+    let session = session_cookie(&app, user_id).await;
+    let valid_cookie = signed(&AccessToken::new(&member, Duration::from_secs(60)), SECRET);
+    let mut expired = AccessToken::new(&member, Duration::from_secs(60));
+    expired.exp = get_current_timestamp() - 1;
+
+    for bad in [bearer(&expired, SECRET), bearer(&AccessToken::new(&member, Duration::from_secs(60)), b"another-secret-another-secret-32b!")] {
+        let cookie = (header::COOKIE, format!("{valid_cookie}; {session}"));
+        let response = send_with(&app, "GET", "/invoices", &[bad, cookie]).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.headers().get(header::SET_COOKIE).is_none(), "a bearer token is never renewed");
+    }
+}
+
+#[sqlx::test]
+async fn an_authorization_header_that_is_not_bearer_is_ignored(pool: PgPool) {
+    let (_, member) = reader(&pool).await;
+    let app = app(pool);
+    let cookie = (header::COOKIE, signed(&AccessToken::new(&member, Duration::from_secs(60)), SECRET));
+    let basic = (header::AUTHORIZATION, "Basic YW5uQGV4YW1wbGUuY29tOnNlY3JldA==".to_string());
+
+    assert_eq!(send_with(&app, "GET", "/invoices", &[basic, cookie]).await.status(), StatusCode::OK);
+}

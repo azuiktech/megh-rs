@@ -46,6 +46,17 @@ pub enum PasswordError {
     Database(#[from] sqlx::Error),
 }
 
+/// The `provider` of a machine's user row.
+#[cfg(feature = "postgres")]
+pub(crate) const MACHINE: &str = "megh";
+
+/// A new machine's credentials. The secret cannot be read again.
+#[cfg(feature = "postgres")]
+pub struct Registered {
+    pub client_id: String,
+    pub secret: String,
+}
+
 /// Compared against when the user or password is missing, so every failure costs one bcrypt verification.
 #[cfg(feature = "postgres")]
 static DUMMY_HASH: std::sync::LazyLock<String> =
@@ -144,6 +155,27 @@ impl<'a> UserRepo<'a> {
             (_, _, false) => Err(PasswordError::WrongPassword),
             _ => self.find_by_email(email).await?.ok_or(PasswordError::UserNotFound),
         }
+    }
+
+    /// A machine in `org_id` holding `grants`: a user (the client id as account id and email, the bcrypt of the secret
+    /// as password) and its membership (role `machine`), in one statement.
+    pub async fn register_machine(&self, org_id: Uuid, name: &str, grants: Vec<String>) -> Result<Registered, PasswordError> {
+        let client_id = Uuid::new_v4().to_string();
+        let secret = oauth2::CsrfToken::new_random_len(32).secret().clone();
+        sqlx::query(
+            "WITH machine AS (INSERT INTO users (provider, account_id, email, display_name, password_hash, updated_at)
+                              VALUES ($1, $2, $2, $3, $4, NOW()) RETURNING id)
+             INSERT INTO organization_members (organization_id, user_id, role, grants) SELECT $5::uuid, id, 'machine', $6 FROM machine",
+        )
+        .bind(MACHINE)
+        .bind(&client_id)
+        .bind(name)
+        .bind(bcrypt::hash(&secret, bcrypt::DEFAULT_COST)?)
+        .bind(org_id)
+        .bind(serde_json::json!(grants).to_string())
+        .execute(self.pool)
+        .await?;
+        Ok(Registered { client_id, secret })
     }
 
     /// Updates display name and photo URL for an existing user.

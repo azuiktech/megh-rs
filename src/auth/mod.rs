@@ -19,13 +19,15 @@ pub use oauth::oauth_http_client;
 pub use user::{UpsertUserInput, User, UserProfile};
 
 #[cfg(feature = "postgres")]
-pub use user::{PasswordError, UserRepo};
+pub use user::{PasswordError, Registered, UserRepo};
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod http;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod token;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod client_credentials;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod crud;

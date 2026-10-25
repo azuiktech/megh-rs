@@ -1,6 +1,6 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11 and F13–F22 shipped (F12 is superseded by F16). Features are not delivered in number order.
+**Status:** F1–F11 and F13–F23 shipped (F12 is superseded by F16). Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
@@ -22,6 +22,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
 | F21 | Stateless CSRF on the login routes: `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) replaces the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins); `GET /auth/csrf-token`, the `csrf` OpenAPI scheme and `axum-tower-sessions-csrf` are removed | `[x]` | #198 / #197 |
 | F22 | The access token is read from `Authorization: Bearer` first, else the `jwt_token` cookie (`jwt_session`); a bearer token is only decoded (any failure is 401: no session, no renewal, no cookie set, no fallback to the cookie); a non-Bearer `Authorization` header is ignored; OpenAPI gets a `bearer` scheme next to `session` | `[x]` | #202 / #201 |
+| F23 | Client credentials for machines: `POST /auth/megh/token` (`auth::client_credentials::token_router`) takes `grant_type=client_credentials` and an optional narrowing `scope`, the client authenticated by `Authorization: Basic`, and answers with the same JWT as `oauth2`'s `BasicTokenResponse` (no refresh token, `Cache-Control: no-store`) or an RFC 6749 §5.2 error (`invalid_client` is 401 with `WWW-Authenticate: Basic`); `UserRepo::register_machine(org_id, name, grants)` makes the machine (a user with provider `megh`, client id as account id and email, the bcrypt of the secret as password, and one `machine` membership) and returns the secret once (`Registered`); `JwtSession::issue` is shared with the cookie renewal. An admin API comes after the org lifecycle (O2) | `[x]` | #204 / #203 |
 | F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | `[x]` | #59 / #58 |
 | F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns memberships | `[x]` | #60 / #30 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |

@@ -58,6 +58,13 @@ impl AccessToken {
     }
 }
 
+/// A signed access token with the lifetime and grants it carries. No `Debug`: the token is a secret.
+pub struct IssuedToken {
+    pub jwt: String,
+    pub expires_in: Duration,
+    pub scope: Vec<Grant>,
+}
+
 /// Signing key, token lifetime and the pool the renewal reads memberships from.
 #[derive(Clone)]
 pub struct JwtSession {
@@ -81,13 +88,22 @@ impl JwtSession {
         decode::<AccessToken>(jwt, &self.decoding, &self.validation).map(|token| token.claims)
     }
 
+    /// A token for `member`; a non-empty `requested` narrows its grants to those given.
+    pub fn issue(&self, member: &Member, requested: &[Grant]) -> Result<IssuedToken, jsonwebtoken::errors::Error> {
+        let mut token = AccessToken::new(member, self.ttl);
+        if !requested.is_empty() {
+            token.scope = requested.iter().map(Grant::as_str).collect::<Vec<_>>().join(" ");
+        }
+        let jwt = encode(&Header::default(), &token, &self.encoding)?;
+        Ok(IssuedToken { jwt, expires_in: self.ttl, scope: token.grants() })
+    }
+
     /// A new token for the user's first membership, taken from the session.
     async fn renew(&self, jar: CookieJar, session: &Session) -> Result<(CookieJar, Vec<Grant>), StatusCode> {
         let user_id: Uuid = session.get(USER_ID).await.map_err(internal)?.ok_or(StatusCode::UNAUTHORIZED)?;
         let member = self.orgs.memberships(user_id).await.map_err(internal)?.into_iter().next().ok_or(StatusCode::UNAUTHORIZED)?;
-        let token = AccessToken::new(&member, self.ttl);
-        let jwt = encode(&Header::default(), &token, &self.encoding).map_err(internal)?;
-        Ok((jar.add(cookie(jwt, self.ttl)), token.grants()))
+        let issued = self.issue(&member, &[]).map_err(internal)?;
+        Ok((jar.add(cookie(issued.jwt, self.ttl)), issued.scope))
     }
 }
 

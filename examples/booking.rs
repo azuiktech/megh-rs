@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::Router;
 use megh::auth::rest::AppContext;
+use megh::auth::client_credentials::token_router;
 use megh::auth::http::basic_login_router;
 use megh::auth::{jwt_session, JwtSession};
 use megh::{auth_router, authorizer, MeghAuthState};
@@ -34,12 +35,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (api, spec) = OpenApiRouter::with_openapi(megh::booking::openapi()).nest("/api/v1", routes).split_for_parts();
     let api = api
         .layer(from_fn(authorizer))
-        .layer(from_fn_with_state(jwt, jwt_session))
+        .layer(from_fn_with_state(jwt.clone(), jwt_session))
         .route_layer(CsrfLayer::new())
         .with_state(AppContext { pool });
     let app = Router::new()
         .merge(api)
         .merge(auth_router(auth.clone()))
+        .merge(token_router(auth.clone(), jwt))
         .merge(basic_login_router(auth, "/auth/login"))
         .merge(Scalar::with_url("/docs", spec))
         .layer(SessionManagerLayer::new(sessions));

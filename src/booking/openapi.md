@@ -4,7 +4,7 @@ org in the path always wins over one in the body.
 
 **Signing in.** `POST /auth/login` with Basic credentials sets the `jwt_token` cookie. Every route needs that
 cookie or the same token as `Authorization: Bearer <token>`; a machine gets one from `POST /auth/megh/token`
-(client credentials, `Authorization: Basic` with its client id and secret). A browser write from another site is refused (403) unless its origin is trusted. Each route needs a grant derived from its path: `orgs:read:{org_id}`, then
+(client credentials, `Authorization: Basic` with its client id and secret). A browser write from another site is refused (403) unless it carries a bearer token or its origin is trusted. Each route needs a grant derived from its path: `orgs:read:{org_id}`, then
 `<resource>:<action>` or `<resource>:<action>:{id}`, where the action is `read`, `create`, `update`, `delete`,
 or the custom method after `:` (`appointments:book`, `appointments:available`, `reservations:purge`).
 

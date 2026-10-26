@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -15,6 +16,8 @@ use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{decode, encode, get_current_timestamp, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use tower::{Layer, ServiceExt};
+use tower_http::csrf::CsrfLayer;
 use tower_sessions::Session;
 use uuid::Uuid;
 
@@ -123,6 +126,17 @@ pub async fn jwt_session(
     };
     request.extensions_mut().insert(grants);
     Ok((jar, next.run(request).await))
+}
+
+/// The CSRF check for requests that sign in by cookie. A bearer token is not sent by a browser on its own, so a request
+/// that carries one is not checked; any other goes through `csrf`. That is safe because `jwt_session` then uses the
+/// bearer token alone and never the cookie. Use it as `from_fn_with_state(CsrfLayer::new(), csrf_unless_bearer)`.
+pub async fn csrf_unless_bearer(State(csrf): State<CsrfLayer>, request: Request, next: Next) -> Response {
+    if request.headers().typed_get::<Authorization<Bearer>>().is_some() {
+        return next.run(request).await;
+    }
+    let Ok(response) = csrf.layer(next).oneshot(request).await;
+    response.map(Body::new)
 }
 
 async fn from_cookie(jwt: &JwtSession, jar: CookieJar, session: &Session) -> Result<(CookieJar, Vec<Grant>), StatusCode> {

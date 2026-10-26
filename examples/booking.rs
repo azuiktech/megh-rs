@@ -9,7 +9,7 @@ use axum::Router;
 use megh::auth::rest::AppContext;
 use megh::auth::client_credentials::token_router;
 use megh::auth::http::basic_login_router;
-use megh::auth::{jwt_session, JwtSession};
+use megh::auth::{csrf_unless_bearer, jwt_session, JwtSession};
 use megh::{auth_router, authorizer, MeghAuthState};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api = api
         .layer(from_fn(authorizer))
         .layer(from_fn_with_state(jwt.clone(), jwt_session))
-        .route_layer(CsrfLayer::new())
+        .route_layer(from_fn_with_state(CsrfLayer::new(), csrf_unless_bearer))
         .with_state(AppContext { pool });
     let app = Router::new()
         .merge(api)

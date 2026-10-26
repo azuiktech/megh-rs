@@ -58,6 +58,7 @@ rrule = { version = "0.14", features = ["serde"] }
 itertools = "0.15.0"
 
 [dev-dependencies]
+megh = { path = ".", features = ["sqlite"] }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs", "cors"] }
@@ -72,5 +73,6 @@ utoipa-scalar = { version = "0.4", features = ["axum"] }
 [features]
 default = ["postgres", "client", "axum"]
 postgres = ["dep:sqlx", "dep:bcrypt", "dep:aes-gcm", "dep:base64"]
+sqlite = ["dep:sqlx", "sqlx/sqlite"]
 client = ["dep:reqwest", "dep:reqwest-middleware", "dep:async-trait"]
 axum = ["dep:axum", "dep:axum-params", "dep:utoipa", "dep:utoipa-axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]

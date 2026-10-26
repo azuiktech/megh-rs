@@ -5,9 +5,9 @@ use megh::ColumnMeta;
 use sqlx::{PgPool, QueryBuilder};
 
 const fn column(name: &'static str) -> ColumnMeta {
-    ColumnMeta { name, is_primary_key: false, is_json: false, has_default: false }
+    ColumnMeta { name, is_primary_key: false, is_json: false, is_array: false, has_default: false }
 }
-const COLUMNS: &[ColumnMeta] = &[column("id"), column("name"), column("capacity"), column("opens_at"), column("staff_ids")];
+const COLUMNS: &[ColumnMeta] = &[column("id"), column("name"), column("capacity"), column("opens_at"), ColumnMeta { is_array: true, ..column("staff_ids") }];
 
 async fn names(pool: &PgPool, filter: &str) -> Result<Vec<String>, String> {
     let mut query = QueryBuilder::new("SELECT name FROM rooms WHERE true");

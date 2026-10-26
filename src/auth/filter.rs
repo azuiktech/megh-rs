@@ -2,11 +2,11 @@
 //!
 //! `capacity > 5`              → `capacity > 5`
 //! `id = "9d4d…"`              → `id = '9d4d…'`
-//! `staff_ids:42`              → `42 = ANY(staff_ids)`
+//! `staff_ids:42`              → `42 = ANY(staff_ids)` (an array column; `:` on a column that is not a list is a 400)
 //! `sea_facing = true` (no such column) → `attributes -> 'sea_facing' = 'true'::jsonb`
 
 use aip_160::{Comparator, Expression, Filter, Restriction, Value};
-use sqlx::{Postgres, QueryBuilder};
+use sqlx::{Database, Postgres, QueryBuilder};
 
 use super::rest::ApiError;
 use crate::entity::ColumnMeta;
@@ -29,7 +29,8 @@ fn condition(columns: &[ColumnMeta], expression: &Expression) -> Result<String, 
 
 fn restriction_sql(columns: &[ColumnMeta], restriction: &Restriction) -> Result<String, ApiError> {
     let Restriction { field, comparator, value } = restriction;
-    let is_column = columns.iter().any(|column| column.name == field);
+    let column = columns.iter().find(|column| column.name == field);
+    let is_column = column.is_some();
     let operator = match comparator {
         Comparator::Equal => "=",
         Comparator::NotEqual => "<>",
@@ -37,7 +38,7 @@ fn restriction_sql(columns: &[ColumnMeta], restriction: &Restriction) -> Result<
         Comparator::GreaterThanOrEqual => ">=",
         Comparator::LessThan => "<",
         Comparator::LessThanOrEqual => "<=",
-        Comparator::Has if is_column => return Ok(format!("{} = ANY({field})", literal(value))),
+        Comparator::Has if let Some(column) = column => return Postgres::has(column, value),
         Comparator::Has => return Ok(format!("attributes -> {} @> {}::jsonb", quote(field), quote(&format!("[{}]", json(value))))),
     };
     Ok(match (is_column, value) {
@@ -52,6 +53,37 @@ fn restriction_sql(columns: &[ColumnMeta], restriction: &Restriction) -> Result<
             kind = quote(json_kind(value)),
         ),
     })
+}
+
+/// A database's SQL for `column:value`, membership of a list column. A column that is neither an array nor JSON has no
+/// members.
+pub trait Has: Database {
+    fn has(column: &ColumnMeta, value: &Value) -> Result<String, ApiError>;
+}
+
+/// An array is a native array; JSON is `jsonb`.
+impl Has for Postgres {
+    fn has(column: &ColumnMeta, value: &Value) -> Result<String, ApiError> {
+        match (column.is_array, column.is_json) {
+            (true, _) => Ok(format!("{} = ANY({})", literal(value), column.name)),
+            (false, true) => Ok(format!("{} @> {}::jsonb", column.name, quote(&format!("[{}]", json(value))))),
+            (false, false) => Err(not_a_list(column)),
+        }
+    }
+}
+
+/// An array and JSON are both JSON text.
+#[cfg(feature = "sqlite")]
+impl Has for sqlx::Sqlite {
+    fn has(column: &ColumnMeta, value: &Value) -> Result<String, ApiError> {
+        (column.is_array || column.is_json)
+            .then(|| format!("EXISTS (SELECT 1 FROM json_each({}) WHERE value = {})", column.name, literal(value)))
+            .ok_or_else(|| not_a_list(column))
+    }
+}
+
+fn not_a_list(column: &ColumnMeta) -> ApiError {
+    ApiError::BadRequest(format!("{} is not a list", column.name))
 }
 
 /// A value as SQL: text and ids in single quotes, a `'` inside written as `''`.

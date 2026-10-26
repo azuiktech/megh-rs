@@ -144,3 +144,14 @@ async fn authorizer_guards_every_route(pool: PgPool) {
     let mine_only = app(pool, &grants(mine));
     assert_eq!(call(&mine_only, "GET", &format!("/api/v1/tenants/{other}/resources"), Value::Null).await.0, StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test(migrations = false)]
+async fn the_has_filter_on_a_column_that_is_not_a_list_is_a_bad_request(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    let tenant = tenant(&pool).await;
+    let app = app(pool, &grants(tenant));
+
+    let (status, body) = call(&app, "GET", &format!("/api/v1/tenants/{tenant}/resources?filter=name%3A%22Room%22"), Value::Null).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}

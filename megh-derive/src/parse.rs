@@ -8,6 +8,7 @@ pub struct ParsedColumn {
     pub name: String,
     pub is_primary_key: bool,
     pub is_json: bool,
+    pub is_array: bool,
     pub has_default: bool,
 }
 
@@ -146,7 +147,13 @@ fn parse_field(field: &Field, rename_all: Option<&str>) -> Result<Option<ParsedC
     }
 
     let col_name = name.unwrap_or_else(|| apply_rename_all(&ident, rename_all));
-    Ok(Some(ParsedColumn { name: col_name, is_primary_key, is_json, has_default }))
+    let is_array = !is_json && is_vec(&field.ty);
+    Ok(Some(ParsedColumn { name: col_name, is_primary_key, is_json, is_array, has_default }))
+}
+
+/// Whether the field's type is `Vec<…>`.
+fn is_vec(ty: &syn::Type) -> bool {
+    matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "Vec"))
 }
 
 fn apply_rename_all(name: &str, rename_all: Option<&str>) -> String {

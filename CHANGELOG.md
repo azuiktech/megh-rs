@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-27
+- Fix: the `:` (has) filter on a column that is not a list is a 400, not a 500. `ColumnMeta.is_array` is set by `#[derive(Table)]` for a `Vec<…>` field not stored as JSON; `megh::auth::filter::Has` gives each database's SQL (PostgreSQL `= ANY` for an array and `@>` for JSON, SQLite `json_each` for both); a `sqlite` feature turns on sqlx's SQLite support (PR #224, issue #222)
 - Fix: emails ignore case (`users.email` and `connected_accounts.email` are `citext`; lookups cast their parameter), so a provider reporting another case links to the same user and password login takes any case; `set_password` and `update_profile` do not change a soft-deleted user; a `PUT` that changes a line's `invoice_id` is a 400, so a line never moves to another invoice. Changes the `email` column type in the schema shared with megh-go (PR #223, issue #221)
 
 ## 2026-10-26

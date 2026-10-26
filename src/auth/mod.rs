@@ -1,10 +1,14 @@
 //! Authentication and PBAC permission primitives.
 
+#[cfg(feature = "axum")]
+pub mod access_token;
 pub mod authorizer;
 pub mod grant;
 pub mod oauth;
 pub mod user;
 
+#[cfg(feature = "axum")]
+pub use access_token::AccessToken;
 pub use authorizer::{request_action, request_grant, request_grants};
 #[cfg(feature = "axum")]
 pub use authorizer::authorizer;
@@ -39,7 +43,7 @@ pub mod openapi;
 pub mod rest;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub use token::{csrf_unless_bearer, jwt_session, AccessToken, JwtSession, JWT_COOKIE};
+pub use token::{csrf_unless_bearer, jwt_session, JwtSession, JWT_COOKIE};
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use http::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};

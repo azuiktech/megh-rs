@@ -97,23 +97,41 @@ pub use axum_middleware::authorizer;
 
 #[cfg(feature = "axum")]
 mod axum_middleware {
-    use axum::extract::{MatchedPath, OriginalUri, Request};
+    use axum::extract::{MatchedPath, OriginalUri, RawPathParams, Request};
     use axum::http::StatusCode;
     use axum::middleware::Next;
     use axum::response::Response;
 
+    use uuid::Uuid;
+
     use crate::auth::grant::Grant;
+    use crate::auth::AccessToken;
     use crate::tenant::Member;
     use super::request_grants;
 
+    /// A route's `{tenant_id}` is the caller's tenant: the member's, or the token's audience (RFC 9068 §4). Bare grants
+    /// name no tenant, so they are checked by their grants alone.
+    fn in_tenant(params: &RawPathParams, member: Option<&Member>, token: Option<&AccessToken>) -> bool {
+        let route_tenant = params.iter().find(|(name, _)| *name == "tenant_id").map(|(_, value)| value.parse::<Uuid>());
+        match (route_tenant, member, token) {
+            (None, ..) | (Some(_), None, None) => true,
+            (Some(Err(_)), ..) => false,
+            (Some(Ok(tenant)), Some(member), _) => tenant == member.tenant_id,
+            (Some(Ok(tenant)), None, Some(token)) => token.aud.contains(&tenant.to_string()),
+        }
+    }
+
     /// Zero-declaration Axum middleware that inspects the authenticated Member in request extensions
-    /// and requires every grant `request_grants` derives from the matched route and the request path.
+    /// and requires every grant `request_grants` derives from the matched route and the request path, and the route's
+    /// tenant to be the caller's.
     pub async fn authorizer(
+        params: RawPathParams,
         req: Request,
         next: Next,
     ) -> Result<Response, (StatusCode, &'static str)> {
         let member = req.extensions().get::<Member>().cloned();
         let grants = req.extensions().get::<Vec<Grant>>().cloned();
+        let in_tenant = in_tenant(&params, member.as_ref(), req.extensions().get::<AccessToken>());
 
         let (parts, body) = req.into_parts();
         let matched = parts
@@ -134,7 +152,7 @@ mod axum_middleware {
             return Err((StatusCode::UNAUTHORIZED, "not authenticated"));
         };
 
-        if permitted {
+        if permitted && in_tenant {
             Ok(next.run(req).await)
         } else {
             Err((StatusCode::FORBIDDEN, "not permitted"))

@@ -14,7 +14,6 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use axum_extra::headers::{authorization::Bearer, Authorization, HeaderMapExt};
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{decode, encode, get_current_timestamp, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tower::{Layer, ServiceExt};
 use tower_http::csrf::CsrfLayer;
@@ -22,25 +21,11 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use super::http::USER_ID;
-use super::Grant;
+use super::{AccessToken, Grant};
 use crate::tenant::{Member, Tenants};
 
 pub const JWT_COOKIE: &str = "jwt_token";
 const ISSUER: &str = "megh";
-
-/// `sub` is the member id, `aud` the tenant id and `scope` the member's grants, space separated.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AccessToken {
-    pub sub: Uuid,
-    pub iss: String,
-    pub aud: Vec<String>,
-    pub exp: u64,
-    pub iat: u64,
-    #[serde(default)]
-    pub client_id: String,
-    #[serde(default)]
-    pub scope: String,
-}
 
 impl AccessToken {
     pub fn new(member: &Member, ttl: Duration) -> Self {
@@ -54,10 +39,6 @@ impl AccessToken {
             client_id: ISSUER.into(),
             scope: member.grants.join(" "),
         }
-    }
-
-    pub fn grants(&self) -> Vec<Grant> {
-        self.scope.split_whitespace().map(Grant::new).collect()
     }
 }
 
@@ -102,15 +83,16 @@ impl JwtSession {
     }
 
     /// A new token for the user's first membership, taken from the session.
-    async fn renew(&self, jar: CookieJar, session: &Session) -> Result<(CookieJar, Vec<Grant>), StatusCode> {
+    async fn renew(&self, jar: CookieJar, session: &Session) -> Result<(CookieJar, AccessToken), StatusCode> {
         let user_id: Uuid = session.get(USER_ID).await.map_err(internal)?.ok_or(StatusCode::UNAUTHORIZED)?;
         let member = self.tenants.memberships(user_id).await.map_err(internal)?.into_iter().next().ok_or(StatusCode::UNAUTHORIZED)?;
         let issued = self.issue(&member, &[]).map_err(internal)?;
-        Ok((jar.add(cookie(issued.jwt, self.ttl)), issued.scope))
+        let token = self.decode(&issued.jwt).map_err(internal)?;
+        Ok((jar.add(cookie(issued.jwt, self.ttl)), token))
     }
 }
 
-/// Puts the grants of a valid token into the request for `authorizer`. A bearer token must be valid; a missing or
+/// Puts a valid token and its grants into the request for `authorizer`. A bearer token must be valid; a missing or
 /// expired cookie token is renewed from the session. A token that fails any other check is rejected. Mount it inside
 /// the session layer.
 pub async fn jwt_session(
@@ -120,11 +102,12 @@ pub async fn jwt_session(
     mut request: Request,
     next: Next,
 ) -> Result<(CookieJar, Response), StatusCode> {
-    let (jar, grants) = match request.headers().typed_get::<Authorization<Bearer>>() {
-        Some(Authorization(bearer)) => (jar, jwt.decode(bearer.token()).map_err(|_| StatusCode::UNAUTHORIZED)?.grants()),
+    let (jar, token) = match request.headers().typed_get::<Authorization<Bearer>>() {
+        Some(Authorization(bearer)) => (jar, jwt.decode(bearer.token()).map_err(|_| StatusCode::UNAUTHORIZED)?),
         None => from_cookie(&jwt, jar, &session).await?,
     };
-    request.extensions_mut().insert(grants);
+    request.extensions_mut().insert(token.grants());
+    request.extensions_mut().insert(token);
     Ok((jar, next.run(request).await))
 }
 
@@ -139,9 +122,9 @@ pub async fn csrf_unless_bearer(State(csrf): State<CsrfLayer>, request: Request,
     response.map(Body::new)
 }
 
-async fn from_cookie(jwt: &JwtSession, jar: CookieJar, session: &Session) -> Result<(CookieJar, Vec<Grant>), StatusCode> {
+async fn from_cookie(jwt: &JwtSession, jar: CookieJar, session: &Session) -> Result<(CookieJar, AccessToken), StatusCode> {
     match jar.get(JWT_COOKIE).map(|cookie| jwt.decode(cookie.value())) {
-        Some(Ok(token)) => Ok((jar, token.grants())),
+        Some(Ok(token)) => Ok((jar, token)),
         Some(Err(error)) if !matches!(error.kind(), ErrorKind::ExpiredSignature) => Err(StatusCode::UNAUTHORIZED),
         _ => jwt.renew(jar, session).await,
     }

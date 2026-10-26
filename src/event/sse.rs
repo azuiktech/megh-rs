@@ -4,7 +4,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use futures_util::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -18,6 +18,7 @@ use uuid::Uuid;
 use super::broker::Broker;
 use super::model::{Event, HistoryOptions, SubscriptionRequest, SubscriptionResponse};
 use super::topic::Topic;
+use crate::auth::AccessToken;
 
 #[derive(Debug, Deserialize)]
 pub struct StreamQuery {
@@ -44,20 +45,19 @@ pub fn events_router_with_csrf(broker: Arc<Broker>, csrf: CsrfLayer) -> Router {
 
 async fn sse_handler(
     State(broker): State<Arc<Broker>>,
+    caller: Option<Extension<AccessToken>>,
     headers: HeaderMap,
     Query(query): Query<StreamQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let client_id = Uuid::new_v4().to_string();
-    let rx = broker.register(&client_id).await;
+    let rx = broker.register(&client_id, caller.map(|Extension(token)| token)).await;
 
     let topics: Vec<Topic> = query
         .topic
         .map(|t| t.split(',').map(|s| Topic::new(s.trim())).collect())
         .unwrap_or_default();
 
-    if !topics.is_empty() {
-        let _ = broker.subscribe(&client_id, &topics).await;
-    }
+    let topics = broker.subscribe(&client_id, &topics).await.unwrap_or_default();
 
     let last_id = headers
         .get("last-event-id")
@@ -128,9 +128,13 @@ fn to_sse_event(e: Event) -> SseEvent {
 
 async fn sub_handler(
     State(broker): State<Arc<Broker>>,
+    caller: Option<Extension<AccessToken>>,
     Json(req): Json<SubscriptionRequest>,
 ) -> Result<Json<SubscriptionResponse>, (StatusCode, &'static str)> {
     if !req.subscribe.is_empty() {
+        if !broker.opened_by(&req.client_id, caller.as_ref().map(|Extension(token)| token)).await {
+            return Err((StatusCode::BAD_REQUEST, "client not found"));
+        }
         broker
             .subscribe(&req.client_id, &req.subscribe)
             .await

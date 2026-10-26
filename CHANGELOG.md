@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-26
+- The CSRF check does not apply to a bearer token: `megh::auth::csrf_unless_bearer` skips the `CsrfLayer` for a request with `Authorization: Bearer` and applies it to any other, so a machine or a page on another site writes with its bearer token while cookie requests stay checked (`jwt_session` uses only the bearer token when one is present, so the header cannot carry a cookie request past the check); the example uses it on the API routes (PR #206, issue #205)
+
 ## 2026-10-25
 - Client credentials for machines: `POST /auth/megh/token` takes `grant_type=client_credentials` (optional `scope`, which only narrows the grants) with `Authorization: Basic` and answers with the same JWT as `oauth2`'s `BasicTokenResponse` or an RFC 6749 §5.2 error; `UserRepo::register_machine(org_id, name, grants)` makes a machine (a user with provider `megh`, the client id as account id and email, one `machine` membership) and returns the secret once; `JwtSession::issue` is shared with the cookie renewal (PR #204, issue #203)
 - The access token is read from `Authorization: Bearer` first, else the `jwt_token` cookie. A bearer token is only decoded (any failure is 401: no session, no renewal, no cookie set, no fallback to the cookie); a non-Bearer `Authorization` header is ignored; the OpenAPI description gets a `bearer` scheme next to `session` (PR #202, issue #201)

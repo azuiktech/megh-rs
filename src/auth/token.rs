@@ -129,7 +129,8 @@ pub async fn jwt_session(
 }
 
 /// The CSRF check for requests that sign in by cookie. A bearer token is not sent by a browser on its own, so a request
-/// that carries one is not checked; any other goes through `csrf`. Use it as `from_fn_with_state(CsrfLayer::new(), csrf_unless_bearer)`.
+/// that carries one is not checked; any other goes through `csrf`. That is safe because `jwt_session` then uses the
+/// bearer token alone and never the cookie. Use it as `from_fn_with_state(CsrfLayer::new(), csrf_unless_bearer)`.
 pub async fn csrf_unless_bearer(State(csrf): State<CsrfLayer>, request: Request, next: Next) -> Response {
     if request.headers().typed_get::<Authorization<Bearer>>().is_some() {
         return next.run(request).await;

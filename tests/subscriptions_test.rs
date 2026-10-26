@@ -160,3 +160,13 @@ async fn plans_are_found_by_id_and_sku_and_listed_when_active(pool: PgPool) {
     let links: i64 = sqlx::query_scalar("SELECT count(*) FROM plan_add_ons").fetch_one(&pool).await.unwrap();
     assert_eq!(links, 1);
 }
+
+#[sqlx::test]
+async fn subscribe_refuses_fewer_than_one_seat(pool: PgPool) {
+    let billing = Subscriptions::new(pool);
+    let price = price_of(&billing, BillingInterval::Monthly, 0, 0).await;
+
+    for seats in [0, -3] {
+        assert!(matches!(billing.subscribe(Uuid::new_v4(), price.id, seats, Value::Null).await, Err(BillingError::InvalidSeats)), "{seats} seats");
+    }
+}

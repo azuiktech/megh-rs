@@ -3,6 +3,23 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-10-26 — fixing the code review findings
+
+- "Take the issues as a group. First all the serious bugs like 18, 12, 9 etc." The first group is 9, 12, 18 and the data loss and corruption findings: 4, 5, 14, 16 (numbers of `docs/code-review.md`).
+- One GitHub issue for the group, then a branch and a PR with the fixes, through the usual workflow (types and interfaces approved before tests and code). Issue #211.
+- #4: "crud takes Acquire". `crud::create`/`replace`/`patch`/`delete` take `impl sqlx::Acquire` instead of `&PgPool`; the billing handlers open a transaction in which `ensure_draft` locks the invoice `FOR UPDATE` and the line checks lock it `FOR SHARE`, so a write and `:open` wait for each other.
+- #9: "As megh-go". The refresh reads the account, asks the provider outside any transaction, then saves the new tokens; no row lock, so two callers at once may both refresh.
+- #9 is "a SERIOUS BUG. it holds on the connection till the token is refreshed." No in-process lock: "either all need to be in sync, or if multiple request update, last update is stored in db." So: last update wins, no mutex.
+- Spec change for #9: "Change concurrent_requests_refresh_once to accept 1 or 2 refreshes; both requests still get the fresh token. Then fix #9 as last update wins."
+- #12: "Start at the clock". The event counter starts at the current time in microseconds instead of 0; ids stay plain increasing numbers.
+- #18: "One-off migration". A method on `ConnectedAccountRepo` the app calls once after turning encryption on: every token that does not decrypt is encrypted and saved. Reads stay strict.
+- #5: "400 Bad Request". A purge `before` later than now is refused; nothing is deleted.
+- #14: "Yes, change spec". `totals::invoice` returns `Result<Amounts, TotalsError>`, `TooLarge` on overflow; the two calls in `tests/billing_totals_test.rs` take `.unwrap()`.
+- #16: "Approve". `subscribe` refuses seats below 1 with `InvalidSeats`, as `change_seats` does, before the included seats apply.
+- "Signatures approved. One PR for all seven fixes." The new method of #18 is `ConnectedAccountRepo::encrypt_stored(&self) -> Result<u64, sqlx::Error>`, the number of rows changed.
+- `TableEntity::soft_delete` also takes `impl Acquire` (approved), so an invoice `DELETE` locks the invoice and deletes in one transaction.
+- "Make crud::get take Acquire too, so delete calls get instead of copying its query." That does not compile (sqlx's documented "Acquire is not general enough" limit). Replaced, "go ahead": `get`, `create` and `replace` run one query and take sqlx's `PgExecutor`; `patch` and `delete` open a transaction and take `Acquire`.
+
 ## 2026-10-26 — tenant and org
 
 - "Rename the org as tenant, which is a better name to represent. so that it can represent an generic partition."

@@ -104,7 +104,24 @@ async fn concurrent_requests_refresh_once(pool: PgPool) {
 
     let (first, second) = tokio::join!(call_api(&api, &stub), call_api(&api, &stub));
 
-    assert_eq!((first.unwrap().as_str(), second.unwrap().as_str(), stub.token_calls.load(Ordering::SeqCst)), ("Bearer fresh", "Bearer fresh", 1));
+    assert_eq!((first.unwrap().as_str(), second.unwrap().as_str()), ("Bearer fresh", "Bearer fresh"));
+    assert!((1..=2).contains(&stub.token_calls.load(Ordering::SeqCst)), "last update wins: each request may refresh");
+}
+
+#[sqlx::test]
+async fn the_account_is_not_locked_while_the_provider_answers(pool: PgPool) {
+    let stub = provider(fresh_token(), Duration::from_millis(500)).await;
+    account(&pool, -3600).await;
+    let api = client(&pool, &stub);
+
+    let refreshing = tokio::spawn(async move { call_api(&api, &stub).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut transaction = pool.begin().await.unwrap();
+    let locked = sqlx::query("SELECT 1 FROM connected_accounts WHERE account_id = 'acct' FOR UPDATE NOWAIT").execute(&mut *transaction).await;
+    transaction.rollback().await.unwrap();
+
+    assert!(locked.is_ok(), "the row is free during the provider call: {locked:?}");
+    assert_eq!(refreshing.await.unwrap().unwrap(), "Bearer fresh");
 }
 
 #[sqlx::test]

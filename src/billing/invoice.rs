@@ -13,7 +13,7 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::draft::{ensure_draft, refuse_changes};
+use super::draft::{ensure_draft, refuse_changes, Lock};
 use super::ids::Formats;
 use super::lifecycle;
 use super::value::{Currency, Micros};
@@ -176,9 +176,12 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) 
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceData>>) -> ApiResult<Invoice> {
-    ensure_draft::<InvoiceData>(&ctx.pool, body.data.tenant_id, body.id).await?;
+    let mut transaction = ctx.pool.begin().await?;
+    ensure_draft::<InvoiceData>(&mut transaction, body.data.tenant_id, body.id, Lock::Update).await?;
     check(&body.data)?;
-    crud::replace(&ctx.pool, body).await
+    let replaced = crud::replace(&mut *transaction, body).await?;
+    transaction.commit().await?;
+    Ok(replaced)
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -191,9 +194,12 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Invoice
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Invoice> {
-    ensure_draft::<InvoiceData>(&ctx.pool, body.key.tenant_id, body.key.id).await?;
+    let mut transaction = ctx.pool.begin().await?;
+    ensure_draft::<InvoiceData>(&mut transaction, body.key.tenant_id, body.key.id, Lock::Update).await?;
     refuse_changes(&body, &["status", "customer_id", "number"])?;
-    crud::patch(&ctx.pool, body).await
+    let patched = crud::patch(&mut *transaction, body).await?;
+    transaction.commit().await?;
+    Ok(patched)
 }
 
 #[utoipa::path(
@@ -204,6 +210,9 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 404), (status = 409)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
-    ensure_draft::<InvoiceData>(&ctx.pool, key.tenant_id, key.id).await?;
-    crud::delete(&ctx.pool, &key).await
+    let mut transaction = ctx.pool.begin().await?;
+    ensure_draft::<InvoiceData>(&mut transaction, key.tenant_id, key.id, Lock::Update).await?;
+    let deleted = crud::delete(&mut *transaction, &key).await?;
+    transaction.commit().await?;
+    Ok(deleted)
 }

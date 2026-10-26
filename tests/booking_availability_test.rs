@@ -564,3 +564,16 @@ async fn a_hold_of_two_parties_is_booked_one_appointment_at_a_time(pool: PgPool)
     assert_eq!(still["slots"][0]["parties"][0]["waitlist"], json!(true), "Bo's place is still held");
     assert_eq!(clinic.book(booking(&slot["parties"][1], &bo["id"])).await.0, StatusCode::OK);
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_purge_before_a_future_time_is_refused(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    clinic.occupy("booked", &clinic.room, "2100-01-04T09:00:00Z", "2100-01-04T10:00:00Z").await;
+
+    let purge = format!("/api/v1/tenants/{}/reservations:purge", clinic.tenant);
+    let (status, _) = call(&clinic.app, "POST", &purge, json!({"before": "2100-01-05T00:00:00Z"})).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let places: i64 = sqlx::query_scalar("SELECT count(*) FROM reservations WHERE tenant_id = $1").bind(clinic.tenant).fetch_one(&clinic.pool).await.unwrap();
+    assert_eq!(places, 1, "the booked place is kept");
+}

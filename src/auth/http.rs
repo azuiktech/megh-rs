@@ -418,9 +418,20 @@ struct AccountView {
     email: Option<String>,
 }
 
+/// The signed-in user's account `account_id`, as the request names it.
 #[derive(Debug, Deserialize)]
-pub struct DisconnectRequest {
+pub struct AccountRequest {
     account_id: String,
+}
+
+/// The user's account at the provider: one whose email is the user's. Anyone else's is not found.
+async fn own_account(state: &MeghAuthState, provider: &str, account_id: &str, user: &User) -> Result<ConnectedAccount, AuthError> {
+    state
+        .accounts()
+        .get(account_id, provider)
+        .await?
+        .filter(|account| account.email.as_deref().is_some_and(|email| email.eq_ignore_ascii_case(&user.email)))
+        .ok_or(AuthError(StatusCode::NOT_FOUND, "no such account"))
 }
 
 /// Disconnects the signed-in user's account `account_id`: its token is revoked at the provider (best effort) and the
@@ -429,32 +440,24 @@ pub async fn oauth_disconnect(
     State(state): State<MeghAuthState>,
     Path(provider_id): Path<String>,
     auth: AuthUser,
-    Json(request): Json<DisconnectRequest>,
+    Json(request): Json<AccountRequest>,
 ) -> Result<StatusCode, AuthError> {
-    let accounts = state.accounts();
-    let account = accounts
-        .get(&request.account_id, &provider_id)
-        .await?
-        .filter(|account| account.email.as_deref().is_some_and(|email| email.eq_ignore_ascii_case(&auth.user.email)))
-        .ok_or(AuthError(StatusCode::NOT_FOUND, "no such account"))?;
+    let account = own_account(&state, &provider_id, &request.account_id, &auth.user).await?;
     let _ = state.revoke(&provider_id, &account.access_token).await;
-    accounts.disconnect(&account.account_id, &provider_id).await?;
+    state.accounts().disconnect(&account.account_id, &provider_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Debug, Deserialize)]
-pub struct RevokeRequest {
-    token: String,
-}
-
-/// Revokes `token` at the provider.
+/// Revokes the stored token of the signed-in user's account `account_id` at the provider (RFC 7009); the account
+/// stays connected.
 pub async fn oauth_revoke(
     State(state): State<MeghAuthState>,
     Path(provider_id): Path<String>,
-    _auth: AuthUser,
-    Json(request): Json<RevokeRequest>,
+    auth: AuthUser,
+    Json(request): Json<AccountRequest>,
 ) -> Result<StatusCode, AuthError> {
-    state.revoke(&provider_id, &request.token).await?;
+    let account = own_account(&state, &provider_id, &request.account_id, &auth.user).await?;
+    state.revoke(&provider_id, &account.access_token).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -9,15 +9,18 @@ use super::history::{HistoryProvider, NoopHistoryProvider};
 use super::model::Event;
 use super::ring::RingBuffer;
 use super::topic::Topic;
+use crate::auth::AccessToken;
 
 const DEFAULT_BUFFER_SIZE: usize = 64;
 const DEFAULT_REPLAY_BUFFER_SIZE: usize = 1000;
 
-pub type AuthorizerFn = Arc<dyn Fn(&str, &Topic) -> bool + Send + Sync>;
+/// Whether the caller (its access token, or `None` when anonymous) may subscribe to a topic pattern.
+pub type AuthorizerFn = Arc<dyn Fn(Option<&AccessToken>, &Topic) -> bool + Send + Sync>;
 
 struct ClientState {
     topics: Vec<Topic>,
     tx: mpsc::Sender<Event>,
+    owner: Option<AccessToken>,
 }
 
 struct BrokerState {
@@ -59,7 +62,7 @@ impl Broker {
     /// Attaches a custom subscription authorizer filter.
     pub fn with_authorizer<F>(mut self, auth: F) -> Self
     where
-        F: Fn(&str, &Topic) -> bool + Send + Sync + 'static,
+        F: Fn(Option<&AccessToken>, &Topic) -> bool + Send + Sync + 'static,
     {
         self.authorizer = Arc::new(auth);
         self
@@ -71,8 +74,8 @@ impl Broker {
         self
     }
 
-    /// Registers a new subscriber client and returns their receiver channel.
-    pub async fn register(&self, client_id: &str) -> mpsc::Receiver<Event> {
+    /// Registers a new subscriber client opened by `owner` (`None` when anonymous) and returns its receiver channel.
+    pub async fn register(&self, client_id: &str, owner: Option<AccessToken>) -> mpsc::Receiver<Event> {
         let (tx, rx) = mpsc::channel(self.buffer_size);
         let mut state = self.state.write().await;
         state.clients.insert(
@@ -80,6 +83,7 @@ impl Broker {
             ClientState {
                 topics: Vec::new(),
                 tx,
+                owner,
             },
         );
         rx
@@ -91,16 +95,22 @@ impl Broker {
         state.clients.remove(client_id);
     }
 
-    /// Subscribes a client to topic patterns.
-    pub async fn subscribe(&self, client_id: &str, topics: &[Topic]) -> Result<(), &'static str> {
+    /// Subscribes a client to the topic patterns its owner may subscribe to; answers the client's patterns.
+    pub async fn subscribe(&self, client_id: &str, topics: &[Topic]) -> Result<Vec<Topic>, &'static str> {
         let mut state = self.state.write().await;
         let client = state.clients.get_mut(client_id).ok_or("client not found")?;
         for topic in topics {
-            if (self.authorizer)(client_id, topic) && !client.topics.contains(topic) {
+            if (self.authorizer)(client.owner.as_ref(), topic) && !client.topics.contains(topic) {
                 client.topics.push(topic.clone());
             }
         }
-        Ok(())
+        Ok(client.topics.clone())
+    }
+
+    /// Whether `caller` (`None` when anonymous) opened the client.
+    pub async fn opened_by(&self, client_id: &str, caller: Option<&AccessToken>) -> bool {
+        let state = self.state.read().await;
+        state.clients.get(client_id).is_some_and(|client| client.owner.as_ref().map(|owner| owner.sub) == caller.map(|token| token.sub))
     }
 
     /// Broadcasts an event to all clients with matching subscription patterns.
@@ -120,14 +130,14 @@ impl Broker {
         }
     }
 
-    /// Replays events published strictly after `last_id` matching subscriber topics.
+    /// Replays events published strictly after `last_id` matching subscriber topics; no topic matches nothing.
     /// Returns Some(events) if `last_id` was in the transient ring buffer, or None if missing.
     pub async fn replay_since(&self, last_id: &str, patterns: &[Topic]) -> Option<Vec<Event>> {
         let buffer = self.replay_buffer.read().await;
         buffer.replay_after(|e| e.id == last_id).map(|events| {
             events
                 .into_iter()
-                .filter(|e| patterns.is_empty() || patterns.iter().any(|p| e.topic.matches(p)))
+                .filter(|e| patterns.iter().any(|p| e.topic.matches(p)))
                 .collect()
         })
     }

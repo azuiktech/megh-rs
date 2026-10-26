@@ -230,12 +230,12 @@ export class Auth<User = Record<string, unknown>> {
   }
 
   /**
-   * Revoke an OAuth token for a provider and sign out.
+   * Revoke the stored token of the current user's account at a provider and sign out.
    */
-  async revokeOAuth(provider: string, token?: string): Promise<void> {
+  async revokeOAuth(provider: string, accountId: string): Promise<void> {
     const res = await this.fetch(`/auth/${provider}/revoke`, {
       method: 'POST',
-      body: token ? JSON.stringify({ token }) : undefined,
+      body: JSON.stringify({ account_id: accountId }),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({})) as { error?: string }
@@ -247,8 +247,8 @@ export class Auth<User = Record<string, unknown>> {
   /**
    * Revoke Google OAuth token and sign out (shorthand for revokeOAuth('google')).
    */
-  async revokeGoogle(token?: string): Promise<void> {
-    return this.revokeOAuth('google', token)
+  async revokeGoogle(accountId: string): Promise<void> {
+    return this.revokeOAuth('google', accountId)
   }
 
   #redirectToOAuth(loginUrl: string): void {

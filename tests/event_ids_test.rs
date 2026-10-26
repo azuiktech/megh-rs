@@ -4,7 +4,7 @@ use megh::{Broker, Event};
 use megh::event::topic::Topic;
 
 async fn published_id(broker: &Broker) -> u64 {
-    let mut events = broker.register("client").await;
+    let mut events = broker.register("client", None).await;
     broker.subscribe("client", &[Topic::new("news")]).await.unwrap();
     broker.publish(Event::new("news", serde_json::json!({}))).await;
     events.recv().await.unwrap().id.parse().unwrap()

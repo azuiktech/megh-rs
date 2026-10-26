@@ -19,6 +19,17 @@ Read before proposing or changing anything.
 - "Signatures approved. One PR for all seven fixes." The new method of #18 is `ConnectedAccountRepo::encrypt_stored(&self) -> Result<u64, sqlx::Error>`, the number of rows changed.
 - `TableEntity::soft_delete` also takes `impl Acquire` (approved), so an invoice `DELETE` locks the invoice and deletes in one transaction.
 - "Make crud::get take Acquire too, so delete calls get instead of copying its query." That does not compile (sqlx's documented "Acquire is not general enough" limit). Replaced, "go ahead": `get`, `create` and `replace` run one query and take sqlx's `PgExecutor`; `patch` and `delete` open a transaction and take `Acquire`.
+- The CHANGELOG entry for PR #212: "Skip the changelog entry for now."
+- "Next group: the security and tenant-isolation findings 2, 3, 6, 17. Open one issue for them, then propose the design before any code." Issue #213.
+- "ALWAYS to use v7 uuid everywhere." The remaining v4 uses are a separate issue, #214.
+- #213 design approved "as proposed, including the two frozen-test changes and the revoke API change" (only one frozen line changes: `broker.register` in `tests/event_ids_test.rs`):
+  - `jwt_session` puts the decoded `AccessToken` into the request besides its grants.
+  - #6 (RFC 9068 §4): `authorizer` refuses (403) a route whose `{tenant_id}` is not the token's `aud`, or not the `Member`'s tenant; bare grants without a token are checked as before.
+  - #2 (Mercure: replayed events are authorized like live ones): replay and history use only the topics the authorizer allowed; none allowed replays nothing.
+  - #3: the events authorizer gets the caller's token (`Fn(Option<&AccessToken>, &Topic) -> bool`); a connection records who opened it; `POST /sub` finds only a connection the caller opened.
+  - No library has an access-token claims type (`jsonwebtoken` has none; `oauth2`'s introspection response needs `active`). "Move only the AccessToken struct into its own file compiled with axum; keep its constructor in token.rs."
+  - Revoke test: sending the revocation is the `oauth2` library's job; the test checks only megh's decision of which token is revoked. "do NOT write test just to satisfy your ego. if a test needed to check complilation etc do so in scratch, not a regular test. Tests should be real & meaningful & catch logics and bugs."
+  - #17 (RFC 7009): `POST /auth/{provider}/revoke` takes `{"account_id"}` and revokes the stored token of the signed-in user's own account (404 otherwise), as `disconnect` finds it; the SDK's `revokeOAuth` takes the account id.
 
 ## 2026-10-26 — tenant and org
 

@@ -13,17 +13,17 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn org(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &PgPool) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, org: Uuid) -> Router {
+fn app(pool: PgPool, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
-        Grant::new(format!("orgs:read:{org}")),
+        Grant::new(format!("tenants:read:{tenant}")),
         Grant::new("services:*"),
         Grant::new("providers:*"),
         Grant::new("schedules:*"),
@@ -65,9 +65,9 @@ fn days(recurrence: &Value) -> Vec<String> {
 #[sqlx::test(migrations = false)]
 async fn schedule_is_a_recurrence_and_a_daily_window(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let app = app(pool, mine);
-    let base = format!("/api/v1/orgs/{mine}");
+    let base = format!("/api/v1/tenants/{mine}");
     let (_, albert) = call(&app, "POST", &format!("{base}/providers"), json!({
         "first_name": "Albert", "last_name": "Hall", "name": "Dr Albert"
     }))
@@ -138,9 +138,9 @@ async fn schedule_is_a_recurrence_and_a_daily_window(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn blockout_is_a_schedule_with_a_reason(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let app = app(pool, mine);
-    let collection = format!("/api/v1/orgs/{mine}/blockouts");
+    let collection = format!("/api/v1/tenants/{mine}/blockouts");
 
     let (status, lunch) = call(&app, "POST", &collection, json!({
         "name": "Lunch", "recurrence": MON_WED, "starts_at": "13:00:00", "ends_at": "14:00:00", "reason": "lunch break"

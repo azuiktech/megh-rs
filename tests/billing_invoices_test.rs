@@ -1,4 +1,4 @@
-//! B5d (docs/TPD-billing.md): invoices and invoiceLines over HTTP. An invoice is created as a draft for a customer org
+//! B5d (docs/TPD-billing.md): invoices and invoiceLines over HTTP. An invoice is created as a draft for a customer tenant
 //! and changed only while a draft; its lines are locked with it.
 
 use axum::body::Body;
@@ -12,13 +12,13 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn org(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &PgPool, name: &str) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
-async fn service(pool: &PgPool, org: Uuid) -> Uuid {
-    sqlx::query_scalar(r#"INSERT INTO services (org_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
-        .bind(org)
+async fn service(pool: &PgPool, tenant: Uuid) -> Uuid {
+    sqlx::query_scalar(r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
+        .bind(tenant)
         .bind(Uuid::now_v7())
         .fetch_one(pool)
         .await
@@ -33,8 +33,8 @@ fn app(pool: PgPool, grants: &[String]) -> Router {
         .with_state(AppContext { pool })
 }
 
-fn grants(org: Uuid) -> Vec<String> {
-    vec![format!("orgs:read:{org}"), "invoices:*".into(), "invoiceLines:*".into()]
+fn grants(tenant: Uuid) -> Vec<String> {
+    vec![format!("tenants:read:{tenant}"), "invoices:*".into(), "invoiceLines:*".into()]
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -67,15 +67,15 @@ async fn open(pool: &PgPool, id: impl ToString) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn an_invoice_is_created_as_a_draft_for_a_customer_org(pool: PgPool) {
+async fn an_invoice_is_created_as_a_draft_for_a_customer_tenant(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await);
+    let (mine, other, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), &grants(mine));
-    let invoices = format!("/api/v1/orgs/{mine}/invoices");
+    let invoices = format!("/api/v1/tenants/{mine}/invoices");
 
-    let (status, created) = call(&app, "POST", &invoices, with(invoice(ada), json!({"org_id": other, "currency": "usd"}))).await;
+    let (status, created) = call(&app, "POST", &invoices, with(invoice(ada), json!({"tenant_id": other, "currency": "usd"}))).await;
     assert_eq!(status, StatusCode::OK, "{created}");
-    assert_eq!((created["org_id"].clone(), created["currency"].clone(), created["number"].clone(), created["status"].clone()), (json!(mine), json!("USD"), Value::Null, json!("draft")));
+    assert_eq!((created["tenant_id"].clone(), created["currency"].clone(), created["number"].clone(), created["status"].clone()), (json!(mine), json!("USD"), Value::Null, json!("draft")));
     assert_eq!((created["total"].clone(), created["amount_paid"].clone(), created["balance_due"].clone(), created["comments"].clone()), (json!(0), json!(0), json!(0), json!("")));
 
     let address = json!({"line_1": "1 Main St", "line_2": null, "city": "Austin", "region": "TX", "postal_code": "78701", "country": "US"});
@@ -100,11 +100,11 @@ async fn an_invoice_is_created_as_a_draft_for_a_customer_org(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada, bea) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await, org(&pool, "Bea").await);
+    let (mine, other, ada, bea) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await, tenant(&pool, "Bea").await);
     let (mine_app, other_app) = (app(pool.clone(), &grants(mine)), app(pool.clone(), &grants(other)));
-    let (_, created) = call(&mine_app, "POST", &format!("/api/v1/orgs/{mine}/invoices"), invoice(ada)).await;
+    let (_, created) = call(&mine_app, "POST", &format!("/api/v1/tenants/{mine}/invoices"), invoice(ada)).await;
     let id = created["id"].as_str().unwrap().to_string();
-    let item = format!("/api/v1/orgs/{mine}/invoices/{id}");
+    let item = format!("/api/v1/tenants/{mine}/invoices/{id}");
 
     let (status, put) = call(&mine_app, "PUT", &item, with(invoice(ada), json!({"due_date": "2026-12-01", "comments": "thanks"}))).await;
     assert_eq!((status, put["due_date"].clone(), put["comments"].clone()), (StatusCode::OK, json!("2026-12-01"), json!("thanks")), "{put}");
@@ -116,8 +116,8 @@ async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
     for (field, value) in [("status", json!("open")), ("customer_id", json!(bea)), ("number", json!("INV-1"))] {
         assert_eq!(call(&mine_app, "PATCH", &item, json!({field: value})).await.0, StatusCode::BAD_REQUEST, "patching {field}");
     }
-    assert_eq!(call(&mine_app, "PATCH", &format!("/api/v1/orgs/{mine}/invoices/{}", Uuid::now_v7()), json!({"comments": "x"})).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(call(&other_app, "DELETE", &format!("/api/v1/orgs/{other}/invoices/{id}"), Value::Null).await.0, StatusCode::NOT_FOUND, "another org's invoice");
+    assert_eq!(call(&mine_app, "PATCH", &format!("/api/v1/tenants/{mine}/invoices/{}", Uuid::now_v7()), json!({"comments": "x"})).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(call(&other_app, "DELETE", &format!("/api/v1/tenants/{other}/invoices/{id}"), Value::Null).await.0, StatusCode::NOT_FOUND, "another tenant's invoice");
 
     open(&pool, &id).await;
     assert_eq!(call(&mine_app, "GET", &item, Value::Null).await.1["status"], "open");
@@ -131,37 +131,37 @@ async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_draft_invoice_is_deleted_with_its_lines(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, ada) = (org(&pool, "Clinic").await, org(&pool, "Ada").await);
+    let (mine, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), &grants(mine));
-    let (_, created) = call(&app, "POST", &format!("/api/v1/orgs/{mine}/invoices"), invoice(ada)).await;
+    let (_, created) = call(&app, "POST", &format!("/api/v1/tenants/{mine}/invoices"), invoice(ada)).await;
     let id: Uuid = created["id"].as_str().unwrap().parse().unwrap();
-    let (_, row) = call(&app, "POST", &format!("/api/v1/orgs/{mine}/invoiceLines"), line(id)).await;
-    assert_eq!(call(&app, "DELETE", &format!("/api/v1/orgs/{mine}/invoices/{id}"), Value::Null).await.0, StatusCode::OK);
-    assert_eq!(call(&app, "GET", &format!("/api/v1/orgs/{mine}/invoiceLines/{}", row["id"].as_str().unwrap()), Value::Null).await.0, StatusCode::NOT_FOUND);
+    let (_, row) = call(&app, "POST", &format!("/api/v1/tenants/{mine}/invoiceLines"), line(id)).await;
+    assert_eq!(call(&app, "DELETE", &format!("/api/v1/tenants/{mine}/invoices/{id}"), Value::Null).await.0, StatusCode::OK);
+    assert_eq!(call(&app, "GET", &format!("/api/v1/tenants/{mine}/invoiceLines/{}", row["id"].as_str().unwrap()), Value::Null).await.0, StatusCode::NOT_FOUND);
 }
 
 #[sqlx::test(migrations = false)]
-async fn a_line_belongs_to_a_draft_invoice_of_the_org(pool: PgPool) {
+async fn a_line_belongs_to_a_draft_invoice_of_the_tenant(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada, theirs_customer) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await, org(&pool, "Cy").await);
+    let (mine, other, ada, theirs_customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await, tenant(&pool, "Cy").await);
     let app = app(pool.clone(), &[grants(mine), grants(other)].concat());
-    let new = |org: Uuid, customer: Uuid| {
+    let new = |tenant: Uuid, customer: Uuid| {
         let app = app.clone();
-        async move { call(&app, "POST", &format!("/api/v1/orgs/{org}/invoices"), invoice(customer)).await.1["id"].as_str().unwrap().parse::<Uuid>().unwrap() }
+        async move { call(&app, "POST", &format!("/api/v1/tenants/{tenant}/invoices"), invoice(customer)).await.1["id"].as_str().unwrap().parse::<Uuid>().unwrap() }
     };
     let (first, second, theirs) = (new(mine, ada).await, new(mine, ada).await, new(other, theirs_customer).await);
-    let lines = format!("/api/v1/orgs/{mine}/invoiceLines");
+    let lines = format!("/api/v1/tenants/{mine}/invoiceLines");
 
-    let (status, created) = call(&app, "POST", &lines, with(line(first), json!({"org_id": other, "discount": "10", "tax_ids": [Uuid::now_v7()]}))).await;
+    let (status, created) = call(&app, "POST", &lines, with(line(first), json!({"tenant_id": other, "discount": "10", "tax_ids": [Uuid::now_v7()]}))).await;
     assert_eq!(status, StatusCode::OK, "{created}");
-    assert_eq!((created["org_id"].clone(), created["quantity"].clone(), created["discount"].clone(), created["total"].clone()), (json!(mine), json!("1.5"), json!("10"), json!(0)));
+    assert_eq!((created["tenant_id"].clone(), created["quantity"].clone(), created["discount"].clone(), created["total"].clone()), (json!(mine), json!("1.5"), json!("10"), json!(0)));
     let (status, with_service) = call(&app, "POST", &lines, with(line(first), json!({"position": 2, "service_id": service(&pool, mine).await}))).await;
     assert_eq!(status, StatusCode::OK, "{with_service}");
 
     let bad = [
-        ("another org's invoice", json!({"invoice_id": theirs})),
+        ("another tenant's invoice", json!({"invoice_id": theirs})),
         ("no invoice", json!({"invoice_id": Uuid::now_v7()})),
-        ("another org's service", json!({"service_id": service(&pool, other).await})),
+        ("another tenant's service", json!({"service_id": service(&pool, other).await})),
         ("a product and a service", json!({"product_id": Uuid::now_v7(), "service_id": service(&pool, mine).await})),
         ("no appointment", json!({"appointment_id": Uuid::now_v7()})),
         ("a negative quantity", json!({"quantity": "-1"})),
@@ -178,7 +178,7 @@ async fn a_line_belongs_to_a_draft_invoice_of_the_org(pool: PgPool) {
     let (status, patched) = call(&app, "PATCH", &item, json!({"quantity": "3"})).await;
     assert_eq!((status, patched["quantity"].clone(), patched["description"].clone()), (StatusCode::OK, json!("3"), json!("Whitening")), "{patched}");
     assert_eq!(call(&app, "PATCH", &item, json!({"invoice_id": first})).await.0, StatusCode::BAD_REQUEST, "a patch does not move a line");
-    assert_eq!(call(&app, "PUT", &item, line(theirs)).await.0, StatusCode::BAD_REQUEST, "nor into another org's invoice");
+    assert_eq!(call(&app, "PUT", &item, line(theirs)).await.0, StatusCode::BAD_REQUEST, "nor into another tenant's invoice");
     let on_first = call(&app, "GET", &format!("{lines}?filter=invoice_id%20%3D%20%22{first}%22"), Value::Null).await.1;
     assert_eq!(on_first["items"].as_array().unwrap().len(), 1);
 
@@ -193,21 +193,21 @@ async fn a_line_belongs_to_a_draft_invoice_of_the_org(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn authorizer_guards_invoices_and_lines(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, ada) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await);
+    let (mine, other, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     for (segment, body) in [("invoices", invoice(ada)), ("invoiceLines", line(Uuid::now_v7()))] {
-        let collection = format!("/api/v1/orgs/{mine}/{segment}");
-        let read_only = app(pool.clone(), &[format!("orgs:read:{mine}"), format!("{segment}:read")]);
+        let collection = format!("/api/v1/tenants/{mine}/{segment}");
+        let read_only = app(pool.clone(), &[format!("tenants:read:{mine}"), format!("{segment}:read")]);
         assert_eq!(call(&read_only, "GET", &collection, Value::Null).await.0, StatusCode::OK, "{segment}");
         assert_eq!(call(&read_only, "POST", &collection, body).await.0, StatusCode::FORBIDDEN, "{segment}");
         let mine_only = app(pool.clone(), &grants(mine));
-        assert_eq!(call(&mine_only, "GET", &format!("/api/v1/orgs/{other}/{segment}"), Value::Null).await.0, StatusCode::FORBIDDEN, "{segment}");
+        assert_eq!(call(&mine_only, "GET", &format!("/api/v1/tenants/{other}/{segment}"), Value::Null).await.0, StatusCode::FORBIDDEN, "{segment}");
     }
 }
 
 #[test]
 fn invoices_and_lines_are_documented_with_their_grants() {
     let (_, api) = megh::billing::router().split_for_parts();
-    for path in ["/orgs/{org_id}/invoices", "/orgs/{org_id}/invoices/{id}", "/orgs/{org_id}/invoiceLines", "/orgs/{org_id}/invoiceLines/{id}"] {
+    for path in ["/tenants/{tenant_id}/invoices", "/tenants/{tenant_id}/invoices/{id}", "/tenants/{tenant_id}/invoiceLines", "/tenants/{tenant_id}/invoiceLines/{id}"] {
         let item = api.paths.paths.get(path).unwrap_or_else(|| panic!("{path}"));
         for operation in [&item.get, &item.post, &item.put, &item.patch, &item.delete].into_iter().flatten() {
             assert!(operation.security.as_ref().is_some_and(|security| !security.is_empty()), "{path}");

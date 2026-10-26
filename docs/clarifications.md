@@ -3,6 +3,20 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-10-26 — tenant and org
+
+- "Rename the org as tenant, which is a better name to represent. so that it can represent an generic partition."
+- "Use tenant for the partition; org stays the physical body that owns tenants and hierarchies." An org has one or more tenants and hierarchies.
+- Database: "Rename tables too." The tables and columns become `tenants`/`tenant_id`, which breaks the schema shared with megh-go until megh-go follows.
+- API: "Rename to tenant." Routes become `/tenants/{tenant_id}/...` and the token carries a tenant; breaking for existing callers.
+- The current `Org` (the `organizations` row) "becomes Tenant" as is; a physical Org that owns tenants is designed later, separately.
+- The contact and address work (PR #208) "is already merged"; the rename goes in its own PR from `main`.
+- `megh::migrate` reruns every migration file on each start, so a one-off rename would be undone. Option A (a rename step first) was chosen, then replaced: "you do not need to bother too much about migrations. can compact and create a single migration also for each module."
+- Old databases: "just rename existing db. do not need to have migrations available. have a single migration for each module as if it is already applied." No rename step is kept; the history of migrations is not kept.
+- Five files by module: tenant (tenants, members, invites, configs), auth (users, connected accounts, sessions), audit, billing (plans to subscriptions, taxes, invoices, lines, payments, counters), booking (resources to reservations).
+- Compacting and the rename go in one PR (#209).
+- Open: where the hierarchy lives.
+
 ## 2026-10-24 — authentication of an API server called by browsers, servers and LLM/MCP clients
 
 - megh is an API server; "I am least bothered if a frontend hosts on a entirely different domain, or another server calls." Nothing may disallow a call from another server.

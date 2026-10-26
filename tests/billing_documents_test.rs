@@ -13,13 +13,13 @@ use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-async fn org(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &PgPool, name: &str) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
-async fn service(pool: &PgPool, org: Uuid) -> Uuid {
-    sqlx::query_scalar(r#"INSERT INTO services (org_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
-        .bind(org)
+async fn service(pool: &PgPool, tenant: Uuid) -> Uuid {
+    sqlx::query_scalar(r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
+        .bind(tenant)
         .bind(Uuid::now_v7())
         .fetch_one(pool)
         .await
@@ -41,9 +41,9 @@ where
     TableEntity::insert(&Entity::new(Uuid::now_v7(), data), pool).await
 }
 
-fn invoice(org: Uuid, customer: Uuid) -> InvoiceData {
+fn invoice(tenant: Uuid, customer: Uuid) -> InvoiceData {
     InvoiceData {
-        org_id: org,
+        tenant_id: tenant,
         customer_id: customer,
         number: None,
         status: InvoiceStatus::Draft,
@@ -61,9 +61,9 @@ fn invoice(org: Uuid, customer: Uuid) -> InvoiceData {
     }
 }
 
-fn line(org: Uuid, invoice_id: Uuid) -> InvoiceLineData {
+fn line(tenant: Uuid, invoice_id: Uuid) -> InvoiceLineData {
     InvoiceLineData {
-        org_id: org,
+        tenant_id: tenant,
         invoice_id,
         position: 1,
         product_id: None,
@@ -79,9 +79,9 @@ fn line(org: Uuid, invoice_id: Uuid) -> InvoiceLineData {
     }
 }
 
-fn payment(org: Uuid, invoice_id: Uuid) -> PaymentData {
+fn payment(tenant: Uuid, invoice_id: Uuid) -> PaymentData {
     PaymentData {
-        org_id: org,
+        tenant_id: tenant,
         invoice_id,
         number: None,
         date: day(),
@@ -96,9 +96,9 @@ fn payment(org: Uuid, invoice_id: Uuid) -> PaymentData {
 #[sqlx::test(migrations = false)]
 async fn every_entity_is_stored_and_read_back(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, customer) = (org(&pool, "Clinic").await, org(&pool, "Ada").await);
+    let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
 
-    let tax = TaxData { org_id: mine, name: name("Sales tax"), rate: Percent::try_new(Decimal::new(75, 1)).unwrap(), description: String::new(), attributes: Attributes::new() };
+    let tax = TaxData { tenant_id: mine, name: name("Sales tax"), rate: Percent::try_new(Decimal::new(75, 1)).unwrap(), description: String::new(), attributes: Attributes::new() };
     assert_eq!(store(&pool, tax.clone()).await.unwrap().data, tax);
 
     let address = Address { line_1: name("1 Main St"), line_2: None, city: name("Austin"), region: name("TX"), postal_code: name("78701"), country: celes::Country::from_alpha2("US").unwrap() };
@@ -125,27 +125,27 @@ async fn every_entity_is_stored_and_read_back(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn the_database_refuses_what_the_types_cannot_be(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, customer) = (org(&pool, "Clinic").await, org(&pool, "Ada").await);
+    let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let owed = store(&pool, invoice(mine, customer)).await.unwrap();
 
     let both = InvoiceLineData { product_id: Some(Uuid::now_v7()), service_id: Some(service(&pool, mine).await), ..line(mine, owed.id) };
     assert!(store(&pool, both).await.is_err(), "a line names a product or a service, not both");
-    assert!(store(&pool, invoice(mine, Uuid::now_v7())).await.is_err(), "a customer is an org");
-    assert!(store(&pool, line(mine, Uuid::now_v7())).await.is_err(), "a line belongs to an invoice of the org");
-    assert!(store(&pool, payment(mine, Uuid::now_v7())).await.is_err(), "a payment is for an invoice of the org");
+    assert!(store(&pool, invoice(mine, Uuid::now_v7())).await.is_err(), "a customer is a tenant");
+    assert!(store(&pool, line(mine, Uuid::now_v7())).await.is_err(), "a line belongs to an invoice of the tenant");
+    assert!(store(&pool, payment(mine, Uuid::now_v7())).await.is_err(), "a payment is for an invoice of the tenant");
     assert!(store(&pool, PaymentData { amount: Micros::new(0), ..payment(mine, owed.id) }).await.is_err(), "a payment is of something");
     assert!(store(&pool, PaymentData { refunded: Micros::new(120_000_001), ..payment(mine, owed.id) }).await.is_err(), "no more is refunded than was paid");
     assert!(store(&pool, PaymentData { refunded: Micros::new(-1), ..payment(mine, owed.id) }).await.is_err());
 }
 
 #[sqlx::test(migrations = false)]
-async fn a_number_is_used_once_per_org(pool: PgPool) {
+async fn a_number_is_used_once_per_tenant(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other, customer) = (org(&pool, "Clinic").await, org(&pool, "Other").await, org(&pool, "Ada").await);
-    let numbered = |org: Uuid| InvoiceData { number: Some(name("INV-0001")), ..invoice(org, customer) };
+    let (mine, other, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
+    let numbered = |tenant: Uuid| InvoiceData { number: Some(name("INV-0001")), ..invoice(tenant, customer) };
     let first = store(&pool, numbered(mine)).await.unwrap();
     assert!(store(&pool, numbered(mine)).await.is_err());
-    assert!(store(&pool, numbered(other)).await.is_ok(), "another org has its own numbers");
+    assert!(store(&pool, numbered(other)).await.is_ok(), "another tenant has its own numbers");
     assert!(store(&pool, invoice(mine, customer)).await.is_ok() && store(&pool, invoice(mine, customer)).await.is_ok(), "drafts have no number");
     let receipt = |number: &str| PaymentData { number: Some(name(number)), ..payment(mine, first.id) };
     assert!(store(&pool, receipt("PAY-1")).await.is_ok());
@@ -155,7 +155,7 @@ async fn a_number_is_used_once_per_org(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn deleting_an_invoice_deletes_its_lines_and_payments(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, customer) = (org(&pool, "Clinic").await, org(&pool, "Ada").await);
+    let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let owed = store(&pool, invoice(mine, customer)).await.unwrap();
     let billed = store(&pool, line(mine, owed.id)).await.unwrap();
     let paid = store(&pool, payment(mine, owed.id)).await.unwrap();
@@ -164,20 +164,6 @@ async fn deleting_an_invoice_deletes_its_lines_and_payments(pool: PgPool) {
         let deleted: bool = sqlx::query_scalar(&format!("SELECT deleted_at IS NOT NULL FROM {table} WHERE id = $1")).bind(id).fetch_one(&pool).await.unwrap();
         assert!(deleted, "{table}");
     }
-    let kept: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM organizations WHERE id = $1)").bind(customer).fetch_one(&pool).await.unwrap();
-    assert!(kept, "the customer org stays");
-}
-
-#[sqlx::test(migrations = false)]
-async fn the_old_billing_tables_are_dropped_once(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
-    sqlx::raw_sql("CREATE TABLE billing_orders (id UUID); INSERT INTO billing_orders VALUES (gen_random_uuid())").execute(&pool).await.unwrap();
-    let mine = org(&pool, "Clinic").await;
-    let owed = store(&pool, invoice(mine, org(&pool, "Ada").await)).await.unwrap();
-    megh::migrate(&pool).await.unwrap();
-    let old: bool = sqlx::query_scalar("SELECT to_regclass('billing_orders') IS NOT NULL").fetch_one(&pool).await.unwrap();
-    assert!(!old, "the first shape of 0017 is cleaned up");
-    megh::migrate(&pool).await.unwrap();
-    let kept: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM billing_invoices WHERE id = $1)").bind(owed.id).fetch_one(&pool).await.unwrap();
-    assert!(!kept, "the invoices of the old shape went with it, and a new run keeps what is stored");
+    let kept: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1)").bind(customer).fetch_one(&pool).await.unwrap();
+    assert!(kept, "the customer tenant stays");
 }

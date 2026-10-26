@@ -11,17 +11,17 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn org(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &PgPool) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, org: Uuid) -> Router {
+fn app(pool: PgPool, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
-        Grant::new(format!("orgs:read:{org}")),
+        Grant::new(format!("tenants:read:{tenant}")),
         Grant::new("services:*"),
     ];
     Router::new()
@@ -52,9 +52,9 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 #[sqlx::test(migrations = false)]
 async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let app = app(pool, mine);
-    let collection = format!("/api/v1/orgs/{mine}/services");
+    let collection = format!("/api/v1/tenants/{mine}/services");
 
     let extraction = json!({
         "name": "Tooth extraction", "setup": "PT10M", "cleanup": "PT10M",

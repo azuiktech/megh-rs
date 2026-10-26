@@ -29,7 +29,7 @@ use crate::auth::oauth::{
 };
 use crate::auth::token::JWT_COOKIE;
 use crate::auth::user::{PasswordError, UpsertUserInput, User, UserRepo};
-use crate::org::Orgs;
+use crate::tenant::Tenants;
 
 /// Shared state required by the Megh authentication HTTP router.
 #[derive(Clone)]
@@ -245,7 +245,7 @@ pub fn basic_login_router_with_csrf(state: MeghAuthState, path: &str, csrf: Csrf
 #[derive(Debug, Serialize)]
 pub struct BasicLoginResponse {
     pub user: User,
-    pub memberships: Vec<crate::org::Member>,
+    pub memberships: Vec<crate::tenant::Member>,
 }
 
 async fn basic_login(
@@ -258,7 +258,7 @@ async fn basic_login(
         Err(PasswordError::UserNotFound | PasswordError::NoPassword | PasswordError::WrongPassword) => return Err(AuthError::INVALID_CREDENTIALS),
         other => other?,
     };
-    let memberships = Orgs::new(state.pool.clone()).memberships(user.id).await?;
+    let memberships = Tenants::new(state.pool.clone()).memberships(user.id).await?;
     sign_in(&session, user.id).await?;
     Ok(Json(BasicLoginResponse { user, memberships }))
 }

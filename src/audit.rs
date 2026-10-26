@@ -1,5 +1,5 @@
 //! Row-change auditing: a trigger on a table writes each insert, update and delete, with the old and new row as
-//! JSON, to an audit table. The tables and functions come from migration 0007; every name has a default and can
+//! JSON, to an audit table. The tables and functions come from migration 0002; every name has a default and can
 //! be overridden.
 
 use chrono::{DateTime, Utc};

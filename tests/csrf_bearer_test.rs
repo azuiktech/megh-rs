@@ -31,7 +31,7 @@ fn app() -> Router {
 fn token() -> String {
     let member = Member {
         id: Uuid::new_v4(),
-        organization_id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
         role: "machine".into(),
         grants: vec!["invoices:create".into()],

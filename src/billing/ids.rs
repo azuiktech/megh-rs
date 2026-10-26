@@ -1,6 +1,6 @@
 //! The ids of invoices and payments (`INV-2026-0001`). The app supplies an `Ids` function; its result is stored as a
 //! `Name` like any other. `Numbering` is the ready-made format: prefix, separator, an optional date part and a
-//! zero-padded sequence. A counter row per org, kind of document and scope numbers them; no format is stored.
+//! zero-padded sequence. A counter row per tenant, kind of document and scope numbers them; no format is stored.
 
 use std::sync::Arc;
 
@@ -97,15 +97,15 @@ impl Ids for Numbering {
     }
 }
 
-/// The next id of the org's documents of that kind: the counter of the `ids.scope(on)` is taken atomically
+/// The next id of the tenant's documents of that kind: the counter of the `ids.scope(on)` is taken atomically
 /// (`next = next + 1`, created at 1), in the caller's transaction, so a rolled back document gives its number back.
-pub async fn issue<I: Ids + ?Sized>(connection: &mut PgConnection, org_id: Uuid, document: Numbered, on: NaiveDate, ids: &I) -> Result<Name, sqlx::Error> {
+pub async fn issue<I: Ids + ?Sized>(connection: &mut PgConnection, tenant_id: Uuid, document: Numbered, on: NaiveDate, ids: &I) -> Result<Name, sqlx::Error> {
     let sequence: i64 = sqlx::query_scalar(
-        "INSERT INTO billing_counters (org_id, document, scope, next) VALUES ($1, $2, $3, 2) \
-         ON CONFLICT (org_id, document, scope) DO UPDATE SET next = billing_counters.next + 1, updated_at = now() \
+        "INSERT INTO billing_counters (tenant_id, document, scope, next) VALUES ($1, $2, $3, 2) \
+         ON CONFLICT (tenant_id, document, scope) DO UPDATE SET next = billing_counters.next + 1, updated_at = now() \
          RETURNING next - 1",
     )
-    .bind(org_id)
+    .bind(tenant_id)
     .bind(document)
     .bind(ids.scope(on))
     .fetch_one(connection)
@@ -113,7 +113,7 @@ pub async fn issue<I: Ids + ?Sized>(connection: &mut PgConnection, org_id: Uuid,
     Ok(ids.id(on, sequence))
 }
 
-/// The ids of an org's invoices and payments, given to the billing router by the app as an axum `Extension`:
+/// The ids of a tenant's invoices and payments, given to the billing router by the app as an axum `Extension`:
 /// `.layer(Extension(Formats::new(invoice_ids, payment_ids)))`.
 #[derive(Clone)]
 pub struct Formats {

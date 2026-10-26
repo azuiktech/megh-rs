@@ -1,7 +1,7 @@
 # TPD — Audit
 
 **Status:** A1 shipped. Ports megh-go's row-change audit triggers (Postgres only).
-**Modules:** `src/audit.rs`, `migrations/0007_audit.sql`.
+**Modules:** `src/audit.rs`, `migrations/0002_audit.sql`.
 
 ## 1. Delivery
 
@@ -29,7 +29,7 @@ impl AuditTrigger {
     pub fn name(self, name: impl Into<String>) -> Self;
     pub fn key(self, column: impl Into<String>) -> Self;  // the column recorded as record_id
 }
-pub struct Audit { .. }                                    // holds the pool, like Orgs
+pub struct Audit { .. }                                    // holds the pool, like Tenants
 impl Audit {
     pub fn new(pool: PgPool) -> Self;
     pub async fn install(&self, trigger: &AuditTrigger) -> Result<(), AuditError>;

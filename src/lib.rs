@@ -9,7 +9,7 @@ pub mod booking;
 pub mod entity;
 pub mod event;
 pub mod money;
-pub mod org;
+pub mod tenant;
 #[cfg(feature = "postgres")]
 mod soft_delete;
 
@@ -49,68 +49,26 @@ pub use account::{ConnectedAccountRepo, EncryptError, Encryptor};
 #[cfg(all(feature = "postgres", feature = "client"))]
 pub use account::{AccountAuth, AccountError, Accounts};
 
-pub use org::{Member, Org};
+pub use tenant::{Member, Tenant};
 #[cfg(feature = "postgres")]
-pub use org::{OrgError, Orgs};
+pub use tenant::{TenantError, Tenants};
 
 #[cfg(feature = "postgres")]
 /// Executes all embedded database migrations for Megh foundation tables.
 pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    sqlx::raw_sql(include_str!("../migrations/0001_create_org.sql"))
+    sqlx::raw_sql(include_str!("../migrations/0001_auth.sql"))
         .execute(pool)
         .await?;
-    sqlx::raw_sql(include_str!("../migrations/0002_create_users.sql"))
+    sqlx::raw_sql(include_str!("../migrations/0002_audit.sql"))
         .execute(pool)
         .await?;
-    sqlx::raw_sql(include_str!("../migrations/0003_create_connected_accounts.sql"))
+    sqlx::raw_sql(include_str!("../migrations/0003_tenant.sql"))
         .execute(pool)
         .await?;
-    sqlx::raw_sql(include_str!("../migrations/0004_create_sessions.sql"))
+    sqlx::raw_sql(include_str!("../migrations/0004_booking.sql"))
         .execute(pool)
         .await?;
-    sqlx::raw_sql(include_str!("../migrations/0005_align_users.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0006_align_org.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0007_audit.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0008_soft_delete.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0009_booking_resources.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0010_booking_providers.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0011_booking_clients.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0012_booking_services.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0013_booking_schedules.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0014_booking_appointments.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0015_booking_availability.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0016_booking_reservations.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0018_billing_simplified.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0019_billing_counters.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0020_org_contact_address.sql"))
+    sqlx::raw_sql(include_str!("../migrations/0005_billing.sql"))
         .execute(pool)
         .await?;
     Ok(())

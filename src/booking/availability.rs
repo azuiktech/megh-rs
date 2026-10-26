@@ -36,7 +36,7 @@ use crate::{Entity, Table};
 #[validate(schema(function = "to_after_from"))]
 #[schema(example = json!({"from": "2026-10-26T09:00:00+05:30", "to": "2026-10-26T18:00:00+05:30", "parties": [{"client": {"id": "01a15d4f-446c-711b-8ef2-4634de693900"}, "service_id": "01a15d4f-448f-755a-85d6-3f42464b40df", "providers": [{"role": "dentist"}], "resources": [{"role": "operatory"}]}], "service_gap": "PT15M", "client_gap": "PT0S"}))]
 pub struct Availability {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     pub from: DateTime<FixedOffset>,
     pub to: DateTime<FixedOffset>,
     #[validate(length(min = 1))]
@@ -216,7 +216,7 @@ impl Calendar {
     async fn load(conn: &mut PgConnection, request: &Availability, window: Span, except: Option<Uuid>) -> ApiResult<Self> {
         let horizon = (window.0 - TimeDelta::days(1), window.1 + TimeDelta::days(1));
         let services: Vec<Uuid> = request.parties.iter().map(|party| party.service_id).unique().collect();
-        let plans: HashMap<Uuid, Plan> = services_of(conn, request.org_id, &services)
+        let plans: HashMap<Uuid, Plan> = services_of(conn, request.tenant_id, &services)
             .await?
             .iter()
             .map(|service| (service.id, Plan::new(&service.data)))
@@ -225,11 +225,11 @@ impl Calendar {
             return Err(ApiError::BadRequest(format!("no service {}", party.service_id)));
         }
         let roles: Vec<String> = plans.values().flat_map(|plan| plan.roles.iter().map(|(role, _)| role.clone())).unique().collect();
-        let providers = providers_in(conn, request.org_id, &roles).await?;
+        let providers = providers_in(conn, request.tenant_id, &roles).await?;
         let resources = rooms_for(conn, request).await?;
         let (fields, limits) = described(&providers, &resources);
         let (provider_ids, room_ids): (Vec<Uuid>, Vec<Uuid>) = (providers.iter().map(|p| p.id).collect(), resources.iter().map(|r| r.id).collect());
-        let candidates = Candidates { org_id: request.org_id, providers: &provider_ids, rooms: &room_ids, services: &services };
+        let candidates = Candidates { tenant_id: request.tenant_id, providers: &provider_ids, rooms: &room_ids, services: &services };
         let schedules = applying::<ScheduleData>(conn, &candidates).await?.into_iter().map(|s| {
             let open = windows(&s.data.recurrence, s.data.starts_at, s.data.ends_at, horizon);
             (s.data, open)
@@ -251,7 +251,7 @@ impl Calendar {
             limits,
             schedules: schedules.collect(),
             blockouts: blockouts.collect(),
-            taken: taken(conn, request.org_id, &participants, horizon, except).await?,
+            taken: taken(conn, request.tenant_id, &participants, horizon, except).await?,
             choices: Vec::new(),
             openings: HashMap::new(),
         };
@@ -501,9 +501,9 @@ pub fn routes() -> OpenApiRouter<AppContext> {
 /// Open slots for every party together; booking a slot makes its appointments.
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/appointments:available",
+    path = "/tenants/{tenant_id}/appointments:available",
     tag = "appointments",
-    params(("org_id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path)),
     request_body = Availability,
     responses((status = 200, body = Slots), (status = 400)),
 )]
@@ -549,17 +549,17 @@ pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData, 
         waitlist: appointment.status == Status::Waitlist,
         capacity: 0,
     };
-    fit_slot(conn, appointment.org_id, &[party], except).await
+    fit_slot(conn, appointment.tenant_id, &[party], except).await
 }
 
 /// The places a slot's parties take, if each still fits as given (a free place, or a waitlist place when
 /// `waitlist`), counting the parties before it.
-pub(super) async fn fit_slot(conn: &mut PgConnection, org_id: Uuid, parties: &[Placed], except: Option<Uuid>) -> ApiResult<Vec<Place>> {
+pub(super) async fn fit_slot(conn: &mut PgConnection, tenant_id: Uuid, parties: &[Placed], except: Option<Uuid>) -> ApiResult<Vec<Place>> {
     let bad = |reason: &str| ApiError::BadRequest(reason.to_string());
     let from = parties.iter().map(|placed| placed.starts_at).min().ok_or_else(|| bad("a slot has parties"))?;
     let to = parties.iter().map(|placed| placed.ends_at).max().ok_or_else(|| bad("a slot has parties"))?;
     let request = Availability {
-        org_id,
+        tenant_id,
         from,
         to,
         parties: parties.iter().map(searched).collect::<ApiResult<_>>()?,
@@ -595,24 +595,24 @@ fn searched(placed: &Placed) -> ApiResult<Party> {
 
 /// The ids a search can use, for the queries that read only what applies to them.
 struct Candidates<'a> {
-    org_id: Uuid,
+    tenant_id: Uuid,
     providers: &'a [Uuid],
     rooms: &'a [Uuid],
     services: &'a [Uuid],
 }
 
-async fn services_of(conn: &mut PgConnection, org_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Entity<Uuid, ServiceData>>> {
-    Ok(sqlx::query_as("SELECT * FROM services WHERE org_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
-        .bind(org_id)
+async fn services_of(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Entity<Uuid, ServiceData>>> {
+    Ok(sqlx::query_as("SELECT * FROM services WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
+        .bind(tenant_id)
         .bind(ids)
         .fetch_all(conn)
         .await?)
 }
 
 /// Providers whose role a step of the services needs, e.g. every hygienist.
-async fn providers_in(conn: &mut PgConnection, org_id: Uuid, roles: &[String]) -> ApiResult<Vec<Entity<Uuid, ProviderData>>> {
-    Ok(sqlx::query_as("SELECT * FROM providers WHERE org_id = $1 AND role = ANY($2) AND deleted_at IS NULL ORDER BY id")
-        .bind(org_id)
+async fn providers_in(conn: &mut PgConnection, tenant_id: Uuid, roles: &[String]) -> ApiResult<Vec<Entity<Uuid, ProviderData>>> {
+    Ok(sqlx::query_as("SELECT * FROM providers WHERE tenant_id = $1 AND role = ANY($2) AND deleted_at IS NULL ORDER BY id")
+        .bind(tenant_id)
         .bind(roles)
         .fetch_all(conn)
         .await?)
@@ -622,10 +622,10 @@ async fn providers_in(conn: &mut PgConnection, org_id: Uuid, roles: &[String]) -
 async fn rooms_for(conn: &mut PgConnection, request: &Availability) -> ApiResult<Vec<Entity<Uuid, ResourceData>>> {
     let wanted: Vec<Value> = request.parties.iter().map(|party| Value::Object(party.resources.iter().flatten().map(|(k, v)| (k.clone(), v.clone())).collect())).collect();
     Ok(sqlx::query_as(
-        "SELECT * FROM resources r WHERE org_id = $1 AND deleted_at IS NULL \
+        "SELECT * FROM resources r WHERE tenant_id = $1 AND deleted_at IS NULL \
          AND EXISTS (SELECT 1 FROM unnest($2::jsonb[]) wanted WHERE to_jsonb(r) @> wanted) ORDER BY id",
     )
-    .bind(request.org_id)
+    .bind(request.tenant_id)
     .bind(wanted)
     .fetch_all(conn)
     .await?)
@@ -634,13 +634,13 @@ async fn rooms_for(conn: &mut PgConnection, request: &Availability) -> ApiResult
 /// Schedules or blockouts that apply to the candidates and services: naming none of them means any.
 async fn applying<T: Row>(conn: &mut PgConnection, candidates: &Candidates<'_>) -> ApiResult<Vec<Entity<Uuid, T>>> {
     let query = format!(
-        "SELECT * FROM {} WHERE org_id = $1 AND deleted_at IS NULL \
+        "SELECT * FROM {} WHERE tenant_id = $1 AND deleted_at IS NULL \
          AND (provider_id IS NULL OR provider_id = ANY($2)) AND (resource_id IS NULL OR resource_id = ANY($3)) \
          AND (cardinality(service_ids) = 0 OR service_ids && $4)",
         T::TABLE_NAME
     );
     Ok(sqlx::query_as(&query)
-        .bind(candidates.org_id)
+        .bind(candidates.tenant_id)
         .bind(candidates.providers)
         .bind(candidates.rooms)
         .bind(candidates.services)
@@ -651,17 +651,17 @@ async fn applying<T: Row>(conn: &mut PgConnection, candidates: &Candidates<'_>) 
 /// The places taken from the participants in `horizon`: appointments and unexpired holds, except `except`'s.
 async fn taken(
     conn: &mut PgConnection,
-    org_id: Uuid,
+    tenant_id: Uuid,
     participants: &[Uuid],
     horizon: Span,
     except: Option<Uuid>,
 ) -> ApiResult<HashMap<Uuid, Vec<Taken>>> {
     let rows: Vec<(Uuid, PgRange<DateTime<Utc>>, bool)> = sqlx::query_as(
         "SELECT participant_id, during, waitlist FROM reservations \
-         WHERE org_id = $1 AND participant_id = ANY($2) AND during && $3 \
+         WHERE tenant_id = $1 AND participant_id = ANY($2) AND during && $3 \
          AND (expires_at IS NULL OR expires_at > now()) AND owner_id IS DISTINCT FROM $4",
     )
-    .bind(org_id)
+    .bind(tenant_id)
     .bind(participants)
     .bind(PgRange::from(horizon.0..horizon.1))
     .bind(except)

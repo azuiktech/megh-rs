@@ -1,8 +1,8 @@
 # TPD — Billing
 
 **Status:** B1 (money and entities) and B2 (`Subscriptions` lifecycle) shipped. Ports megh-go's plans, prices, add-ons and subscriptions; megh-go has no price calculation, invoicing or payment-provider calls, so neither does this.
-**Modules:** `src/billing/mod.rs`, `src/billing/subscriptions.rs`, `src/money.rs`, `migrations/0006_align_org.sql` (the tables).
-**Related:** `TPD-organizations.md` (the billing tables were created there, schema only).
+**Modules:** `src/billing/mod.rs`, `src/billing/subscriptions.rs`, `src/money.rs`, `migrations/0005_billing.sql` (the tables).
+**Related:** `TPD-tenants.md` (a subscription belongs to a tenant).
 
 ## 1. Delivery
 
@@ -44,7 +44,7 @@ pub struct Plan { id, sku, name, description, features: JsonText<Vec<String>>, l
 pub struct PlanPrice { id, plan_id, sku, interval, currency, base_price: i64, per_seat_price, included_seats, trial_duration, metadata, active }
 pub struct AddOn { id, sku, name, description, kind, price: i64, currency, interval, unit, metadata, active }
 pub struct PlanAddOn { plan_id, add_on_id }
-pub struct Subscription { id, organization_id, plan_id, price_id, status, seats, current_period_start, current_period_end, trial_ends_at, cancel_at_period_end, external_id, metadata, created_at, updated_at }
+pub struct Subscription { id, tenant_id, plan_id, price_id, status, seats, current_period_start, current_period_end, trial_ends_at, cancel_at_period_end, external_id, metadata, created_at, updated_at }
 pub struct SubscriptionItem { id, subscription_id, add_on_id, quantity, metadata }
 
 impl PlanPrice { pub fn base(&self) -> Result<Money, MoneyError>; pub fn per_seat(&self) -> Result<Money, MoneyError>; pub fn trial(&self) -> Option<Duration> }
@@ -56,17 +56,17 @@ impl AddOn { pub fn price(&self) -> Result<Money, MoneyError> }
 ## 4. `Subscriptions` (`billing::subscriptions`, feature `postgres`; #48 / #46)
 
 ```rust
-impl Subscriptions {                       // holds the injected pool, like Orgs
+impl Subscriptions {                       // holds the injected pool, like Tenants
     pub fn new(pool: PgPool) -> Self;
     pub async fn create_plan(&self, plan: &Plan) -> Result<Plan, BillingError>;        // also list_plans, plan(id), plan_by_sku
     pub async fn add_price(&self, price: &PlanPrice) -> Result<PlanPrice, BillingError>;
     pub async fn create_add_on(&self, add_on: &AddOn) -> Result<AddOn, BillingError>;  // also attach_plan_add_on
-    pub async fn subscription(&self, org_id: Uuid) -> Result<Subscription, BillingError>;
-    pub async fn subscribe(&self, org_id: Uuid, price_id: Uuid, seats: i64, metadata: Value) -> Result<Subscription, BillingError>;
-    pub async fn change_seats(&self, org_id: Uuid, seats: i64) -> Result<Subscription, BillingError>;
-    pub async fn cancel(&self, org_id: Uuid, when: CancelWhen) -> Result<Subscription, BillingError>;   // Now | AtPeriodEnd
-    pub async fn attach_add_on(&self, org_id: Uuid, add_on_id: Uuid, quantity: i64, metadata: Value) -> Result<Subscription, BillingError>;
-    pub async fn detach_add_on(&self, org_id: Uuid, add_on_id: Uuid) -> Result<Subscription, BillingError>;
+    pub async fn subscription(&self, tenant_id: Uuid) -> Result<Subscription, BillingError>;
+    pub async fn subscribe(&self, tenant_id: Uuid, price_id: Uuid, seats: i64, metadata: Value) -> Result<Subscription, BillingError>;
+    pub async fn change_seats(&self, tenant_id: Uuid, seats: i64) -> Result<Subscription, BillingError>;
+    pub async fn cancel(&self, tenant_id: Uuid, when: CancelWhen) -> Result<Subscription, BillingError>;   // Now | AtPeriodEnd
+    pub async fn attach_add_on(&self, tenant_id: Uuid, add_on_id: Uuid, quantity: i64, metadata: Value) -> Result<Subscription, BillingError>;
+    pub async fn detach_add_on(&self, tenant_id: Uuid, add_on_id: Uuid) -> Result<Subscription, BillingError>;
 }
 pub enum BillingError { NotFound, InvalidSeats, Database(sqlx::Error) }   // #[non_exhaustive]
 ```
@@ -86,7 +86,7 @@ Fields follow HubSpot's invoice, line item and payment objects (the stored amoun
 
 - **Values** (`billing::value`): `Micros` (millionths of the invoice's currency), `Currency` (ISO 4217), `Quantity`, `Percent`, `PaymentMethod` (`cash | cheque | card | bank_transfer | other`).
 - **`Tax`:** name and a percentage.
-- **`Invoice`:** `customer_id` is an org (there is no vendor or client entity here); `number` is `None` while a draft; `status` `draft | open | void`; `date`, `due_date`, `currency`, `bill_to` (the customer's address, copied at `:open`), `comments`; `sub_total`, `tax_total`, `total`, `amount_paid`, `balance_due` (stored, as HubSpot does, so overdue and unpaid are plain `WHERE` clauses). Created only as a draft; changed or deleted only while a draft (409 otherwise); `status`, `customer_id` and `number` are not patched (400).
+- **`Invoice`:** `customer_id` is a tenant (there is no vendor or client entity here); `number` is `None` while a draft; `status` `draft | open | void`; `date`, `due_date`, `currency`, `bill_to` (the customer's address, copied at `:open`), `comments`; `sub_total`, `tax_total`, `total`, `amount_paid`, `balance_due` (stored, as HubSpot does, so overdue and unpaid are plain `WHERE` clauses). Created only as a draft; changed or deleted only while a draft (409 otherwise); `status`, `customer_id` and `number` are not patched (400).
 - **`InvoiceLine`:** a product (no table yet), a service with its appointment, or neither; quantity, unit price, discount percent, tax ids. Locked with its invoice. A line names a product or a service, not both.
 - **`Payment`:** one payment pays one open invoice (409 if draft or void; 400 if not the org's); its number is made when it is recorded; `amount > 0`; `refunded` between nothing and `amount`; `method`, `status` `processing | succeeded | failed | void`; `invoice_id` is not patched.
 - **Numbers:** the app passes an `Ids` function (S2) and the result is stored as a `Name`; a row of `billing_counters` per org, kind of document and scope numbers them, and a new scope (a new year, say) starts at 1.

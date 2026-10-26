@@ -17,11 +17,11 @@ use crate::{Entity, Table};
 
 /// Open time: every day the recurrence gives, from `starts_at` to `ends_at`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "schedules", keys = ["org_id", "id"])]
+#[table(name = "schedules", keys = ["tenant_id", "id"])]
 #[validate(schema(function = "ends_after_start"))]
 #[schema(example = json!({"name": "Clinic hours", "recurrence": "DTSTART;TZID=Asia/Kolkata:20261023T000000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261230T235959Z", "starts_at": "09:00:00", "ends_at": "16:00:00"}))]
 pub struct ScheduleData {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     #[sqlx(try_from = "String")]
     #[schema(value_type = String, example = "Clinic hours")]
     pub name: Name,
@@ -63,10 +63,10 @@ pub fn routes() -> OpenApiRouter<AppContext> {
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/schedules",
+    path = "/tenants/{tenant_id}/schedules",
     tag = "schedules",
     params(
-        ("org_id" = Uuid, Path),
+        ("tenant_id" = Uuid, Path),
         ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`. Example: `role = \"hygienist\" AND capacity >= 2`."),
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
@@ -82,9 +82,9 @@ async fn list(
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/schedules/{id}",
+    path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Schedule> {
@@ -93,9 +93,9 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
 
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/schedules",
+    path = "/tenants/{tenant_id}/schedules",
     tag = "schedules",
-    params(("org_id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path)),
     request_body = ScheduleData,
     responses((status = 200, body = inline(Entity<Uuid, ScheduleData>))),
 )]
@@ -108,9 +108,9 @@ async fn create(
 
 #[utoipa::path(
     put,
-    path = "/orgs/{org_id}/schedules/{id}",
+    path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = ScheduleData,
     responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
@@ -124,9 +124,9 @@ async fn replace(
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
 #[utoipa::path(
     patch,
-    path = "/orgs/{org_id}/schedules/{id}",
+    path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body(content = ScheduleData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
     responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
@@ -136,9 +136,9 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
 
 #[utoipa::path(
     delete,
-    path = "/orgs/{org_id}/schedules/{id}",
+    path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Schedule> {

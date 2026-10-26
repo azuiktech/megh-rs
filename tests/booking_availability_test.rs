@@ -46,7 +46,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 struct Clinic {
     app: Router,
     pool: PgPool,
-    org: Uuid,
+    tenant: Uuid,
     room: String,
     meera: String,
     albert: String,
@@ -60,12 +60,12 @@ struct Clinic {
 impl Clinic {
     async fn new(pool: PgPool) -> Self {
         megh::migrate(&pool).await.unwrap();
-        let org: Uuid = sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Clinic') RETURNING id")
+        let tenant: Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
             .fetch_one(&pool)
             .await
             .unwrap();
         let app = app(pool.clone(), &["*"]);
-        let base = format!("/api/v1/orgs/{org}");
+        let base = format!("/api/v1/tenants/{tenant}");
         let post = |path: &str, body: Value| {
             let (app, uri) = (app.clone(), format!("{base}/{path}"));
             async move {
@@ -95,15 +95,15 @@ impl Clinic {
         }
         let ada = post("clients", json!({"first_name": "Ada", "last_name": "L", "name": "Ada"})).await;
         post("schedules", json!({"name": "Clinic hours", "recurrence": MON_WED, "starts_at": "09:00:00", "ends_at": "16:00:00"})).await;
-        Clinic { app, pool, org, room, meera, albert, raj, extraction, float, pods, ada }
+        Clinic { app, pool, tenant, room, meera, albert, raj, extraction, float, pods, ada }
     }
 
     async fn search(&self, body: Value) -> (StatusCode, Value) {
-        call(&self.app, "POST", &format!("/api/v1/orgs/{}/appointments:available", self.org), body).await
+        call(&self.app, "POST", &format!("/api/v1/tenants/{}/appointments:available", self.tenant), body).await
     }
 
     async fn post(&self, path: &str, body: Value) {
-        let (status, saved) = call(&self.app, "POST", &format!("/api/v1/orgs/{}/{path}", self.org), body).await;
+        let (status, saved) = call(&self.app, "POST", &format!("/api/v1/tenants/{}/{path}", self.tenant), body).await;
         assert_eq!(status, StatusCode::OK, "{saved}");
     }
 
@@ -111,10 +111,10 @@ impl Clinic {
     /// row per place, none once cancelled.
     async fn occupy(&self, status: &str, participant: &str, from: &str, to: &str) {
         let appointment: Uuid = sqlx::query_scalar(
-            "INSERT INTO appointments (org_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
+            "INSERT INTO appointments (tenant_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
              VALUES ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6::timestamptz, $7::timestamptz, $8, '{\"payer_id\": \"00000000-0000-0000-0000-000000000000\", \"method\": \"card\"}') RETURNING id",
         )
-        .bind(self.org)
+        .bind(self.tenant)
         .bind(Uuid::now_v7())
         .bind(&self.ada)
         .bind(&self.float)
@@ -129,10 +129,10 @@ impl Clinic {
             return;
         }
         sqlx::query(
-            "INSERT INTO reservations (org_id, id, owner_id, participant_id, during, waitlist) \
+            "INSERT INTO reservations (tenant_id, id, owner_id, participant_id, during, waitlist) \
              VALUES ($1, gen_random_uuid(), $2, $3::uuid, tstzrange($4::timestamptz, $5::timestamptz), $6)",
         )
-        .bind(self.org)
+        .bind(self.tenant)
         .bind(appointment)
         .bind(participant)
         .bind(from)
@@ -300,15 +300,15 @@ async fn bad_searches_are_refused(pool: PgPool) {
     ] {
         assert_eq!(clinic.search(bad.clone()).await.0, StatusCode::BAD_REQUEST, "{bad}");
     }
-    let reader = app(pool, &[&format!("orgs:read:{}", clinic.org), "appointments:read"]);
-    let uri = format!("/api/v1/orgs/{}/appointments:available", clinic.org);
+    let reader = app(pool, &[&format!("tenants:read:{}", clinic.tenant), "appointments:read"]);
+    let uri = format!("/api/v1/tenants/{}/appointments:available", clinic.tenant);
     let body = json!({"from": at("09:00"), "to": at("12:00"), "parties": [party]});
     assert_eq!(call(&reader, "POST", &uri, body).await.0, StatusCode::FORBIDDEN, "needs appointments:available");
 }
 
 impl Clinic {
     async fn book(&self, body: Value) -> (StatusCode, Value) {
-        call(&self.app, "POST", &format!("/api/v1/orgs/{}/appointments", self.org), body).await
+        call(&self.app, "POST", &format!("/api/v1/tenants/{}/appointments", self.tenant), body).await
     }
 
     fn appointment(&self, service: &str, room: &str, providers: &[&str], from: &str, to: &str, status: &str) -> Value {
@@ -374,7 +374,7 @@ async fn booking_takes_capacity_then_the_waitlist_and_cancel_frees_it(pool: PgPo
     assert_eq!(clinic.book(other_client("booked")).await.0, StatusCode::CONFLICT, "Ada is already booked then");
 
     let guest: String = {
-        let (status, saved) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
+        let (status, saved) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/clients", clinic.tenant), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
         assert_eq!(status, StatusCode::OK);
         saved["id"].as_str().unwrap().to_string()
     };
@@ -386,10 +386,10 @@ async fn booking_takes_capacity_then_the_waitlist_and_cancel_frees_it(pool: PgPo
     assert_eq!(clinic.book(for_guest("booked")).await.0, StatusCode::CONFLICT, "capacity 1 is taken");
     let (status, waiting) = clinic.book(for_guest("waitlist")).await;
     assert_eq!((status, waiting["status"].clone()), (StatusCode::OK, json!("waitlist")), "{waiting}");
-    let to_book = format!("/api/v1/orgs/{}/appointments/{}:book", clinic.org, waiting["id"].as_str().unwrap());
+    let to_book = format!("/api/v1/tenants/{}/appointments/{}:book", clinic.tenant, waiting["id"].as_str().unwrap());
     assert_eq!(call(&clinic.app, "POST", &to_book, json!({})).await.0, StatusCode::CONFLICT, ":book needs a free place");
 
-    let item = format!("/api/v1/orgs/{}/appointments/{}", clinic.org, first["id"].as_str().unwrap());
+    let item = format!("/api/v1/tenants/{}/appointments/{}", clinic.tenant, first["id"].as_str().unwrap());
     assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
     let (status, booked) = call(&clinic.app, "POST", &to_book, json!({})).await;
     assert_eq!((status, booked["status"].clone()), (StatusCode::OK, json!("booked")), "cancelling freed the place");
@@ -401,7 +401,7 @@ async fn two_bookings_at_once_cannot_take_one_place(pool: PgPool) {
     let clinic = Clinic::new(pool).await;
     let mut bodies = Vec::new();
     for name in ["Cy", "Di"] {
-        let (_, client) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": name, "last_name": "X", "name": name})).await;
+        let (_, client) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/clients", clinic.tenant), json!({"first_name": name, "last_name": "X", "name": name})).await;
         let mut body = clinic.appointment(&clinic.float, &clinic.pods[1], &[], "09:00", "10:00", "booked");
         body["client_id"] = client["id"].clone();
         bodies.push(body);
@@ -417,11 +417,11 @@ async fn patch_moves_an_appointment_only_to_an_open_time(pool: PgPool) {
     let clinic = Clinic::new(pool).await;
     let (pod1, pod2) = (&clinic.pods[0], &clinic.pods[1]);
     let (_, ada) = clinic.book(clinic.appointment(&clinic.float, pod1, &[], "09:00", "10:00", "booked")).await;
-    let (_, bo) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
+    let (_, bo) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/clients", clinic.tenant), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
     let mut other = clinic.appointment(&clinic.float, pod1, &[], "11:00", "12:00", "booked");
     other["client_id"] = bo["id"].clone();
     assert_eq!(clinic.book(other).await.0, StatusCode::OK);
-    let item = format!("/api/v1/orgs/{}/appointments/{}", clinic.org, ada["id"].as_str().unwrap());
+    let item = format!("/api/v1/tenants/{}/appointments/{}", clinic.tenant, ada["id"].as_str().unwrap());
     let patch = |body: Value| call(&clinic.app, "PATCH", &item, body);
 
     let (status, moved) = patch(json!({"starts_at": at("10:00"), "ends_at": at("11:00")})).await;
@@ -450,7 +450,7 @@ async fn patch_moves_an_appointment_only_to_an_open_time(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
     let clinic = Clinic::new(pool).await;
-    let (_, studio) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/resources", clinic.org), json!({"name": "Studio", "capacity": 2, "waitlist": 1})).await;
+    let (_, studio) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/resources", clinic.tenant), json!({"name": "Studio", "capacity": 2, "waitlist": 1})).await;
     let studio = studio["id"].as_str().unwrap().to_string();
     let search = json!({"from": at("09:00"), "to": at("10:00"),
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float, "resources": [{"id": studio}]}]});
@@ -460,7 +460,7 @@ async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
     };
     let mut clients = Vec::new();
     for name in ["Cy", "Di", "Ed"] {
-        let (_, client) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": name, "last_name": "X", "name": name})).await;
+        let (_, client) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/clients", clinic.tenant), json!({"first_name": name, "last_name": "X", "name": name})).await;
         clients.push(client["id"].clone());
     }
     let class = |client: &Value, status: &str| {
@@ -477,14 +477,14 @@ async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
     assert_eq!(clinic.book(class(&clients[2], "waitlist")).await.0, StatusCode::OK);
     assert_eq!(clinic.search(search.clone()).await.1["slots"], json!([]), "capacity and waitlist both taken");
 
-    let item = format!("/api/v1/orgs/{}/appointments/{}", clinic.org, first["id"].as_str().unwrap());
+    let item = format!("/api/v1/tenants/{}/appointments/{}", clinic.tenant, first["id"].as_str().unwrap());
     assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
     assert_eq!(left(&clinic.search(search).await.1), (json!(1), json!(false)), "the cancel gave one place back");
 }
 
 impl Clinic {
     async fn hold(&self, slot: &Value) -> (StatusCode, Value) {
-        call(&self.app, "POST", &format!("/api/v1/orgs/{}/reservations", self.org), slot.clone()).await
+        call(&self.app, "POST", &format!("/api/v1/tenants/{}/reservations", self.tenant), slot.clone()).await
     }
 
     async fn first_slot(&self, parties: Value) -> Value {
@@ -513,13 +513,13 @@ async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: PgPool
     from_hold["reservation_id"] = held["id"].clone();
     let (status, booked) = clinic.book(from_hold.clone()).await;
     assert_eq!(status, StatusCode::OK, "{booked}");
-    let release = format!("/api/v1/orgs/{}/reservations/{}", clinic.org, held["id"].as_str().unwrap());
+    let release = format!("/api/v1/tenants/{}/reservations/{}", clinic.tenant, held["id"].as_str().unwrap());
     assert_eq!(call(&clinic.app, "DELETE", &release, json!({})).await.0, StatusCode::NOT_FOUND, "the booking took its places");
     assert_eq!(clinic.book(from_hold).await.0, StatusCode::CONFLICT);
 
     let slot = clinic.first_slot(party.clone()).await;
     let (_, held) = clinic.hold(&slot).await;
-    let release = format!("/api/v1/orgs/{}/reservations/{}", clinic.org, held["id"].as_str().unwrap());
+    let release = format!("/api/v1/tenants/{}/reservations/{}", clinic.tenant, held["id"].as_str().unwrap());
     let (status, released) = call(&clinic.app, "DELETE", &release, json!({})).await;
     assert_eq!((status, released["places"].clone()), (StatusCode::OK, json!(2)), "the room and Ada");
     assert_eq!(clinic.first_slot(party.clone()).await["parties"][0]["starts_at"], json!(at("10:00")), "released");
@@ -535,7 +535,7 @@ async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: PgPool
     late["reservation_id"] = held["id"].clone();
     assert_eq!(clinic.book(late).await.0, StatusCode::CONFLICT, "expired");
 
-    let purge = format!("/api/v1/orgs/{}/reservations:purge", clinic.org);
+    let purge = format!("/api/v1/tenants/{}/reservations:purge", clinic.tenant);
     let (status, purged) = call(&clinic.app, "POST", &purge, json!({"before": "2026-10-26T05:00:00Z"})).await;
     assert_eq!((status, purged["places"].clone()), (StatusCode::OK, json!(4)), "the expired hold's two places and the 9:00 booking's two");
 }
@@ -543,7 +543,7 @@ async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: PgPool
 #[sqlx::test(migrations = false)]
 async fn a_hold_of_two_parties_is_booked_one_appointment_at_a_time(pool: PgPool) {
     let clinic = Clinic::new(pool).await;
-    let (_, bo) = call(&clinic.app, "POST", &format!("/api/v1/orgs/{}/clients", clinic.org), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
+    let (_, bo) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/clients", clinic.tenant), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
     let couple = json!([
         {"client": {"id": clinic.ada}, "service_id": clinic.float, "resources": [{"role": "pod"}]},
         {"client": {"id": bo["id"]}, "service_id": clinic.float, "resources": [{"role": "pod"}]}

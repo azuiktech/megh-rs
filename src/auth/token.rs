@@ -23,12 +23,12 @@ use uuid::Uuid;
 
 use super::http::USER_ID;
 use super::Grant;
-use crate::org::{Member, Orgs};
+use crate::tenant::{Member, Tenants};
 
 pub const JWT_COOKIE: &str = "jwt_token";
 const ISSUER: &str = "megh";
 
-/// `sub` is the member id, `aud` the organization id and `scope` the member's grants, space separated.
+/// `sub` is the member id, `aud` the tenant id and `scope` the member's grants, space separated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessToken {
     pub sub: Uuid,
@@ -48,7 +48,7 @@ impl AccessToken {
         Self {
             sub: member.id,
             iss: ISSUER.into(),
-            aud: vec![member.organization_id.to_string()],
+            aud: vec![member.tenant_id.to_string()],
             exp: now + ttl.as_secs(),
             iat: now,
             client_id: ISSUER.into(),
@@ -75,7 +75,7 @@ pub struct JwtSession {
     decoding: DecodingKey,
     validation: Validation,
     ttl: Duration,
-    orgs: Orgs,
+    tenants: Tenants,
 }
 
 impl JwtSession {
@@ -84,7 +84,7 @@ impl JwtSession {
         validation.set_issuer(&[ISSUER]);
         validation.validate_aud = false;
         validation.leeway = 0;
-        Self { encoding: EncodingKey::from_secret(secret), decoding: DecodingKey::from_secret(secret), validation, ttl, orgs: Orgs::new(pool) }
+        Self { encoding: EncodingKey::from_secret(secret), decoding: DecodingKey::from_secret(secret), validation, ttl, tenants: Tenants::new(pool) }
     }
 
     fn decode(&self, jwt: &str) -> Result<AccessToken, jsonwebtoken::errors::Error> {
@@ -104,7 +104,7 @@ impl JwtSession {
     /// A new token for the user's first membership, taken from the session.
     async fn renew(&self, jar: CookieJar, session: &Session) -> Result<(CookieJar, Vec<Grant>), StatusCode> {
         let user_id: Uuid = session.get(USER_ID).await.map_err(internal)?.ok_or(StatusCode::UNAUTHORIZED)?;
-        let member = self.orgs.memberships(user_id).await.map_err(internal)?.into_iter().next().ok_or(StatusCode::UNAUTHORIZED)?;
+        let member = self.tenants.memberships(user_id).await.map_err(internal)?.into_iter().next().ok_or(StatusCode::UNAUTHORIZED)?;
         let issued = self.issue(&member, &[]).map_err(internal)?;
         Ok((jar.add(cookie(issued.jwt, self.ttl)), issued.scope))
     }

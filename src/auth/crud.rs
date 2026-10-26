@@ -1,4 +1,4 @@
-//! Create, read, list, replace, patch and delete rows of an org's table, keyed by `(org_id, id)`.
+//! Create, read, list, replace, patch and delete rows of a tenant's table, keyed by `(tenant_id, id)`.
 //!
 //! Each route of an entity calls one of these; the route carries the entity's OpenAPI description.
 
@@ -13,7 +13,7 @@ use super::filter::push_filter;
 use super::rest::{ApiError, ApiResult, Changes, Key, Keyed, ListRequest, Page, fetch_page};
 use crate::{Entity, Table, TableEntity};
 
-/// An entity's data stored in a table with `org_id`, `id`, timestamps and `deleted_at`.
+/// An entity's data stored in a table with `tenant_id`, `id`, timestamps and `deleted_at`.
 pub trait Row:
     Table + Validate + for<'r> FromRow<'r, PgRow> + Serialize + DeserializeOwned + Send + Sync + Unpin + 'static
 {
@@ -37,10 +37,10 @@ pub async fn list<T: Row>(
     request: &ListRequest,
 ) -> ApiResult<Page<Entity<Uuid, T>>> {
     let mut query = QueryBuilder::new(format!(
-        "SELECT * FROM {} WHERE deleted_at IS NULL AND org_id = ",
+        "SELECT * FROM {} WHERE deleted_at IS NULL AND tenant_id = ",
         T::TABLE_NAME
     ));
-    query.push_bind(request.org_id);
+    query.push_bind(request.tenant_id);
     if let Some(filter) = &request.filter {
         push_filter(&mut query, T::COLUMNS, filter)?;
     }
@@ -49,7 +49,7 @@ pub async fn list<T: Row>(
 
 pub async fn get<T: Row>(pool: &PgPool, key: &Key) -> ApiResult<Entity<Uuid, T>> {
     sqlx::query_as(&by_key::<T>(""))
-        .bind(key.org_id)
+        .bind(key.tenant_id)
         .bind(key.id)
         .fetch_optional(pool)
         .await?
@@ -68,7 +68,7 @@ pub async fn replace<T: Row>(pool: &PgPool, body: Keyed<T>) -> ApiResult<Entity<
 pub async fn patch<T: Row>(pool: &PgPool, body: Changes) -> ApiResult<Entity<Uuid, T>> {
     let mut transaction = pool.begin().await?;
     let current: Entity<Uuid, T> = sqlx::query_as(&by_key::<T>(" FOR UPDATE"))
-        .bind(body.key.org_id)
+        .bind(body.key.tenant_id)
         .bind(body.key.id)
         .fetch_optional(&mut *transaction)
         .await?
@@ -93,7 +93,7 @@ pub async fn delete<T: Row>(pool: &PgPool, key: &Key) -> ApiResult<Entity<Uuid, 
 
 fn by_key<T: Table>(suffix: &str) -> String {
     format!(
-        "SELECT * FROM {} WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL{suffix}",
+        "SELECT * FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL{suffix}",
         T::TABLE_NAME
     )
 }

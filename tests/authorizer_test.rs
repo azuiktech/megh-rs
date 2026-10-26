@@ -15,7 +15,7 @@ use megh::{authorizer, Member};
 fn create_test_member() -> Member {
     Member {
         id: Uuid::new_v4(),
-        organization_id: Uuid::new_v4(),
+        tenant_id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
         role: "member".to_string(),
         joined_at: Utc::now(),

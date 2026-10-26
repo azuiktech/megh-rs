@@ -18,7 +18,7 @@ use super::grant::Grant;
 use super::http::MeghAuthState;
 use super::token::JwtSession;
 use super::user::{PasswordError, UserRepo, MACHINE};
-use crate::org::{Member, Orgs};
+use crate::tenant::{Member, Tenants};
 
 #[derive(Deserialize)]
 struct TokenRequest {
@@ -57,7 +57,7 @@ async fn authenticate(pool: &PgPool, client_id: &str, secret: &str) -> Result<Me
         other => internal(other),
     })?;
     (user.data.provider.as_deref() == Some(MACHINE)).then_some(()).ok_or(TokenError::CLIENT)?;
-    let memberships = Orgs::new(pool.clone()).memberships(user.id).await.map_err(internal)?;
+    let memberships = Tenants::new(pool.clone()).memberships(user.id).await.map_err(internal)?;
     memberships.into_iter().next().ok_or(TokenError::CLIENT)
 }
 

@@ -3,7 +3,7 @@ use axum::http::{header, Request, StatusCode};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use megh::auth::http::{auth_router, basic_login_router, MeghAuthState};
-use megh::{Org, UserRepo};
+use megh::{Tenant, UserRepo};
 use serde_json::Value;
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -44,8 +44,8 @@ async fn ann_with_password(pool: &PgPool) -> Uuid {
 #[sqlx::test]
 async fn correct_credentials_log_in_and_return_memberships(pool: PgPool) {
     let user_id = ann_with_password(&pool).await;
-    let org: Org = sqlx::query_as("INSERT INTO organizations (name) VALUES ('Acme') RETURNING *").fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO organization_members (organization_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]')").bind(org.id).bind(user_id).execute(&pool).await.unwrap();
+    let tenant: Tenant = sqlx::query_as("INSERT INTO tenants (name) VALUES ('Acme') RETURNING *").fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO tenant_members (tenant_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]')").bind(tenant.id).bind(user_id).execute(&pool).await.unwrap();
     let app = app(pool);
 
     let response = login(&app, Some(&basic("ann@example.com", "s3cret-pass"))).await;
@@ -53,7 +53,7 @@ async fn correct_credentials_log_in_and_return_memberships(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body["user"]["email"], "ann@example.com");
-    assert_eq!(body["memberships"][0]["organization_id"], org.id.to_string());
+    assert_eq!(body["memberships"][0]["tenant_id"], tenant.id.to_string());
 }
 
 #[sqlx::test]

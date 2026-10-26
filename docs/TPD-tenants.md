@@ -1,7 +1,8 @@
-# TPD — Organizations, Membership & Invitations
+# TPD — Tenants, Membership & Invitations
 
-**Status:** O1 (schema, `Member`, `Orgs::memberships`) is shipped; before it only the data types, the two tables and the grant check existed. Everything else in megh-go's organization domain is pending (§4) and will be ported (all of it, including login onboarding). The design in §6 is proposed and awaiting approval. megh-go is the reference (`/Users/abir/Documents/GitHub/megh-go`: `organizations.go`, `members.go`, `org.go`, `sessions.go`); the schema comparison below was made by running its real GORM `AutoMigrate` on Postgres.
-**Modules:** `src/org`, `src/auth/authorizer.rs`, `migrations/0001_create_org.sql`.
+**Renamed (T1, #209):** the org is now the **tenant**, the partition every row belongs to (`Tenant`, `Tenants`, `TenantError`, `tenant_id`, tables `tenants`, `tenant_members`, `tenant_invites`, `tenant_configs`, routes `/tenants/{tenant_id}/...`). A physical org that owns one or more tenants and hierarchies is designed later, separately. Sections 3, 4 and 6.6 keep megh-go's names and describe the schema before the rename.
+**Status:** O1 (schema, `Member`, `Tenants::memberships`) is shipped; before it only the data types, the two tables and the grant check existed. Everything else in megh-go's organization domain is pending (§4) and will be ported (all of it, including login onboarding). The design in §6 is proposed and awaiting approval. megh-go is the reference (`/Users/abir/Documents/GitHub/megh-go`: `organizations.go`, `members.go`, `org.go`, `sessions.go`); the schema comparison below was made by running its real GORM `AutoMigrate` on Postgres.
+**Modules:** `src/tenant`, `src/auth/authorizer.rs`, `migrations/0003_tenant.sql`.
 **Related:** `TPD-authentication-authorization.md` (grants, authorizer, login). Billing (plans, subscriptions) is a separate feature area: `TPD-billing.md`.
 
 ## 1. Delivery
@@ -15,6 +16,7 @@
 | O3 | `Orgs`: invitations (redeem by token or email) and auto-join domains | `[ ]` | — |
 | O4 | `Onboarding`: membership at login | `[ ]` | — |
 | O6 | Contact and address on `Org`: `contact: Contact` (flattened `email`, `home_phone`, `work_phone`, `mobile_phone`) and `address: Option<Address>` (JSONB), the layout and types of booking's `Client` (`booking::value`); migration `0020_org_contact_address.sql`, all nullable and not in megh-go (its `OrgRecord` ignores them). Read-only until `Orgs::update` (O2); `:open` still keeps `bill_to` as drafted | `[x]` | #208 / #207 |
+| T1 | Org renamed tenant in types, tables, columns, routes and the token's audience; migrations compacted to one file per module (`0001_auth` to `0005_billing`), with no history kept: an existing database is renamed by hand | `[~]` | #209 |
 | O5 | Memberships in `/auth/me` and the login response | `[~]` login response done (F14, #60/#30); `/auth/me` still returns `{user}` only | with #30 |
 
 Features are not delivered in number order.
@@ -22,14 +24,14 @@ Features are not delivered in number order.
 ## 2. What exists in megh-rs
 
 ```rust
-pub struct Org { id, name: Option<String>, description: Option<String>, timezone, sub_status, trial_ends_at, plan_id, created_by, created_at, updated_at: Option<..> }
-pub struct Member { id, organization_id, user_id: Uuid, role: String, grants: Vec<String>, joined_at, invited_by: Option<Uuid> }
+pub struct Tenant { id, name: Option<String>, description: Option<String>, timezone, sub_status, trial_ends_at, plan_id, created_by, created_at, updated_at: Option<..> }
+pub struct Member { id, tenant_id, user_id: Uuid, role: String, grants: Vec<String>, joined_at, invited_by: Option<Uuid> }
 impl Member { pub fn has_grant(&self, required: &Grant) -> bool }
-pub struct Orgs { .. }     // holds the injected pool
-impl Orgs { pub fn new(pool: PgPool) -> Self; pub async fn memberships(&self, user_id: Uuid) -> Result<Vec<Member>, OrgError> }
+pub struct Tenants { .. }     // holds the injected pool
+impl Tenants { pub fn new(pool: PgPool) -> Self; pub async fn memberships(&self, user_id: Uuid) -> Result<Vec<Member>, TenantError> }
 ```
 
-`Org` and `Member` are read straight from megh-go's columns: `name`/`description` can be NULL, and so can `organizations.updated_at` (4 of 85 rows in a real megh-go database); a NULL, `[]` or `null` `grants` value means no grants. Everything else about orgs (create, members, grants, invitations, onboarding) is pending; there is no route and `/auth/me` returns no memberships. `Member` is also what the `authorizer` middleware reads from request extensions, which the application must supply. Tests: `has_grant` unit test, `authorizer_test.rs`, `course_authorizer_test.rs`, `org_test.rs`.
+`Tenant` and `Member` keep megh-go's columns: `name`/`description` can be NULL, and so can `updated_at` (4 of 85 rows in a real megh-go database); a NULL, `[]` or `null` `grants` value means no grants. Everything else about tenants (create, members, grants, invitations, onboarding) is pending; there is no route and `/auth/me` returns no memberships. `Member` is also what the `authorizer` middleware reads from request extensions, which the application must supply. Tests: `has_grant` unit test, `authorizer_test.rs`, `course_authorizer_test.rs`, `tenant_test.rs`.
 
 ## 3. Schema parity with megh-go
 
@@ -94,26 +96,26 @@ Open:
 
 ### 6.1 Shape
 
-- **No repository per entity.** Data types (`Org`, `Member`, `Invite`, `Invitation`) are plain values with no behaviour and no database handle. Behaviour lives in two types that hold an injected `PgPool`:
-  - `Orgs`, the organization aggregate: an org together with its members, grants, invites and auto-join domains is one unit of consistency, so one type owns all of it (megh-go's `App` + `Org`). Its methods are grouped by concern across files.
-  - `Onboarding`, a use case that spans users and orgs: decide which org a user belongs to at login (megh-go's `Sessions.Resolve` membership part). It uses `Orgs` and holds the policy configuration.
+- **No repository per entity.** Data types (`Tenant`, `Member`, `Invite`, `Invitation`) are plain values with no behaviour and no database handle. Behaviour lives in two types that hold an injected `PgPool`:
+  - `Tenants`, the tenant aggregate: a tenant together with its members, grants, invites and auto-join domains is one unit of consistency, so one type owns all of it (megh-go's `App` + `Org`). Its methods are grouped by concern across files.
+  - `Onboarding`, a use case that spans users and tenants: decide which tenant a user belongs to at login (megh-go's `Sessions.Resolve` membership part). It uses `Tenants` and holds the policy configuration.
 - No trait is introduced yet; one implementation exists (a trait can be extracted at the consumer when a second one does).
-- Errors: one `OrgError` (`NotFound`, `AlreadyMember`, `InviteNotRedeemable`, `Database(sqlx::Error)`) instead of raw `sqlx::Error`.
+- Errors: one `TenantError` (`NotFound`, `AlreadyMember`, `InviteNotRedeemable`, `Database(sqlx::Error)`) instead of raw `sqlx::Error`.
 - Multi-step changes run in a transaction: create org + owner, redeem an invite, grant/revoke (row lock, so concurrent changes are not lost).
 
-### 6.2 Types (`Invite`, `Invitation`, `InviteStatus` and `OrgChanges` arrive with the features that use them)
+### 6.2 Types (`Invite`, `Invitation`, `InviteStatus` and `TenantChanges` arrive with the features that use them)
 
 ```rust
-pub struct Org { id: Uuid, name: Option<String>, description: Option<String>, contact: Contact, address: Option<Address>, timezone: String,
+pub struct Tenant { id: Uuid, name: Option<String>, description: Option<String>, contact: Contact, address: Option<Address>, timezone: String,
                  sub_status: String, trial_ends_at: Option<DateTime<Utc>>, plan_id: Option<Uuid>,
                  created_by: Option<Uuid>, created_at: DateTime<Utc>, updated_at: Option<DateTime<Utc>> }
-pub struct Member { id, organization_id, user_id: Uuid, role: String, grants: Vec<String>,   // JSON array in a text column
+pub struct Member { id, tenant_id, user_id: Uuid, role: String, grants: Vec<String>,   // JSON array in a text column
                     joined_at: DateTime<Utc>, invited_by: Option<Uuid> }
 pub enum InviteStatus { Pending, Accepted, Revoked, Expired }                                // text column
-pub struct Invite { id, organization_id: Uuid, email: String, status: InviteStatus, invited_by: Uuid,
+pub struct Invite { id, tenant_id: Uuid, email: String, status: InviteStatus, invited_by: Uuid,
                     expires_at, created_at: DateTime<Utc>, accepted_at: Option<DateTime<Utc>> }   // token_hash is never exposed
 pub struct Invitation { invite: Invite (flattened), token: String }                          // raw token, returned once
-pub struct OrgChanges { name: Option<String>, description: Option<String>, timezone: Option<String> }
+pub struct TenantChanges { name: Option<String>, description: Option<String>, timezone: Option<String> }
 ```
 
 `name` and `description` are `Option` because megh-go creates orgs at login with a NULL name; a NULL, `[]` or `null` grants value is read as empty.
@@ -121,39 +123,39 @@ pub struct OrgChanges { name: Option<String>, description: Option<String>, timez
 ### 6.3 API
 
 ```rust
-impl Orgs {
+impl Tenants {
     pub fn new(pool: PgPool) -> Self;
     pub fn with_owner_grants(self, grants: Vec<String>) -> Self;                 // default ["*"]
 
     // organizations (O2)
-    pub async fn create(&self, name: &str, owner: Uuid) -> Result<Org, OrgError>;   // org + owner as first Member (role "owner"), one transaction
-    pub async fn seed(&self, name: &str) -> Result<Org, OrgError>;                   // no owner
-    pub async fn get(&self, id: Uuid) -> Result<Org, OrgError>;
-    pub async fn update(&self, id: Uuid, changes: &OrgChanges) -> Result<Org, OrgError>;
-    pub async fn remove(&self, id: Uuid) -> Result<(), OrgError>;
+    pub async fn create(&self, name: &str, owner: Uuid) -> Result<Tenant, TenantError>;   // tenant + owner as first Member (role "owner"), one transaction
+    pub async fn seed(&self, name: &str) -> Result<Tenant, TenantError>;                   // no owner
+    pub async fn get(&self, id: Uuid) -> Result<Tenant, TenantError>;
+    pub async fn update(&self, id: Uuid, changes: &TenantChanges) -> Result<Tenant, TenantError>;
+    pub async fn remove(&self, id: Uuid) -> Result<(), TenantError>;
 
     // members and grants (O1: memberships; O2: the rest)
-    pub async fn memberships(&self, user_id: Uuid) -> Result<Vec<Member>, OrgError>;   // ordered by joined_at
-    pub async fn members(&self, org_id: Uuid) -> Result<Vec<Member>, OrgError>;
-    pub async fn add_member(&self, org_id: Uuid, user_id: Uuid) -> Result<Member, OrgError>;
-    pub async fn remove_member(&self, org_id: Uuid, member_id: Uuid) -> Result<(), OrgError>;
-    pub async fn grant(&self, org_id: Uuid, user_id: Uuid, grant: &Grant) -> Result<Member, OrgError>;    // idempotent
-    pub async fn revoke(&self, org_id: Uuid, user_id: Uuid, grant: &Grant) -> Result<Member, OrgError>;
+    pub async fn memberships(&self, user_id: Uuid) -> Result<Vec<Member>, TenantError>;   // ordered by joined_at
+    pub async fn members(&self, tenant_id: Uuid) -> Result<Vec<Member>, TenantError>;
+    pub async fn add_member(&self, tenant_id: Uuid, user_id: Uuid) -> Result<Member, TenantError>;
+    pub async fn remove_member(&self, tenant_id: Uuid, member_id: Uuid) -> Result<(), TenantError>;
+    pub async fn grant(&self, tenant_id: Uuid, user_id: Uuid, grant: &Grant) -> Result<Member, TenantError>;    // idempotent
+    pub async fn revoke(&self, tenant_id: Uuid, user_id: Uuid, grant: &Grant) -> Result<Member, TenantError>;
 
     // invitations and auto-join (O3)
-    pub async fn invite(&self, org_id: Uuid, email: &str, by: Uuid) -> Result<Invitation, OrgError>;
-    pub async fn redeem_token(&self, token: &str, user_id: Uuid) -> Result<Member, OrgError>;
-    pub async fn redeem_email(&self, user: &User) -> Result<Option<Member>, OrgError>;
-    pub async fn revoke_invite(&self, invite_id: Uuid) -> Result<(), OrgError>;
-    pub async fn set_auto_join_domains(&self, org_id: Uuid, domains: &[String]) -> Result<(), OrgError>;
+    pub async fn invite(&self, tenant_id: Uuid, email: &str, by: Uuid) -> Result<Invitation, TenantError>;
+    pub async fn redeem_token(&self, token: &str, user_id: Uuid) -> Result<Member, TenantError>;
+    pub async fn redeem_email(&self, user: &User) -> Result<Option<Member>, TenantError>;
+    pub async fn revoke_invite(&self, invite_id: Uuid) -> Result<(), TenantError>;
+    pub async fn set_auto_join_domains(&self, tenant_id: Uuid, domains: &[String]) -> Result<(), TenantError>;
 }
 
 impl Onboarding {                                                                  // O4
-    pub fn new(orgs: Orgs) -> Self;
-    pub fn with_default_org(self, org_id: Uuid) -> Self;
+    pub fn new(orgs: Tenants) -> Self;
+    pub fn with_default_org(self, tenant_id: Uuid) -> Self;
     pub fn with_default_grants(self, grants: Vec<String>) -> Self;               // for joiners; default empty
     pub fn with_initial_grants(self, f: impl Fn(&str) -> Option<Vec<String>> + Send + Sync + 'static) -> Self;   // by email
-    pub async fn membership(&self, user: &User) -> Result<Member, OrgError>;
+    pub async fn membership(&self, user: &User) -> Result<Member, TenantError>;
     // order (as megh-go): pending invite for the user's email, existing membership (earliest), auto-join by email domain, default org, create an org
 }
 ```
@@ -171,7 +173,7 @@ impl Onboarding {                                                               
 
 An org creator is added as `role = 'owner'` with the configured owner grants, default `["*"]`; joiners get `default_grants` / `initial_grants` (empty by default). Reason, verified against megh-go's real rows: a user who logs in first gets an auto-created org and a member with `role = 'member'` and `grants = []`, and the `authorizer` denies every route unless a grant matches, so the creator cannot use their own org or grant anyone anything.
 
-### 6.6 Schema migration (O1, `0006_align_org.sql`)
+### 6.6 Schema migration (O1, `0006_align_org.sql`; removed in T1, kept as history)
 
 Idempotent, because databases are shared with megh-go and with applications:
 

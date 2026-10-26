@@ -1,4 +1,4 @@
-//! Tax: what an org sets up once for its invoices. A percentage for now; a fixed amount (a voucher applied to a
+//! Tax: what a tenant sets up once for its invoices. A percentage for now; a fixed amount (a voucher applied to a
 //! payment) comes later.
 
 use axum::extract::State;
@@ -17,10 +17,10 @@ use crate::{Entity, Table};
 
 /// A percentage tax on a line (Odoo `account.tax`, Zoho `Tax`, HubSpot `taxes`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "billing_taxes", keys = ["org_id", "id"])]
+#[table(name = "billing_taxes", keys = ["tenant_id", "id"])]
 #[schema(example = json!({"name": "Sales tax", "rate": "7.5"}))]
 pub struct TaxData {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     #[schema(value_type = String, example = "Sales tax")]
     pub name: Name,
     pub rate: Percent,
@@ -42,10 +42,10 @@ pub fn routes() -> OpenApiRouter<AppContext> {
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/taxes",
+    path = "/tenants/{tenant_id}/taxes",
     tag = "taxes",
     params(
-        ("org_id" = Uuid, Path),
+        ("tenant_id" = Uuid, Path),
         ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`."),
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
@@ -58,9 +58,9 @@ async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>)
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/taxes/{id}",
+    path = "/tenants/{tenant_id}/taxes/{id}",
     tag = "taxes",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Tax> {
@@ -69,9 +69,9 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
 
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/taxes",
+    path = "/tenants/{tenant_id}/taxes",
     tag = "taxes",
-    params(("org_id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path)),
     request_body = TaxData,
     responses((status = 200, body = inline(Entity<Uuid, TaxData>))),
 )]
@@ -81,9 +81,9 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<TaxData>) -> A
 
 #[utoipa::path(
     put,
-    path = "/orgs/{org_id}/taxes/{id}",
+    path = "/tenants/{tenant_id}/taxes/{id}",
     tag = "taxes",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = TaxData,
     responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
 )]
@@ -94,9 +94,9 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<TaxData
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
 #[utoipa::path(
     patch,
-    path = "/orgs/{org_id}/taxes/{id}",
+    path = "/tenants/{tenant_id}/taxes/{id}",
     tag = "taxes",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
     responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
 )]
@@ -106,9 +106,9 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
 
 #[utoipa::path(
     delete,
-    path = "/orgs/{org_id}/taxes/{id}",
+    path = "/tenants/{tenant_id}/taxes/{id}",
     tag = "taxes",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Tax> {

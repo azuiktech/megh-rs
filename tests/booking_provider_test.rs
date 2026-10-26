@@ -1,4 +1,4 @@
-//! B4 (docs/TPD-booking.md): Provider CRUD over HTTP: names, contact columns, capacity, attributes, scoped to the path's org.
+//! B4 (docs/TPD-booking.md): Provider CRUD over HTTP: names, contact columns, capacity, attributes, scoped to the path's tenant.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -11,17 +11,17 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn org(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &PgPool) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, org: Uuid) -> Router {
+fn app(pool: PgPool, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
-        Grant::new(format!("orgs:read:{org}")),
+        Grant::new(format!("tenants:read:{tenant}")),
         Grant::new("providers:*"),
     ];
     Router::new()
@@ -52,16 +52,16 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 #[sqlx::test(migrations = false)]
 async fn provider_with_contact_columns(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other) = (org(&pool).await, org(&pool).await);
+    let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let app = app(pool, mine);
-    let collection = format!("/api/v1/orgs/{mine}/providers");
+    let collection = format!("/api/v1/tenants/{mine}/providers");
 
     let (status, dentist) = call(
         &app,
         "POST",
         &collection,
         json!({
-            "org_id": other,
+            "tenant_id": other,
             "first_name": "Ada", "last_name": "Lovelace", "name": "Dr Lovelace",
             "email": "ada@example.com", "mobile_phone": "+1 (516) 555-0100",
             "attributes": {"role": "dentist", "years": 12}
@@ -69,7 +69,7 @@ async fn provider_with_contact_columns(pool: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{dentist}");
-    assert_eq!(dentist["org_id"], json!(mine), "the path's org wins");
+    assert_eq!(dentist["tenant_id"], json!(mine), "the path's tenant wins");
     assert_eq!(
         dentist["mobile_phone"], "+15165550100",
         "phones are kept in E.164"

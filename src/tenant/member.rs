@@ -1,16 +1,16 @@
-//! Organization membership and PBAC grant evaluation.
+//! Tenant membership and PBAC grant evaluation.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crate::auth::Grant;
 
-/// Organization member stored in table `organization_members` (same columns as megh-go).
+/// Tenant member stored in table `tenant_members`.
 /// `grants` is a JSON array of strings in a text column; NULL, `[]` and `null` all mean no grants.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Member {
     pub id: Uuid,
-    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
     pub user_id: Uuid,
     pub role: String,
     pub grants: Vec<String>,
@@ -28,7 +28,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Member {
             .map_err(|e| sqlx::Error::ColumnDecode { index: "grants".into(), source: Box::new(e) })?;
         Ok(Self {
             id: row.try_get("id")?,
-            organization_id: row.try_get("organization_id")?,
+            tenant_id: row.try_get("tenant_id")?,
             user_id: row.try_get("user_id")?,
             role: row.try_get("role")?,
             grants: grants.unwrap_or_default(),
@@ -53,10 +53,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_org_member_has_grant() {
+    fn test_tenant_member_has_grant() {
         let member = Member {
             id: Uuid::new_v4(),
-            organization_id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
             role: "member".to_string(),
             joined_at: Utc::now(),

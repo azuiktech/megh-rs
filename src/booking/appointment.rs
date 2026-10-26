@@ -46,10 +46,10 @@ pub enum Status {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "appointments", keys = ["org_id", "id"])]
+#[table(name = "appointments", keys = ["tenant_id", "id"])]
 #[validate(schema(function = "ends_after_start"))]
 pub struct AppointmentData {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     pub client_id: Uuid,
     pub service_id: Uuid,
     pub resource_id: Uuid,
@@ -129,7 +129,7 @@ pub struct Action {
 }
 
 /// Fields a PATCH may change without moving the appointment.
-const CHANGEABLE: [&str; 5] = ["org_id", "id", "note", "payment", "attributes"];
+const CHANGEABLE: [&str; 5] = ["tenant_id", "id", "note", "payment", "attributes"];
 /// Fields that move the appointment; a move is checked like a booking.
 const MOVES: [&str; 4] = ["starts_at", "ends_at", "resource_id", "provider_ids"];
 /// Fields only the server sets; a PATCH that sends them keeps the stored values.
@@ -143,15 +143,15 @@ pub fn routes() -> OpenApiRouter<AppContext> {
     OpenApiRouter::with_openapi(Actions::openapi())
         .routes(routes!(list, create))
         .routes(routes!(get, patch, delete))
-        .route("/orgs/{org_id}/appointments/{id}/{verb}", post(act))
+        .route("/tenants/{tenant_id}/appointments/{id}/{verb}", post(act))
 }
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/appointments",
+    path = "/tenants/{tenant_id}/appointments",
     tag = "appointments",
     params(
-        ("org_id" = Uuid, Path),
+        ("tenant_id" = Uuid, Path),
         ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`. Example: `role = \"hygienist\" AND capacity >= 2`."),
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
@@ -166,13 +166,13 @@ async fn list(
 }
 
 /// Book: stored only if its time is open, with a free place for `booked` or a waitlist place for `waitlist`;
-/// with `reservation_id`, from that hold's places. Checked and written under one lock per org, so two bookings
+/// with `reservation_id`, from that hold's places. Checked and written under one lock per tenant, so two bookings
 /// cannot take the same place.
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/appointments",
+    path = "/tenants/{tenant_id}/appointments",
     tag = "appointments",
-    params(("org_id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path)),
     request_body = Booking,
     responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 409)),
 )]
@@ -183,23 +183,23 @@ async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -
         .then_some(())
         .ok_or_else(|| ApiError::BadRequest("a new appointment is booked or waitlist".to_string()))?;
     let mut transaction = ctx.pool.begin().await?;
-    lock(&mut transaction, data.org_id).await?;
+    lock(&mut transaction, data.tenant_id).await?;
     let places = fit(&mut transaction, &data, booking.reservation_id).await?;
     if let Some(hold) = booking.reservation_id {
-        claim(&mut transaction, data.org_id, hold, &places).await?;
+        claim(&mut transaction, data.tenant_id, hold, &places).await?;
     }
     let appointment = Entity::new(Uuid::now_v7(), AppointmentData { booked_at: Utc::now(), ..data });
     let saved = TableEntity::insert(&appointment, &mut *transaction).await?;
-    take(&mut transaction, saved.data.org_id, saved.id, &places, None).await?;
+    take(&mut transaction, saved.data.tenant_id, saved.id, &places, None).await?;
     transaction.commit().await?;
     Ok(saved)
 }
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/appointments/{id}",
+    path = "/tenants/{tenant_id}/appointments/{id}",
     tag = "appointments",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
@@ -210,9 +210,9 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
 /// merge patch, RFC 7396). A move is checked like a booking. `status` and `booked_at` are ignored.
 #[utoipa::path(
     patch,
-    path = "/orgs/{org_id}/appointments/{id}",
+    path = "/tenants/{tenant_id}/appointments/{id}",
     tag = "appointments",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body(content = AppointmentData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
     responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404), (status = 409)),
 )]
@@ -235,9 +235,9 @@ async fn patch(
 /// leaving out its own time; its reservations are written again.
 async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
     let mut transaction = pool.begin().await?;
-    lock(&mut transaction, body.key.org_id).await?;
-    let current: Appointment = sqlx::query_as("SELECT * FROM appointments WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE")
-        .bind(body.key.org_id)
+    lock(&mut transaction, body.key.tenant_id).await?;
+    let current: Appointment = sqlx::query_as("SELECT * FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE")
+        .bind(body.key.tenant_id)
         .bind(body.key.id)
         .fetch_optional(&mut *transaction)
         .await?
@@ -251,8 +251,8 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
     moved.data.validate().map_err(|error| bad(error.to_string()))?;
     let places = fit(&mut transaction, &moved.data, Some(moved.id)).await?;
     let saved = TableEntity::update(&moved, &mut *transaction).await?;
-    give_back(&mut transaction, body.key.org_id, body.key.id).await?;
-    take(&mut transaction, saved.data.org_id, saved.id, &places, None).await?;
+    give_back(&mut transaction, body.key.tenant_id, body.key.id).await?;
+    take(&mut transaction, saved.data.tenant_id, saved.id, &places, None).await?;
     transaction.commit().await?;
     Ok(saved)
 }
@@ -260,15 +260,15 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
 /// Cancel: a waitlisted, booked or confirmed appointment becomes cancelled.
 #[utoipa::path(
     delete,
-    path = "/orgs/{org_id}/appointments/{id}",
+    path = "/tenants/{tenant_id}/appointments/{id}",
     tag = "appointments",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
     let mut transaction = ctx.pool.begin().await?;
     let cancelled = change_status(&mut transaction, &key, CANCEL, None).await?;
-    give_back(&mut transaction, key.org_id, key.id).await?;
+    give_back(&mut transaction, key.tenant_id, key.id).await?;
     transaction.commit().await?;
     Ok(cancelled)
 }
@@ -277,10 +277,10 @@ async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiRes
 /// `:complete` a booked or confirmed one.
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/appointments/{id}:{verb}",
+    path = "/tenants/{tenant_id}/appointments/{id}:{verb}",
     tag = "appointments",
     params(
-        ("org_id" = Uuid, Path),
+        ("tenant_id" = Uuid, Path),
         ("id" = Uuid, Path),
         ("verb" = String, Path, description = "book, confirm or complete"),
     ),
@@ -298,11 +298,11 @@ async fn act(State(ctx): State<AppContext>, Input(action): Input<Action>) -> Api
 /// appointment's time, leaving out the appointment's own time.
 async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
     let mut transaction = pool.begin().await?;
-    lock(&mut transaction, action.key.org_id).await?;
+    lock(&mut transaction, action.key.tenant_id).await?;
     let waiting: Option<Appointment> = sqlx::query_as(
-        "SELECT * FROM appointments WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'waitlist' FOR UPDATE",
+        "SELECT * FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'waitlist' FOR UPDATE",
     )
-    .bind(action.key.org_id)
+    .bind(action.key.tenant_id)
     .bind(action.key.id)
     .fetch_optional(&mut *transaction)
     .await?;
@@ -311,8 +311,8 @@ async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
         fit(&mut transaction, &booked, Some(waiting.id)).await?;
     }
     let booked = change_status(&mut transaction, &action.key, action.verb.transition(), action.payment.as_ref()).await?;
-    sqlx::query("UPDATE reservations SET waitlist = false WHERE org_id = $1 AND owner_id = $2")
-        .bind(action.key.org_id)
+    sqlx::query("UPDATE reservations SET waitlist = false WHERE tenant_id = $1 AND owner_id = $2")
+        .bind(action.key.tenant_id)
         .bind(action.key.id)
         .execute(&mut *transaction)
         .await?;
@@ -329,9 +329,9 @@ async fn change_status(
 ) -> ApiResult<Appointment> {
     let changed = sqlx::query_as(
         "UPDATE appointments SET status = $3, payment = COALESCE($4, payment), updated_at = now() \
-         WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND status = ANY($5) RETURNING *",
+         WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status = ANY($5) RETURNING *",
     )
-    .bind(key.org_id)
+    .bind(key.tenant_id)
     .bind(key.id)
     .bind(to)
     .bind(payment.map(Json))
@@ -347,8 +347,8 @@ async fn change_status(
 /// Why a status change matched no row: the appointment is missing, or its status cannot move to `to`.
 async fn refusal(conn: &mut PgConnection, key: &Key, to: Status) -> ApiError {
     let current: Result<Option<Status>, sqlx::Error> =
-        sqlx::query_scalar("SELECT status FROM appointments WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL")
-            .bind(key.org_id)
+        sqlx::query_scalar("SELECT status FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL")
+            .bind(key.tenant_id)
             .bind(key.id)
             .fetch_optional(conn)
             .await;

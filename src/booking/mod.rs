@@ -73,7 +73,7 @@ mod api {
     }
 
     /// AIP-136 custom methods on an item: routes `…/{id}:verb` as `…/{id}/:verb`, keeping the original URI for the
-    /// authorizer. A method on a collection (`…/appointments:available`) is one literal segment, routed as it is.
+    /// authorizer. A method on a collection (`…/slots:search`) is one literal segment, routed as it is.
     /// Any other `:` is rewritten too, so the routed form `…/{id}/:verb` cannot be called directly.
     ///
     /// Wraps the whole app, as routing happens before any `Router::layer`:

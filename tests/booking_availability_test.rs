@@ -99,7 +99,7 @@ impl Clinic {
     }
 
     async fn search(&self, body: Value) -> (StatusCode, Value) {
-        call(&self.app, "POST", &format!("/api/v1/tenants/{}/appointments:available", self.tenant), body).await
+        call(&self.app, "POST", &format!("/api/v1/tenants/{}/slots:search", self.tenant), body).await
     }
 
     async fn post(&self, path: &str, body: Value) {
@@ -149,7 +149,7 @@ fn at(time: &str) -> String {
 }
 
 fn starts(found: &Value, party: usize) -> Vec<String> {
-    found["slots"].as_array().unwrap().iter().map(|slot| slot["parties"][party]["starts_at"].as_str().unwrap().to_string()).collect()
+    found["items"].as_array().unwrap().iter().map(|slot| slot["parties"][party]["starts_at"].as_str().unwrap().to_string()).collect()
 }
 
 #[sqlx::test(migrations = false)]
@@ -168,7 +168,7 @@ async fn dental_slots_take_a_hygienist_a_dentist_and_the_room(pool: PgPool) {
     assert_eq!(status, StatusCode::OK, "{found}");
     assert_eq!(starts(&found, 0), [at("09:10"), at("10:45")], "setup from 9:00, one 95 minute room time apart, inside the window");
     assert_eq!(
-        found["slots"][0]["parties"][0],
+        found["items"][0]["parties"][0],
         json!({
             "client": {"id": clinic.ada}, "service_id": clinic.extraction,
             "providers": [{"id": clinic.albert}, {"id": clinic.meera}], "resources": [{"id": clinic.room}],
@@ -176,10 +176,9 @@ async fn dental_slots_take_a_hygienist_a_dentist_and_the_room(pool: PgPool) {
         }),
         "one provider per role: dentist, then hygienist"
     );
-    assert_eq!(found["next_available_day"], Value::Null);
 
     let (_, found) = clinic.search(party(json!({"providers": [{"id": clinic.raj}], "resources": [{"role": "operatory"}]}))).await;
-    assert_eq!(found["slots"][0]["parties"][0]["providers"], json!([{"id": clinic.raj}, {"id": clinic.meera}]));
+    assert_eq!(found["items"][0]["parties"][0]["providers"], json!([{"id": clinic.raj}, {"id": clinic.meera}]));
 
     clinic.occupy("booked", &clinic.albert, &at("09:00"), &at("09:25")).await;
     let (_, found) = clinic.search(party(json!({"providers": [{"name": "Albert"}], "resources": [{"role": "operatory"}]}))).await;
@@ -189,7 +188,7 @@ async fn dental_slots_take_a_hygienist_a_dentist_and_the_room(pool: PgPool) {
     assert_eq!(starts(&found, 0), [at("10:45")]);
 
     let (_, found) = clinic.search(party(json!({"providers": [{"name": "Nobody"}]}))).await;
-    assert_eq!((found["slots"].clone(), found["next_available_day"].clone()), (json!([]), Value::Null));
+    assert_eq!(found["items"], json!([]));
 
     for not_a_field in [json!({"providers": [{"gender": "female"}]}), json!({"resources": [{"attributes": {}}]})] {
         assert_eq!(clinic.search(party(not_a_field.clone())).await.0, StatusCode::BAD_REQUEST, "{not_a_field}");
@@ -218,7 +217,7 @@ async fn a_full_room_offers_its_waitlist_and_cancelled_time_is_free(pool: PgPool
     clinic.occupy("booked", pod, &at("09:00"), &at("10:00")).await;
     clinic.occupy("cancelled", pod, &at("10:00"), &at("11:00")).await;
     let (_, found) = clinic.search(search.clone()).await;
-    let waitlist = |found: &Value| found["slots"].as_array().unwrap().iter().map(|slot| slot["parties"][0]["waitlist"].clone()).collect::<Vec<_>>();
+    let waitlist = |found: &Value| found["items"].as_array().unwrap().iter().map(|slot| slot["parties"][0]["waitlist"].clone()).collect::<Vec<_>>();
     assert_eq!((starts(&found, 0), waitlist(&found)), (vec![at("09:00"), at("10:00")], vec![json!(true), json!(false)]));
 
     clinic.occupy("waitlist", pod, &at("09:00"), &at("10:00")).await;
@@ -254,7 +253,7 @@ async fn parties_are_placed_together_within_the_gaps(pool: PgPool) {
     };
     let any_pod = json!([{"role": "pod"}]);
     let (_, couple) = clinic.search(floats(vec![(json!({"tag": "a"}), any_pod.clone()), (json!({"tag": "b"}), any_pod.clone())], json!({}))).await;
-    let first = &couple["slots"][0]["parties"];
+    let first = &couple["items"][0]["parties"];
     assert_eq!((first[0]["starts_at"].clone(), first[1]["starts_at"].clone()), (json!(at("09:00")), json!(at("09:00"))));
     assert_eq!((first[0]["resources"].clone(), first[1]["resources"].clone()), (json!([{"id": clinic.pods[0]}]), json!([{"id": clinic.pods[1]}])));
 
@@ -264,14 +263,14 @@ async fn parties_are_placed_together_within_the_gaps(pool: PgPool) {
     let one_pod = json!([{"id": clinic.pods[0]}]);
     let together = vec![(json!({"tag": "a"}), one_pod.clone()), (json!({"tag": "b"}), one_pod.clone())];
     let (_, waiting) = clinic.search(floats(together.clone(), json!({}))).await;
-    let second = &waiting["slots"][0]["parties"][1];
+    let second = &waiting["items"][0]["parties"][1];
     assert_eq!(
         (second["starts_at"].clone(), second["waitlist"].clone()),
         (json!(at("09:00")), json!(true)),
         "one pod takes one at once; the other gets its waitlist place"
     );
     let (_, staggered) = clinic.search(floats(together, json!({"client_gap": "PT1H"}))).await;
-    let first = &staggered["slots"][0]["parties"];
+    let first = &staggered["items"][0]["parties"];
     assert_eq!(
         (first[0]["starts_at"].clone(), first[1]["starts_at"].clone(), first[1]["waitlist"].clone()),
         (json!(at("09:00")), json!(at("10:00")), json!(false)),
@@ -280,12 +279,17 @@ async fn parties_are_placed_together_within_the_gaps(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn a_day_without_slots_names_the_next_one(pool: PgPool) {
+async fn a_day_without_slots_is_an_empty_last_page_and_a_longer_window_finds_the_next(pool: PgPool) {
     let clinic = Clinic::new(pool).await;
     let tuesday = json!({"from": "2026-10-27T09:00:00+05:30", "to": "2026-10-27T18:00:00+05:30",
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
     let (status, found) = clinic.search(tuesday).await;
-    assert_eq!((status, found["slots"].clone(), found["next_available_day"].clone()), (StatusCode::OK, json!([]), json!("2026-10-28")));
+    assert_eq!((status, found["items"].clone(), found["next_page_token"].clone()), (StatusCode::OK, json!([]), Value::Null));
+
+    let to_thursday = json!({"from": "2026-10-27T09:00:00+05:30", "to": "2026-10-29T18:00:00+05:30", "page_size": 1,
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
+    let (_, found) = clinic.search(to_thursday).await;
+    assert!(found["items"][0]["parties"][0]["starts_at"].as_str().unwrap().starts_with("2026-10-28"), "{found}");
 }
 
 #[sqlx::test(migrations = false)]
@@ -301,9 +305,9 @@ async fn bad_searches_are_refused(pool: PgPool) {
         assert_eq!(clinic.search(bad.clone()).await.0, StatusCode::BAD_REQUEST, "{bad}");
     }
     let reader = app(pool, &[&format!("tenants:read:{}", clinic.tenant), "appointments:read"]);
-    let uri = format!("/api/v1/tenants/{}/appointments:available", clinic.tenant);
+    let uri = format!("/api/v1/tenants/{}/slots:search", clinic.tenant);
     let body = json!({"from": at("09:00"), "to": at("12:00"), "parties": [party]});
-    assert_eq!(call(&reader, "POST", &uri, body).await.0, StatusCode::FORBIDDEN, "needs appointments:available");
+    assert_eq!(call(&reader, "POST", &uri, body).await.0, StatusCode::FORBIDDEN, "needs slots:search");
 }
 
 impl Clinic {
@@ -429,7 +433,7 @@ async fn patch_moves_an_appointment_only_to_an_open_time(pool: PgPool) {
     let search = json!({"from": at("09:00"), "to": at("10:00"),
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float, "resources": [{"id": pod1}]}]});
     let (_, found) = clinic.search(search).await;
-    assert_eq!(found["slots"][0]["parties"][0]["waitlist"], json!(false), "9:00 was given back");
+    assert_eq!(found["items"][0]["parties"][0]["waitlist"], json!(false), "9:00 was given back");
 
     assert_eq!(patch(json!({"starts_at": at("11:00"), "ends_at": at("12:00")})).await.0, StatusCode::CONFLICT, "Bo has the pod");
     let (status, moved) = patch(json!({"starts_at": at("11:00"), "ends_at": at("12:00"), "resource_id": pod2})).await;
@@ -455,7 +459,7 @@ async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
     let search = json!({"from": at("09:00"), "to": at("10:00"),
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float, "resources": [{"id": studio}]}]});
     let left = |found: &Value| {
-        let party = &found["slots"][0]["parties"][0];
+        let party = &found["items"][0]["parties"][0];
         (party["capacity"].clone(), party["waitlist"].clone())
     };
     let mut clients = Vec::new();
@@ -475,7 +479,7 @@ async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
     assert_eq!(clinic.book(class(&clients[1], "booked")).await.0, StatusCode::OK);
     assert_eq!(left(&clinic.search(search.clone()).await.1), (json!(0), json!(true)), "full; the waitlist place is left");
     assert_eq!(clinic.book(class(&clients[2], "waitlist")).await.0, StatusCode::OK);
-    assert_eq!(clinic.search(search.clone()).await.1["slots"], json!([]), "capacity and waitlist both taken");
+    assert_eq!(clinic.search(search.clone()).await.1["items"], json!([]), "capacity and waitlist both taken");
 
     let item = format!("/api/v1/tenants/{}/appointments/{}", clinic.tenant, first["id"].as_str().unwrap());
     assert_eq!(call(&clinic.app, "DELETE", &item, json!({})).await.0, StatusCode::OK);
@@ -489,7 +493,7 @@ impl Clinic {
 
     async fn first_slot(&self, parties: Value) -> Value {
         let (_, found) = self.search(json!({"from": at("09:00"), "to": at("12:00"), "parties": parties})).await;
-        found["slots"][0].clone()
+        found["items"][0].clone()
     }
 }
 
@@ -561,7 +565,7 @@ async fn a_hold_of_two_parties_is_booked_one_appointment_at_a_time(pool: PgPool)
     assert_eq!(clinic.book(booking(&slot["parties"][0], &json!(clinic.ada))).await.0, StatusCode::OK);
     let (_, still) = clinic.search(json!({"from": at("09:00"), "to": at("10:00"),
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float, "resources": [{"id": slot["parties"][1]["resources"][0]["id"]}]}]})).await;
-    assert_eq!(still["slots"][0]["parties"][0]["waitlist"], json!(true), "Bo's place is still held");
+    assert_eq!(still["items"][0]["parties"][0]["waitlist"], json!(true), "Bo's place is still held");
     assert_eq!(clinic.book(booking(&slot["parties"][1], &bo["id"])).await.0, StatusCode::OK);
 }
 
@@ -576,4 +580,58 @@ async fn a_purge_before_a_future_time_is_refused(pool: PgPool) {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let places: i64 = sqlx::query_scalar("SELECT count(*) FROM reservations WHERE tenant_id = $1").bind(clinic.tenant).fetch_one(&clinic.pool).await.unwrap();
     assert_eq!(places, 1, "the booked place is kept");
+}
+
+/// Every start time of a search, following `next_page_token` to the end, and the number of pages.
+async fn every_start(clinic: &Clinic, mut search: Value) -> (Vec<String>, usize) {
+    let (mut starts, mut pages) = (Vec::new(), 0);
+    loop {
+        let (status, found) = clinic.search(search.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{found}");
+        pages += 1;
+        starts.extend(found["items"].as_array().unwrap().iter().map(|slot| slot["parties"][0]["starts_at"].as_str().unwrap().to_string()));
+        match found["next_page_token"].as_str() {
+            Some(token) => search["page_token"] = json!(token),
+            None => return (starts, pages),
+        }
+    }
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_page_holds_at_most_page_size_slots_and_the_next_page_goes_on_after_it(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let search = |page_size: u16| json!({"from": at("09:00"), "to": at("12:00"), "page_size": page_size,
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
+    let (_, first) = clinic.search(search(2)).await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+
+    let (all, _) = every_start(&clinic, search(1000)).await;
+    let (paged, pages) = every_start(&clinic, search(2)).await;
+    assert!(all.len() > 2, "{all:?}");
+    assert_eq!(paged, all, "no slot repeated or skipped");
+    assert_eq!(pages, all.len().div_ceil(2) + usize::from(all.len() % 2 == 0), "pages of two, the last one maybe empty");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_long_window_comes_a_week_at_a_time(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let month = json!({"from": at("09:00"), "to": "2026-11-25T18:00:00+05:30", "page_size": 1000,
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
+    let (status, first) = clinic.search(month.clone()).await;
+    let week_later = "2026-11-02T09:00:00+05:30";
+    let starts: Vec<&str> = first["items"].as_array().unwrap().iter().map(|slot| slot["parties"][0]["starts_at"].as_str().unwrap()).collect();
+    assert_eq!(status, StatusCode::OK);
+    assert!(!starts.is_empty() && starts.iter().all(|start| *start < week_later), "the first page is the first week: {starts:?}");
+    assert!(first["next_page_token"].is_string(), "the month goes on");
+
+    let (every, pages) = every_start(&clinic, month).await;
+    assert!(pages >= 5 && every.iter().any(|start| start.starts_with("2026-11-25")), "{pages} pages, through the last day");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_bad_page_token_is_refused(pool: PgPool) {
+    let clinic = Clinic::new(pool).await;
+    let search = json!({"from": at("09:00"), "to": at("12:00"), "page_token": "not a token",
+        "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
+    assert_eq!(clinic.search(search).await.0, StatusCode::BAD_REQUEST);
 }

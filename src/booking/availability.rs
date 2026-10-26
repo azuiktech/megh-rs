@@ -6,9 +6,9 @@ use std::iter::{once, successors};
 use std::ops::Bound;
 
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, SecondsFormat, TimeDelta, TimeZone, Utc};
 use iso8601::Duration;
+use paginator_utils::{Cursor, CursorDirection, CursorValue};
 use itertools::Itertools;
 use rrule::{RRuleSet, Tz};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ use super::resource::ResourceData;
 use super::schedule::ScheduleData;
 use super::service::ServiceData;
 use crate::auth::crud::Row;
-use crate::auth::rest::{ApiError, ApiResult, AppContext, Input};
+use crate::auth::rest::{ApiError, ApiResult, AppContext, Input, Page, PageRequest};
 use crate::{Entity, Table};
 
 /// What to find room for: each party is one client wanting one service.
@@ -49,6 +49,8 @@ pub struct Availability {
     #[serde(default)]
     #[schema(value_type = String, format = Duration, example = "PT30M")]
     pub client_gap: Duration,
+    #[serde(flatten)]
+    pub page: PageRequest,
 }
 
 /// A known client by id, or an unknown one named by a tag.
@@ -74,13 +76,6 @@ pub struct Party {
     #[serde(default)]
     #[schema(value_type = Vec<Object>)]
     pub resources: Vec<Fields>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct Slots {
-    pub slots: Vec<Slot>,
-    /// The first day with a slot, when the window has none.
-    pub next_available_day: Option<NaiveDate>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -109,12 +104,6 @@ pub struct Id {
     pub id: Uuid,
 }
 
-impl IntoResponse for Slots {
-    fn into_response(self) -> Response {
-        axum::Json(self).into_response()
-    }
-}
-
 fn to_after_from(request: &Availability) -> Result<(), ValidationError> {
     (request.from < request.to)
         .then_some(())
@@ -123,8 +112,8 @@ fn to_after_from(request: &Availability) -> Result<(), ValidationError> {
 
 /// Start times and gaps are tried on this grid.
 const GRID: TimeDelta = TimeDelta::minutes(5);
-/// How far `next_available_day` looks.
-const LOOK_AHEAD: TimeDelta = TimeDelta::days(180);
+/// The longest stretch of start times one page searches.
+const PAGE_SPAN: TimeDelta = TimeDelta::days(7);
 
 type Span = (DateTime<Utc>, DateTime<Utc>);
 type Stretch = (TimeDelta, TimeDelta);
@@ -495,41 +484,60 @@ impl<'a> Search<'a> {
 }
 
 pub fn routes() -> OpenApiRouter<AppContext> {
-    OpenApiRouter::new().routes(routes!(available))
+    OpenApiRouter::new().routes(routes!(search))
 }
 
-/// Open slots for every party together; booking a slot makes its appointments.
+/// Open slots for every party together, a page at a time (AIP-158); booking a slot makes its appointments.
 #[utoipa::path(
     post,
-    path = "/tenants/{tenant_id}/appointments:available",
-    tag = "appointments",
+    path = "/tenants/{tenant_id}/slots:search",
+    tag = "slots",
     params(("tenant_id" = Uuid, Path)),
     request_body = Availability,
-    responses((status = 200, body = Slots), (status = 400)),
+    responses((status = 200, body = inline(Page<Slot>)), (status = 400)),
 )]
-async fn available(State(ctx): State<AppContext>, Input(request): Input<Availability>) -> ApiResult<Slots> {
+async fn search(State(ctx): State<AppContext>, Input(request): Input<Availability>) -> ApiResult<Page<Slot>> {
     let unknown = request.parties.iter().find_map(|party| {
         unknown_field::<ProviderData>(&party.providers).or_else(|| unknown_field::<ResourceData>(&party.resources))
     });
     if let Some(field) = unknown {
         return Err(ApiError::BadRequest(format!("{field} is not a field; attributes cannot be matched yet")));
     }
-    let window = (request.from.to_utc(), request.to.to_utc());
+    let (start, to) = (page_start(&request)?, request.to.to_utc());
+    let span_end = (start + PAGE_SPAN).min(to);
+    let window = (start, (span_end + TimeDelta::days(1)).min(to));
     let mut conn = ctx.pool.acquire().await?;
     let calendar = Calendar::load(&mut conn, &request, window, None).await?;
-    let slots: Vec<Slot> = Search::new(&calendar, &request, window).slots().collect();
-    let next_available_day = match slots.is_empty() {
-        true => next_available_day(&mut conn, &request, window.1).await?,
-        false => None,
+    let size = usize::from(request.page.size());
+    let items: Vec<Slot> = Search::new(&calendar, &request, window).slots().take_while(|slot| starts_at(slot) < span_end).take(size).collect();
+    let resume = match items.len() == size {
+        true => items.last().map(|slot| starts_at(slot) + TimeDelta::nanoseconds(1)),
+        false => (span_end < to).then_some(span_end),
     };
-    Ok(Slots { slots, next_available_day })
+    Ok(Page { items, next_page_token: resume.map(page_token).transpose()? })
 }
 
-async fn next_available_day(conn: &mut PgConnection, request: &Availability, after: DateTime<Utc>) -> ApiResult<Option<NaiveDate>> {
-    let window = (after, after + LOOK_AHEAD);
-    let calendar = Calendar::load(conn, request, window, None).await?;
-    let first = Search::new(&calendar, request, window).slots().next();
-    Ok(first.map(|slot| slot.parties[0].starts_at.date_naive()))
+fn starts_at(slot: &Slot) -> DateTime<Utc> {
+    slot.parties[0].starts_at.to_utc()
+}
+
+/// Where this page's start times begin: `from`, or where the page before it stopped.
+fn page_start(request: &Availability) -> ApiResult<DateTime<Utc>> {
+    let (from, to) = (request.from.to_utc(), request.to.to_utc());
+    let resume_at = |token: &str| match Cursor::decode(token).ok()?.value {
+        CursorValue::String(at) => DateTime::parse_from_rfc3339(&at).ok().map(|at| at.to_utc()).filter(|at| from <= *at && *at < to),
+        _ => None,
+    };
+    match request.page.page_token.as_deref() {
+        None => Ok(from),
+        Some(token) => resume_at(token).ok_or_else(|| ApiError::BadRequest("invalid page_token".into())),
+    }
+}
+
+/// The token of the page whose start times begin at `at`.
+fn page_token(at: DateTime<Utc>) -> ApiResult<String> {
+    let value = CursorValue::String(at.to_rfc3339_opts(SecondsFormat::Nanos, true));
+    Cursor::new("starts_at".into(), value, CursorDirection::After).encode().map_err(ApiError::BadRequest)
 }
 
 /// One place taken: the participant, when, and whether it is a waitlist place.
@@ -565,6 +573,7 @@ pub(super) async fn fit_slot(conn: &mut PgConnection, tenant_id: Uuid, parties: 
         parties: parties.iter().map(searched).collect::<ApiResult<_>>()?,
         service_gap: Duration::default(),
         client_gap: Duration::default(),
+        page: PageRequest { page_size: None, page_token: None },
     };
     let calendar = Calendar::load(conn, &request, (from.to_utc(), to.to_utc()), except).await?;
     let held = parties.iter().zip(&request.parties).try_fold(Vec::new(), |held: Vec<(Who, Taken)>, (placed, party)| {

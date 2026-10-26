@@ -35,7 +35,10 @@ Read before proposing or changing anything.
   - #1: `publish` first drops the clients whose channel is closed (tokio's `Sender::is_closed`), then sends to the rest.
   - #11: history backfill fetches every allowed topic, drops duplicates by event id and orders by time.
   - #13: the bare pattern `*` matches exactly one segment (as RabbitMQ's `*`); only `**` matches everything.
-- #10 (availability): "can be just a pagination, always return a max page based on cursor as a separate pr."
+- #10 (availability): "can be just a pagination, always return a max page based on cursor as a separate pr." Issue #219.
+- "It was explicitly asked to have all list apis with pagination." Every list API pages (AIP-158 `page_size`/`page_token`); `appointments:available` is the one that does not yet (#219).
+- "it should be made a list api and not an action. check possibility to move it as a list api (but can not be made GET easily using the request shape). such as POST /tenants/{tenant_id}/available_slots"
+  - A standard List must be GET with no body (AIP-132), and POST on a collection is create (AIP-133). Approved: "POST /tenants/{tenant_id}/slots:search returning Page {items, next_page_token}, with the design and the frozen-test changes as proposed." The body takes `page_size` (default 50, max 1000) and `page_token`; a page searches at most 7 days and never past `to`; the cursor is a `paginator-utils` cursor on `starts_at`; `next_available_day` and its 180-day look-ahead go; the grant is `slots:search`.
 
 ## 2026-10-26 — tenant and org
 

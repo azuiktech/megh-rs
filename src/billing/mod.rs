@@ -1,4 +1,4 @@
-//! Plans, prices, add-ons and subscriptions: the megh-go billing tables (created by migration 0006) as row types.
+//! Plans, prices, add-ons and subscriptions: the megh-go billing tables (created by migration 0005) as row types.
 //! Prices are `BIGINT` micros of the row's `currency`; the accessors turn them into `Money`.
 
 use std::collections::BTreeMap;
@@ -44,7 +44,7 @@ mod api {
         info(title = "megh billing", description = "Taxes, invoices and payments."),
         tags(
             (name = "taxes", description = "Percentage taxes a line can carry."),
-            (name = "invoices", description = "A request for payment from a customer org. Created as a draft and changed only while a draft."),
+            (name = "invoices", description = "A request for payment from a customer tenant. Created as a draft and changed only while a draft."),
             (name = "invoiceLines", description = "The products and services billed on an invoice, with quantity, unit price, discount and taxes. Changed only while the invoice is a draft."),
             (name = "payments", description = "Money received for an open invoice, by cash, cheque, card or bank transfer; a refund is the `refunded` part of the payment."),
         ),
@@ -193,7 +193,7 @@ pub struct PlanAddOn {
 #[table(name = "subscriptions")]
 pub struct Subscription {
     pub id: Uuid,
-    pub organization_id: Uuid,
+    pub tenant_id: Uuid,
     pub plan_id: Uuid,
     pub price_id: Uuid,
     pub status: SubscriptionStatus,

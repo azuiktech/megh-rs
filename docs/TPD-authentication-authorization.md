@@ -1,7 +1,7 @@
 # TPD — Authentication & Authorization
 
 **Status:** F1–F11 and F13–F24 shipped (F12 is superseded by F16). Features are not delivered in number order.
-**Modules:** `src/auth`, `src/account`, `src/org`, `ui/sdk/src/auth.ts`, `migrations/0001–0004`.
+**Modules:** `src/auth`, `src/account`, `src/tenant`, `ui/sdk/src/auth.ts`, `migrations/0001_auth.sql`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
 This is the living design for everything that answers "who is calling" (authentication) and "may they do this" (authorization). Change-level detail belongs in `CHANGELOG.md`; this document changes when the feature's shape changes.
@@ -28,7 +28,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns memberships | `[x]` | #60 / #30 |
 | F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
 | F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
-| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-organizations.md`, O1) | `[x]` | #33 / #28 |
+| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-tenants.md`, O1) | `[x]` | #33 / #28 |
 | F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token); superseded by F16, whose store table cannot match | `[!]` | #31 |
 | F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[x]` | #44 / #29 |
 | F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
@@ -59,8 +59,8 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 
 | Table | Columns | Constraints |
 |---|---|---|
-| `organizations` | `id`, `name`, `description`, `timezone`, `sub_status`, `trial_ends_at`, `plan_id`, `created_by`, `created_at`, `updated_at` | PK `id` (was `org`, see `TPD-organizations.md`) |
-| `organization_members` | `id`, `organization_id`, `user_id`, `role`, `grants` (text, JSON array), `joined_at`, `invited_by` | unique `(organization_id, user_id)`; keeps a foreign key to `organizations` (cascade) where the table was renamed from `org_members`; `user_id` has no FK (was `org_members`) |
+| `tenants` | `id`, `name`, `description`, `timezone`, `sub_status`, `trial_ends_at`, `plan_id`, `created_by`, `created_at`, `updated_at` | PK `id` (was `org`, see `TPD-tenants.md`) |
+| `tenant_members` | `id`, `tenant_id`, `user_id`, `role`, `grants` (text, JSON array), `joined_at`, `invited_by` | unique `(tenant_id, user_id)`; keeps a foreign key to `tenants` (cascade) where the table was renamed from `org_members`; `user_id` has no FK (was `org_members`) |
 | `users` | `id`, `account_id`, `provider`, `email`, `password_hash`, `display_name`, `photo_url`, `created_at`, `updated_at` | unique `(account_id, provider)`, unique `email` (F10; before F10: `subject` instead of `account_id`/`provider`, unique) |
 | `connected_accounts` | `account_id`, `provider`, `email`, `access_token`, `refresh_token`, `token_type`, `expiry`, `created_at`, `updated_at`, `disconnected_at` | PK `(account_id, provider)`; no `user_id` |
 | `sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `ip_address`, `metadata JSONB`, `created_at`, `updated_at` | FK `user_id` → `users` (cascade); unique `token_hash`. Created by migration 0004, unused since F16 |
@@ -86,9 +86,9 @@ megh-go has no SQL migrations; its schema is what GORM `AutoMigrate` creates fro
 ### F1 — Org tenancy and grants (`org`, `auth::grant`)
 
 ```rust
-pub struct Org { id: Uuid, name: Option<String>, description: Option<String>, timezone: String, sub_status: String,
+pub struct Tenant { id: Uuid, name: Option<String>, description: Option<String>, timezone: String, sub_status: String,
                  trial_ends_at: Option<DateTime<Utc>>, plan_id: Option<Uuid>, created_by: Option<Uuid>, created_at: DateTime<Utc>, updated_at: Option<DateTime<Utc>> }
-pub struct Member { id, organization_id, user_id: Uuid, role: String, grants: Vec<String>, joined_at: DateTime<Utc>, invited_by: Option<Uuid> }
+pub struct Member { id, tenant_id, user_id: Uuid, role: String, grants: Vec<String>, joined_at: DateTime<Utc>, invited_by: Option<Uuid> }
 impl Member { pub fn has_grant(&self, required: &Grant) -> bool }
 
 pub struct Grant(pub String);                 // "resource:action:instance"
@@ -290,7 +290,7 @@ let api = Router::new().route(..).layer(from_fn(megh::authorizer)).layer(from_fn
 let app = api.layer(SessionManagerLayer::new(store));           // jwt_session sits inside the session layer
 ```
 
-The claims are megh-go's (`sub` member id, `iss` "megh", `aud` organization id, `scope` the grants space-separated, HS256), so a token minted by either stack verifies in the other with the same secret. Per request: a valid token puts its grants in the request extensions, where `authorizer` already reads them (zero database queries); a missing or expired token is renewed from the session's `user_id` and the user's first membership, sets a fresh cookie and continues; a token with a bad signature, issuer or format is 401 even when a session exists; no session, or no membership, is 401. Expiry has no leeway. `POST /auth/logout` clears the cookie (when the request carried one).
+The claims are megh-go's (`sub` member id, `iss` "megh", `aud` tenant id, `scope` the grants space-separated, HS256), so a token minted by either stack verifies in the other with the same secret. Per request: a valid token puts its grants in the request extensions, where `authorizer` already reads them (zero database queries); a missing or expired token is renewed from the session's `user_id` and the user's first membership, sets a fresh cookie and continues; a token with a bad signature, issuer or format is 401 even when a session exists; no session, or no membership, is 401. Expiry has no leeway. `POST /auth/logout` clears the cookie (when the request carried one).
 
 Cookie: `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` = the lifetime (megh-go omits `Secure`).
 
@@ -329,7 +329,7 @@ pub struct BasicLoginResponse { pub user: User, pub memberships: Vec<Member> }
 
 `Authorization: Basic base64(email:password)` via `axum-extra`'s `TypedHeader<Authorization<Basic>>`; verifies with `UserRepo::verify_password` (F13). Success: 200 `BasicLoginResponse`, session gets `cycle_id()` and `user_id`, exactly like the OAuth callback. Failure: a missing header and every `PasswordError` variant (`UserNotFound`, `NoPassword`, `WrongPassword`) all give the same 401 `{"error":"invalid credentials"}`; login never creates an account. A database or session failure is 500 with a fixed message, logged. The route carries its own `CsrfLayer` (F21), so it is protected standalone; merge it with `auth_router` for `/auth/me` and `/auth/logout`, which it needs but does not provide itself.
 
-Memberships come from `Orgs::memberships`, earliest first (O1). `/auth/me` (the OAuth path) does not return memberships; that is O5, still open.
+Memberships come from `Tenants::memberships`, earliest first (O1). `/auth/me` (the OAuth path) does not return memberships; that is O5, still open.
 
 ## 6. Test coverage (shipped)
 

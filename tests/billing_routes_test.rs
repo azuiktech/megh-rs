@@ -1,4 +1,4 @@
-//! B5b (docs/TPD-billing.md): CRUD over HTTP for taxes, scoped to the org in the path and checked by `authorizer`, like
+//! B5b (docs/TPD-billing.md): CRUD over HTTP for taxes, scoped to the tenant in the path and checked by `authorizer`, like
 //! the booking collections. (Payment terms, series and vendors were cut when billing was simplified.)
 
 use axum::body::Body;
@@ -37,8 +37,8 @@ fn kinds() -> Vec<Kind> {
     ]
 }
 
-async fn org(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
+async fn tenant(pool: &PgPool) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
 }
 
 fn app(pool: PgPool, grants: &[String]) -> Router {
@@ -49,8 +49,8 @@ fn app(pool: PgPool, grants: &[String]) -> Router {
         .with_state(AppContext { pool })
 }
 
-fn grants(org: Uuid) -> Vec<String> {
-    ["taxes"].iter().map(|resource| format!("{resource}:*")).chain([format!("orgs:read:{org}")]).collect()
+fn grants(tenant: Uuid) -> Vec<String> {
+    ["taxes"].iter().map(|resource| format!("{resource}:*")).chain([format!("tenants:read:{tenant}")]).collect()
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
@@ -66,17 +66,17 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 }
 
 #[sqlx::test(migrations = false)]
-async fn create_takes_the_org_from_the_path_and_fills_defaults(pool: PgPool) {
+async fn create_takes_the_tenant_from_the_path_and_fills_defaults(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other) = (org(&pool).await, org(&pool).await);
+    let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let app = app(pool, &grants(mine));
     for kind in kinds() {
-        let collection = format!("/api/v1/orgs/{mine}/{}", kind.segment);
+        let collection = format!("/api/v1/tenants/{mine}/{}", kind.segment);
         let mut body = kind.minimal.clone();
-        body["org_id"] = json!(other);
+        body["tenant_id"] = json!(other);
         let (status, row) = call(&app, "POST", &collection, body).await;
         assert_eq!(status, StatusCode::OK, "{}: {row}", kind.segment);
-        assert_eq!(row["org_id"], json!(mine), "{}: the path's org wins over the body's", kind.segment);
+        assert_eq!(row["tenant_id"], json!(mine), "{}: the path's tenant wins over the body's", kind.segment);
         assert!(row["id"].is_string() && row["created_at"].is_string(), "{}", kind.segment);
         for (field, value) in &kind.defaults {
             assert_eq!(&row[*field], value, "{}.{field}", kind.segment);
@@ -87,11 +87,11 @@ async fn create_takes_the_org_from_the_path_and_fills_defaults(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn invalid_values_are_a_bad_request(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let app = app(pool, &grants(mine));
     for kind in kinds() {
         for bad in &kind.bad {
-            let (status, _) = call(&app, "POST", &format!("/api/v1/orgs/{mine}/{}", kind.segment), bad.clone()).await;
+            let (status, _) = call(&app, "POST", &format!("/api/v1/tenants/{mine}/{}", kind.segment), bad.clone()).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{}: {bad}", kind.segment);
         }
     }
@@ -100,10 +100,10 @@ async fn invalid_values_are_a_bad_request(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn get_put_patch_delete_one_row(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other) = (org(&pool).await, org(&pool).await);
+    let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let (mine_app, other_app) = (app(pool.clone(), &grants(mine)), app(pool, &grants(other)));
     for kind in kinds() {
-        let collection = format!("/api/v1/orgs/{mine}/{}", kind.segment);
+        let collection = format!("/api/v1/tenants/{mine}/{}", kind.segment);
         let (_, row) = call(&mine_app, "POST", &collection, kind.minimal.clone()).await;
         let item = format!("{collection}/{}", row["id"].as_str().unwrap());
         let ctx = kind.segment;
@@ -120,8 +120,8 @@ async fn get_put_patch_delete_one_row(pool: PgPool) {
         assert_eq!(patched[kind.patched.0], kind.patched.1, "{ctx}");
         assert_eq!(patched["name"], kind.replace["name"], "{ctx}: fields not given are kept");
 
-        let theirs = format!("/api/v1/orgs/{other}/{}/{}", kind.segment, row["id"].as_str().unwrap());
-        assert_eq!(call(&other_app, "GET", &theirs, Value::Null).await.0, StatusCode::NOT_FOUND, "{ctx}: another org's row is not found under mine");
+        let theirs = format!("/api/v1/tenants/{other}/{}/{}", kind.segment, row["id"].as_str().unwrap());
+        assert_eq!(call(&other_app, "GET", &theirs, Value::Null).await.0, StatusCode::NOT_FOUND, "{ctx}: another tenant's row is not found under mine");
         assert_eq!(call(&other_app, "DELETE", &theirs, Value::Null).await.0, StatusCode::NOT_FOUND, "{ctx}");
 
         let (status, deleted) = call(&mine_app, "DELETE", &item, Value::Null).await;
@@ -135,9 +135,9 @@ async fn get_put_patch_delete_one_row(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn list_filters_and_pages_with_a_cursor(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let app = app(pool, &grants(mine));
-    let collection = format!("/api/v1/orgs/{mine}/taxes");
+    let collection = format!("/api/v1/tenants/{mine}/taxes");
     for (name, rate) in [("Reduced", "5"), ("Standard", "20"), ("Luxury", "25"), ("Zero", "0")] {
         let (status, body) = call(&app, "POST", &collection, json!({"name": name, "rate": rate, "attributes": {"country": "FR"}})).await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -161,14 +161,14 @@ async fn list_filters_and_pages_with_a_cursor(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn authorizer_guards_every_collection(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other) = (org(&pool).await, org(&pool).await);
+    let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     for kind in kinds() {
-        let collection = format!("/api/v1/orgs/{mine}/{}", kind.segment);
-        let read_only = app(pool.clone(), &[format!("orgs:read:{mine}"), format!("{}:read", kind.segment)]);
+        let collection = format!("/api/v1/tenants/{mine}/{}", kind.segment);
+        let read_only = app(pool.clone(), &[format!("tenants:read:{mine}"), format!("{}:read", kind.segment)]);
         assert_eq!(call(&read_only, "GET", &collection, Value::Null).await.0, StatusCode::OK, "{}", kind.segment);
         assert_eq!(call(&read_only, "POST", &collection, kind.minimal.clone()).await.0, StatusCode::FORBIDDEN, "{}", kind.segment);
         let mine_only = app(pool.clone(), &grants(mine));
-        assert_eq!(call(&mine_only, "GET", &format!("/api/v1/orgs/{other}/{}", kind.segment), Value::Null).await.0, StatusCode::FORBIDDEN, "{}", kind.segment);
+        assert_eq!(call(&mine_only, "GET", &format!("/api/v1/tenants/{other}/{}", kind.segment), Value::Null).await.0, StatusCode::FORBIDDEN, "{}", kind.segment);
     }
 }
 
@@ -177,7 +177,7 @@ fn every_route_is_documented_with_its_grants() {
     let (_, api) = megh::billing::router().split_for_parts();
     assert_eq!(api.info.title, "megh billing");
     for kind in kinds() {
-        for path in [format!("/orgs/{{org_id}}/{}", kind.segment), format!("/orgs/{{org_id}}/{}/{{id}}", kind.segment)] {
+        for path in [format!("/tenants/{{tenant_id}}/{}", kind.segment), format!("/tenants/{{tenant_id}}/{}/{{id}}", kind.segment)] {
             let item = api.paths.paths.get(&path).unwrap_or_else(|| panic!("{path}"));
             let operations = [&item.get, &item.post, &item.put, &item.patch, &item.delete];
             assert!(operations.iter().copied().flatten().count() >= 2, "{path}");

@@ -1,4 +1,4 @@
-//! Invoice: a request for payment from a customer, which is an org. A draft is edited freely; `:open` gives it its
+//! Invoice: a request for payment from a customer, which is a tenant. A draft is edited freely; `:open` gives it its
 //! number and fixes its totals, and an open invoice is not changed. Whether it is paid or overdue follows from
 //! `amount_paid`, `balance_due` and `due_date`.
 
@@ -33,11 +33,11 @@ pub enum InvoiceStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "billing_invoices", keys = ["org_id", "id"])]
+#[table(name = "billing_invoices", keys = ["tenant_id", "id"])]
 pub struct InvoiceData {
     /// The seller.
-    pub org_id: Uuid,
-    /// The customer: an org.
+    pub tenant_id: Uuid,
+    /// The customer: a tenant.
     pub customer_id: Uuid,
     /// Made by the app's `Ids` when the invoice is opened.
     #[schema(value_type = Option<String>)]
@@ -103,7 +103,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
     OpenApiRouter::with_openapi(Actions::openapi())
         .routes(routes!(list, create))
         .routes(routes!(get, replace, patch, delete))
-        .route("/orgs/{org_id}/invoices/{id}/{verb}", post(act))
+        .route("/tenants/{tenant_id}/invoices/{id}/{verb}", post(act))
 }
 
 /// `:open` a draft: it needs a line, takes its number from the app's `Ids`, works out the totals of its lines and
@@ -111,10 +111,10 @@ pub fn routes() -> OpenApiRouter<AppContext> {
 /// on; it keeps its number.
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/invoices/{id}:{verb}",
+    path = "/tenants/{tenant_id}/invoices/{id}:{verb}",
     tag = "invoices",
     params(
-        ("org_id" = Uuid, Path),
+        ("tenant_id" = Uuid, Path),
         ("id" = Uuid, Path),
         ("verb" = String, Path, description = "open or void"),
     ),
@@ -129,10 +129,10 @@ async fn act(State(ctx): State<AppContext>, Extension(formats): Extension<Format
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/invoices",
+    path = "/tenants/{tenant_id}/invoices",
     tag = "invoices",
     params(
-        ("org_id" = Uuid, Path),
+        ("tenant_id" = Uuid, Path),
         ("filter" = Option<String>, Query, description = "AIP-160 filter (https://google.aip.dev/160) on any field of the entity; other names are looked up in `attributes`."),
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
@@ -145,9 +145,9 @@ async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>)
 
 #[utoipa::path(
     get,
-    path = "/orgs/{org_id}/invoices/{id}",
+    path = "/tenants/{tenant_id}/invoices/{id}",
     tag = "invoices",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
@@ -156,9 +156,9 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
 
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/invoices",
+    path = "/tenants/{tenant_id}/invoices",
     tag = "invoices",
-    params(("org_id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path)),
     request_body = InvoiceData,
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 409)),
 )]
@@ -169,14 +169,14 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) 
 
 #[utoipa::path(
     put,
-    path = "/orgs/{org_id}/invoices/{id}",
+    path = "/tenants/{tenant_id}/invoices/{id}",
     tag = "invoices",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = InvoiceData,
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceData>>) -> ApiResult<Invoice> {
-    ensure_draft::<InvoiceData>(&ctx.pool, body.data.org_id, body.id).await?;
+    ensure_draft::<InvoiceData>(&ctx.pool, body.data.tenant_id, body.id).await?;
     check(&body.data)?;
     crud::replace(&ctx.pool, body).await
 }
@@ -184,26 +184,26 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Invoice
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
 #[utoipa::path(
     patch,
-    path = "/orgs/{org_id}/invoices/{id}",
+    path = "/tenants/{tenant_id}/invoices/{id}",
     tag = "invoices",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Invoice> {
-    ensure_draft::<InvoiceData>(&ctx.pool, body.key.org_id, body.key.id).await?;
+    ensure_draft::<InvoiceData>(&ctx.pool, body.key.tenant_id, body.key.id).await?;
     refuse_changes(&body, &["status", "customer_id", "number"])?;
     crud::patch(&ctx.pool, body).await
 }
 
 #[utoipa::path(
     delete,
-    path = "/orgs/{org_id}/invoices/{id}",
+    path = "/tenants/{tenant_id}/invoices/{id}",
     tag = "invoices",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 404), (status = 409)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
-    ensure_draft::<InvoiceData>(&ctx.pool, key.org_id, key.id).await?;
+    ensure_draft::<InvoiceData>(&ctx.pool, key.tenant_id, key.id).await?;
     crud::delete(&ctx.pool, &key).await
 }

@@ -30,16 +30,16 @@ fn app(pool: PgPool) -> Router {
     api.route("/login/{user_id}", get(login)).layer(SessionManagerLayer::new(MemoryStore::default()))
 }
 
-/// A user who is a member of one organization with the `invoices:read` grant.
+/// A user who is a member of one tenant with the `invoices:read` grant.
 async fn reader(pool: &PgPool) -> (Uuid, Member) {
     let login = UpsertUserInput { provider: "google".into(), account_id: "1".into(), email: "ann@example.com".into(), display_name: None, photo_url: None };
     let user = UserRepo::new(pool).upsert(&login).await.unwrap();
-    let org = Uuid::new_v4();
-    sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, 'Acme')").bind(org).execute(pool).await.unwrap();
+    let tenant = Uuid::new_v4();
+    sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, 'Acme')").bind(tenant).execute(pool).await.unwrap();
     let member: Member = sqlx::query_as(
-        "INSERT INTO organization_members (organization_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]') RETURNING *",
+        "INSERT INTO tenant_members (tenant_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]') RETURNING *",
     )
-    .bind(org)
+    .bind(tenant)
     .bind(user.id)
     .fetch_one(pool)
     .await

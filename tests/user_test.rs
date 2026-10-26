@@ -1,14 +1,6 @@
 use megh::{UpsertUserInput, UserRepo};
 use sqlx::PgPool;
 
-const BEFORE_ALIGNMENT: [&str; 4] = [
-    include_str!("../migrations/0001_create_org.sql"),
-    include_str!("../migrations/0002_create_users.sql"),
-    include_str!("../migrations/0003_create_connected_accounts.sql"),
-    include_str!("../migrations/0004_create_sessions.sql"),
-];
-const ALIGN_USERS: &str = include_str!("../migrations/0005_align_users.sql");
-
 fn login(provider: &str, account_id: &str) -> UpsertUserInput {
     UpsertUserInput {
         provider: provider.into(),
@@ -17,31 +9,6 @@ fn login(provider: &str, account_id: &str) -> UpsertUserInput {
         display_name: Some("Ann".into()),
         photo_url: None,
     }
-}
-
-#[sqlx::test(migrations = false)]
-async fn migration_moves_subject_into_account_and_provider(pool: PgPool) {
-    for sql in BEFORE_ALIGNMENT {
-        sqlx::raw_sql(sql).execute(&pool).await.unwrap();
-    }
-    sqlx::query("INSERT INTO users (subject, email) VALUES ('google:123', 'ann@example.com')")
-        .execute(&pool)
-        .await
-        .unwrap();
-
-    sqlx::raw_sql(ALIGN_USERS).execute(&pool).await.unwrap();
-    sqlx::raw_sql(ALIGN_USERS).execute(&pool).await.unwrap();
-
-    let (account_id, provider): (String, String) =
-        sqlx::query_as("SELECT account_id, provider FROM users").fetch_one(&pool).await.unwrap();
-    assert_eq!((account_id.as_str(), provider.as_str()), ("123", "google"));
-    let has_subject: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'subject')",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert!(!has_subject);
 }
 
 #[sqlx::test]

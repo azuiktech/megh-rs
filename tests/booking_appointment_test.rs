@@ -14,16 +14,16 @@ use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
 
-async fn org(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &PgPool) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, org: Uuid, grants: &[&str]) -> Router {
+fn app(pool: PgPool, tenant: Uuid, grants: &[&str]) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
-    let grants = [format!("orgs:read:{org}")]
+    let grants = [format!("tenants:read:{tenant}")]
         .into_iter()
         .chain(grants.iter().map(|grant| grant.to_string()))
         .map(Grant::new)
@@ -51,35 +51,35 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
-/// A client, a service and a room of the org, and an appointment in `status` stored as booking would store it.
-async fn appointment(pool: &PgPool, org: Uuid, status: &str) -> Uuid {
+/// A client, a service and a room of the tenant, and an appointment in `status` stored as booking would store it.
+async fn appointment(pool: &PgPool, tenant: Uuid, status: &str) -> Uuid {
     let client: Uuid = sqlx::query_scalar(
-        "INSERT INTO clients (org_id, id, first_name, last_name, name) VALUES ($1, $2, 'Ada', 'L', 'Ada') RETURNING id",
+        "INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, $2, 'Ada', 'L', 'Ada') RETURNING id",
     )
-    .bind(org)
+    .bind(tenant)
     .bind(Uuid::now_v7())
     .fetch_one(pool)
     .await
     .unwrap();
     let service: Uuid = sqlx::query_scalar(
-        r#"INSERT INTO services (org_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#,
+        r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#,
     )
-    .bind(org)
+    .bind(tenant)
     .bind(Uuid::now_v7())
     .fetch_one(pool)
     .await
     .unwrap();
-    let room: Uuid = sqlx::query_scalar("INSERT INTO resources (org_id, id, name) VALUES ($1, $2, 'Room 1') RETURNING id")
-        .bind(org)
+    let room: Uuid = sqlx::query_scalar("INSERT INTO resources (tenant_id, id, name) VALUES ($1, $2, 'Room 1') RETURNING id")
+        .bind(tenant)
         .bind(Uuid::now_v7())
         .fetch_one(pool)
         .await
         .unwrap();
     sqlx::query_scalar(
-        "INSERT INTO appointments (org_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
+        "INSERT INTO appointments (tenant_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
          VALUES ($1, $2, $3, $4, $5, '2026-10-26T09:30:00Z', '2026-10-26T10:00:00Z', $6, $7) RETURNING id",
     )
-    .bind(org)
+    .bind(tenant)
     .bind(Uuid::now_v7())
     .bind(client)
     .bind(service)
@@ -94,11 +94,11 @@ async fn appointment(pool: &PgPool, org: Uuid, status: &str) -> Uuid {
 #[sqlx::test(migrations = false)]
 async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let waiting = appointment(&pool, mine, "waitlist").await;
     let booked = appointment(&pool, mine, "booked").await;
     sqlx::query(
-        r#"INSERT INTO schedules (org_id, id, name, recurrence, starts_at, ends_at)
+        r#"INSERT INTO schedules (tenant_id, id, name, recurrence, starts_at, ends_at)
            VALUES ($1, $2, 'Open', '"DTSTART:20261026T000000Z\nRRULE:FREQ=DAILY;COUNT=1"', '00:00', '23:00')"#,
     )
     .bind(mine)
@@ -107,7 +107,7 @@ async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
     .await
     .unwrap();
     let app = app(pool, mine, &["appointments:*"]);
-    let item = |id: Uuid| format!("/api/v1/orgs/{mine}/appointments/{id}");
+    let item = |id: Uuid| format!("/api/v1/tenants/{mine}/appointments/{id}");
 
     let (status, got) = call(&app, "GET", &item(waiting), Value::Null).await;
     assert_eq!((status, got["status"].clone()), (StatusCode::OK, json!("waitlist")), "{got}");
@@ -141,7 +141,7 @@ async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
     assert_eq!(call(&app, "POST", &step(Uuid::now_v7(), "confirm"), json!({})).await.0, StatusCode::NOT_FOUND);
     assert_eq!(call(&app, "POST", &step(booked, "cancel"), json!({})).await.0, StatusCode::BAD_REQUEST, "not a custom method");
     assert_eq!(
-        call(&app, "POST", &format!("/api/v1/orgs/{mine}/appointments"), json!({})).await.0,
+        call(&app, "POST", &format!("/api/v1/tenants/{mine}/appointments"), json!({})).await.0,
         StatusCode::BAD_REQUEST,
         "booking takes the whole appointment"
     );
@@ -150,10 +150,10 @@ async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn patch_changes_note_payment_and_attributes_only(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let booked = appointment(&pool, mine, "booked").await;
     let app = app(pool, mine, &["appointments:*"]);
-    let item = format!("/api/v1/orgs/{mine}/appointments/{booked}");
+    let item = format!("/api/v1/tenants/{mine}/appointments/{booked}");
     let (_, before) = call(&app, "GET", &item, Value::Null).await;
 
     let (status, patched) = call(&app, "PATCH", &item, json!({
@@ -179,7 +179,7 @@ async fn patch_changes_note_payment_and_attributes_only(pool: PgPool) {
         StatusCode::BAD_REQUEST
     );
 
-    let filtered = format!("/api/v1/orgs/{mine}/appointments?filter=status%20%3D%20%22booked%22");
+    let filtered = format!("/api/v1/tenants/{mine}/appointments?filter=status%20%3D%20%22booked%22");
     let (_, page) = call(&app, "GET", &filtered, Value::Null).await;
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
 }
@@ -187,14 +187,14 @@ async fn patch_changes_note_payment_and_attributes_only(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn each_custom_method_needs_its_own_grant(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let booked = appointment(&pool, mine, "booked").await;
     let crud_only = app(pool.clone(), mine, &["appointments:read", "appointments:create", "appointments:update"]);
-    let step = |verb: &str| format!("/api/v1/orgs/{mine}/appointments/{booked}:{verb}");
+    let step = |verb: &str| format!("/api/v1/tenants/{mine}/appointments/{booked}:{verb}");
 
     assert_eq!(call(&crud_only, "POST", &step("confirm"), json!({})).await.0, StatusCode::FORBIDDEN);
     assert_eq!(
-        call(&crud_only, "POST", &format!("/api/v1/orgs/{mine}/appointments/{booked}/:confirm"), json!({})).await.0,
+        call(&crud_only, "POST", &format!("/api/v1/tenants/{mine}/appointments/{booked}/:confirm"), json!({})).await.0,
         StatusCode::NOT_FOUND,
         "only the public form {{id}}:confirm reaches the route"
     );

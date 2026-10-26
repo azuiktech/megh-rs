@@ -1,5 +1,5 @@
 //! S2 (docs/TPD-billing.md): the ids of invoices and payments. The app supplies an `Ids` function; `Numbering` is the
-//! ready-made format (prefix, separator, optional date part, padded sequence); a counter per org, kind of document and
+//! ready-made format (prefix, separator, optional date part, padded sequence); a counter per tenant, kind of document and
 //! scope numbers them.
 
 use chrono::NaiveDate;
@@ -48,7 +48,7 @@ fn a_format_that_cannot_hold_a_sequence_in_a_name_is_refused() {
     assert!(Numbering::new(&"A".repeat(200), "-", Middle::Date, 10).is_ok());
 }
 
-/// Any function will do: a counter per month and the org's own words.
+/// Any function will do: a counter per month and the tenant's own words.
 struct Monthly(&'static str);
 
 impl Ids for Monthly {
@@ -61,19 +61,19 @@ impl Ids for Monthly {
     }
 }
 
-async fn org(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
+async fn tenant(pool: &PgPool) -> Uuid {
+    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
 }
 
-async fn next(pool: &PgPool, org: Uuid, document: Numbered, on: NaiveDate, ids: &impl Ids) -> String {
+async fn next(pool: &PgPool, tenant: Uuid, document: Numbered, on: NaiveDate, ids: &impl Ids) -> String {
     let mut connection = pool.acquire().await.unwrap();
-    issue(&mut connection, org, document, on, ids).await.unwrap().to_string()
+    issue(&mut connection, tenant, document, on, ids).await.unwrap().to_string()
 }
 
 #[sqlx::test(migrations = false)]
-async fn ids_count_up_per_org_kind_and_scope(pool: PgPool) {
+async fn ids_count_up_per_tenant_kind_and_scope(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, other) = (org(&pool).await, org(&pool).await);
+    let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let yearly = Numbering::new("INV", "-", Middle::Year, 4).unwrap();
     let (october, next_year) = (day(2026, 10, 22), day(2027, 1, 3));
 
@@ -83,7 +83,7 @@ async fn ids_count_up_per_org_kind_and_scope(pool: PgPool) {
     }
     assert_eq!(made, ["INV-2026-0001", "INV-2026-0002", "INV-2026-0003"]);
     assert_eq!(next(&pool, mine, Numbered::Payment, october, &yearly).await, "INV-2026-0001", "a payment has its own count");
-    assert_eq!(next(&pool, other, Numbered::Invoice, october, &yearly).await, "INV-2026-0001", "so has another org");
+    assert_eq!(next(&pool, other, Numbered::Invoice, october, &yearly).await, "INV-2026-0001", "so has another tenant");
     assert_eq!(next(&pool, mine, Numbered::Invoice, next_year, &yearly).await, "INV-2027-0001", "a new year starts again");
     assert_eq!(next(&pool, mine, Numbered::Invoice, october, &yearly).await, "INV-2026-0004", "and the old one goes on where it was");
 
@@ -94,7 +94,7 @@ async fn ids_count_up_per_org_kind_and_scope(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn any_function_makes_the_ids(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let ids = Monthly("clinic");
     assert_eq!(next(&pool, mine, Numbered::Invoice, day(2026, 10, 1), &ids).await, "clinic/10-26/1");
     assert_eq!(next(&pool, mine, Numbered::Invoice, day(2026, 10, 30), &ids).await, "clinic/10-26/2");
@@ -104,7 +104,7 @@ async fn any_function_makes_the_ids(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn documents_issued_at_the_same_time_get_different_numbers(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let numbering = Numbering::new("INV", "-", Middle::None, 4).unwrap();
     let tasks: Vec<_> = (0..20)
         .map(|_| {
@@ -129,7 +129,7 @@ async fn documents_issued_at_the_same_time_get_different_numbers(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_document_that_rolls_back_gives_its_number_back(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let numbering = Numbering::new("INV", "-", Middle::None, 4).unwrap();
     let on = day(2026, 10, 22);
     let mut transaction = pool.begin().await.unwrap();
@@ -141,7 +141,7 @@ async fn a_document_that_rolls_back_gives_its_number_back(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn the_counter_table_follows_the_soft_delete_rule_and_migrating_twice_keeps_it(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let mine = org(&pool).await;
+    let mine = tenant(&pool).await;
     let numbering = Numbering::new("INV", "-", Middle::None, 4).unwrap();
     next(&pool, mine, Numbered::Invoice, day(2026, 10, 22), &numbering).await;
     megh::migrate(&pool).await.unwrap();
@@ -151,16 +151,16 @@ async fn the_counter_table_follows_the_soft_delete_rule_and_migrating_twice_keep
         .await
         .unwrap();
     assert_eq!(columns.len(), 3, "the stamps a cascading soft delete needs");
-    assert!(sqlx::query("INSERT INTO billing_counters (org_id, document, scope, next) VALUES ($1, 'quote', '', 2)").bind(mine).execute(&pool).await.is_err(), "only invoices and payments are numbered");
+    assert!(sqlx::query("INSERT INTO billing_counters (tenant_id, document, scope, next) VALUES ($1, 'quote', '', 2)").bind(mine).execute(&pool).await.is_err(), "only invoices and payments are numbered");
 }
 
 #[sqlx::test(migrations = false)]
 async fn an_issued_id_is_a_name_that_an_invoice_can_keep(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
-    let (mine, customer) = (org(&pool).await, org(&pool).await);
+    let (mine, customer) = (tenant(&pool).await, tenant(&pool).await);
     let numbering = Numbering::new("INV", "-", Middle::Year, 4).unwrap();
     let number = next(&pool, mine, Numbered::Invoice, day(2026, 10, 22), &numbering).await;
-    sqlx::query("INSERT INTO billing_invoices (org_id, id, customer_id, number, status, date, due_date, currency) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD')")
+    sqlx::query("INSERT INTO billing_invoices (tenant_id, id, customer_id, number, status, date, due_date, currency) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD')")
         .bind(mine)
         .bind(Uuid::now_v7())
         .bind(customer)
@@ -168,6 +168,6 @@ async fn an_issued_id_is_a_name_that_an_invoice_can_keep(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    let stored: String = sqlx::query_scalar("SELECT number FROM billing_invoices WHERE org_id = $1").bind(mine).fetch_one(&pool).await.unwrap();
+    let stored: String = sqlx::query_scalar("SELECT number FROM billing_invoices WHERE tenant_id = $1").bind(mine).fetch_one(&pool).await.unwrap();
     assert_eq!(stored, "INV-2026-0001");
 }

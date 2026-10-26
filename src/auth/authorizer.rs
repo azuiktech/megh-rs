@@ -103,7 +103,7 @@ mod axum_middleware {
     use axum::response::Response;
 
     use crate::auth::grant::Grant;
-    use crate::org::Member;
+    use crate::tenant::Member;
     use super::request_grants;
 
     /// Zero-declaration Axum middleware that inspects the authenticated Member in request extensions

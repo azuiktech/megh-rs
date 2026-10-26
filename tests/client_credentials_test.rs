@@ -33,9 +33,9 @@ fn app(pool: PgPool) -> Router {
 }
 
 async fn machine(pool: &PgPool, grants: &[&str]) -> (Registered, Uuid) {
-    let org: Uuid = sqlx::query_scalar("INSERT INTO organizations (name) VALUES ('Acme') RETURNING id").fetch_one(pool).await.unwrap();
+    let tenant: Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(pool).await.unwrap();
     let grants = grants.iter().map(|grant| grant.to_string()).collect();
-    (UserRepo::new(pool).register_machine(org, "ci", grants).await.unwrap(), org)
+    (UserRepo::new(pool).register_machine(tenant, "ci", grants).await.unwrap(), tenant)
 }
 
 async fn exchange(app: &Router, credentials: Option<(&str, &str)>, form: &str) -> Response<Body> {
@@ -58,15 +58,15 @@ async fn call(app: &Router, method: &str, token: &str) -> StatusCode {
 
 #[sqlx::test]
 async fn registering_makes_a_machine_user_with_one_membership_and_a_hashed_secret(pool: PgPool) {
-    let (registered, org) = machine(&pool, &["invoices:read"]).await;
+    let (registered, tenant) = machine(&pool, &["invoices:read"]).await;
 
     let (provider, account_id, email, hash): (String, String, String, String) =
         sqlx::query_as("SELECT provider, account_id, email, password_hash FROM users").fetch_one(&pool).await.unwrap();
     assert_eq!((provider.as_str(), account_id.as_str(), email.as_str()), ("megh", registered.client_id.as_str(), registered.client_id.as_str()));
     assert!(hash.starts_with("$2") && !hash.contains(&registered.secret));
-    let (member_org, role, grants): (Uuid, String, String) =
-        sqlx::query_as("SELECT organization_id, role, grants FROM organization_members").fetch_one(&pool).await.unwrap();
-    assert_eq!((member_org, role.as_str(), grants.as_str()), (org, "machine", r#"["invoices:read"]"#));
+    let (member_tenant, role, grants): (Uuid, String, String) =
+        sqlx::query_as("SELECT tenant_id, role, grants FROM tenant_members").fetch_one(&pool).await.unwrap();
+    assert_eq!((member_tenant, role.as_str(), grants.as_str()), (tenant, "machine", r#"["invoices:read"]"#));
 }
 
 #[sqlx::test]
@@ -189,7 +189,7 @@ async fn an_authorization_header_that_is_not_basic_is_invalid_client(pool: PgPoo
 }
 
 #[sqlx::test]
-async fn registering_in_an_organization_that_does_not_exist_leaves_no_user(pool: PgPool) {
+async fn registering_in_a_tenant_that_does_not_exist_leaves_no_user(pool: PgPool) {
     let result = UserRepo::new(&pool).register_machine(Uuid::new_v4(), "ci", vec![]).await;
 
     assert!(result.is_err());

@@ -5,6 +5,10 @@ grouped by topic. No design or implementation from the earlier attempt is carrie
 on 2026-10-20. Where the user answered "looks ok" or "yes" to a proposal, the proposal itself is not repeated
 here, because it was not the user's requirement.
 
+Since #209 the partition is the **tenant**: what is shipped uses `tenant_id` and `/tenants/{tenant_id}/...` where the
+records below say `org_id` and `/orgs/{org_id}/...`. The org of section 4.4 (locations, hierarchy) is the physical org,
+which owns tenants and is designed later.
+
 ---
 
 ## 1. Purpose and scope

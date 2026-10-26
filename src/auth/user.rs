@@ -157,22 +157,22 @@ impl<'a> UserRepo<'a> {
         }
     }
 
-    /// A machine in `org_id` holding `grants`: a user (the client id as account id and email, the bcrypt of the secret
+    /// A machine in `tenant_id` holding `grants`: a user (the client id as account id and email, the bcrypt of the secret
     /// as password) and its membership (role `machine`), in one statement. As for any member, the grants must include
-    /// `orgs:read:{org_id}` for the `authorizer` to let its token into the org's routes.
-    pub async fn register_machine(&self, org_id: Uuid, name: &str, grants: Vec<String>) -> Result<Registered, PasswordError> {
+    /// `tenants:read:{tenant_id}` for the `authorizer` to let its token into the tenant's routes.
+    pub async fn register_machine(&self, tenant_id: Uuid, name: &str, grants: Vec<String>) -> Result<Registered, PasswordError> {
         let client_id = Uuid::new_v4().to_string();
         let secret = oauth2::CsrfToken::new_random_len(32).secret().clone();
         sqlx::query(
             "WITH machine AS (INSERT INTO users (provider, account_id, email, display_name, password_hash, updated_at)
                               VALUES ($1, $2, $2, $3, $4, NOW()) RETURNING id)
-             INSERT INTO organization_members (organization_id, user_id, role, grants) SELECT $5::uuid, id, 'machine', $6 FROM machine",
+             INSERT INTO tenant_members (tenant_id, user_id, role, grants) SELECT $5::uuid, id, 'machine', $6 FROM machine",
         )
         .bind(MACHINE)
         .bind(&client_id)
         .bind(name)
         .bind(bcrypt::hash(&secret, bcrypt::DEFAULT_COST)?)
-        .bind(org_id)
+        .bind(tenant_id)
         .bind(serde_json::json!(grants).to_string())
         .execute(self.pool)
         .await?;

@@ -1,4 +1,4 @@
-//! Organization tenant entity.
+//! Tenant entity.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -6,10 +6,10 @@ use uuid::Uuid;
 
 use crate::booking::value::{Address, Contact};
 
-/// Organization tenant stored in table `organizations` (megh-go's columns, plus a contact and an address).
+/// Tenant stored in table `tenants`: the partition every other row belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-pub struct Org {
+pub struct Tenant {
     pub id: Uuid,
     pub name: Option<String>,
     pub description: Option<String>,

@@ -66,10 +66,10 @@ impl<T: DeserializeOwned + Validate, S: Send + Sync> FromRequest<S> for Input<T>
     }
 }
 
-/// A list request: the org from the path, an AIP-160 filter, and the page.
+/// A list request: the tenant from the path, an AIP-160 filter, and the page.
 #[derive(Debug, Deserialize, Validate)]
 pub struct ListRequest {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     #[serde(default, deserialize_with = "parse_filter")]
     pub filter: Option<aip_160::Filter>,
     #[serde(flatten)]
@@ -106,10 +106,10 @@ fn parse_filter<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Opt
     aip_160::parse_filter(&text).map(Some).map_err(serde::de::Error::custom)
 }
 
-/// One row of an org by its key: `/orgs/{org_id}/<collection>/{id}`.
+/// One row of a tenant by its key: `/tenants/{tenant_id}/<collection>/{id}`.
 #[derive(Debug, Deserialize, Validate)]
 pub struct Key {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     pub id: Uuid,
 }
 

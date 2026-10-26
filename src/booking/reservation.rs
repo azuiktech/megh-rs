@@ -23,7 +23,7 @@ const HOLD_FOR: TimeDelta = TimeDelta::minutes(10);
 /// A slot to hold, as the search returned it.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct Reserve {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     #[validate(length(min = 1))]
     pub parties: Vec<Placed>,
 }
@@ -44,7 +44,7 @@ pub struct Released {
 /// Deletes the places of holds that expired and of times that ended before `before`.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct Purge {
-    pub org_id: Uuid,
+    pub tenant_id: Uuid,
     pub before: DateTime<Utc>,
 }
 
@@ -67,18 +67,18 @@ pub fn routes() -> OpenApiRouter<AppContext> {
 /// Hold a slot: checked like a booking, its places are kept from everyone else for 10 minutes.
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/reservations",
+    path = "/tenants/{tenant_id}/reservations",
     tag = "reservations",
-    params(("org_id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path)),
     request_body = Reserve,
     responses((status = 200, body = Hold), (status = 400), (status = 409)),
 )]
 async fn hold(State(ctx): State<AppContext>, Input(request): Input<Reserve>) -> ApiResult<Hold> {
     let mut transaction = ctx.pool.begin().await?;
-    lock(&mut transaction, request.org_id).await?;
-    let places = fit_slot(&mut transaction, request.org_id, &request.parties, None).await?;
+    lock(&mut transaction, request.tenant_id).await?;
+    let places = fit_slot(&mut transaction, request.tenant_id, &request.parties, None).await?;
     let hold = Hold { id: Uuid::now_v7(), expires_at: Utc::now() + HOLD_FOR };
-    take(&mut transaction, request.org_id, hold.id, &places, Some(hold.expires_at)).await?;
+    take(&mut transaction, request.tenant_id, hold.id, &places, Some(hold.expires_at)).await?;
     transaction.commit().await?;
     Ok(hold)
 }
@@ -86,13 +86,13 @@ async fn hold(State(ctx): State<AppContext>, Input(request): Input<Reserve>) -> 
 /// Release a hold before it expires.
 #[utoipa::path(
     delete,
-    path = "/orgs/{org_id}/reservations/{id}",
+    path = "/tenants/{tenant_id}/reservations/{id}",
     tag = "reservations",
-    params(("org_id" = Uuid, Path), ("id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     responses((status = 200, body = Released), (status = 404)),
 )]
 async fn release(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Released> {
-    match give_back(&mut *ctx.pool.acquire().await?, key.org_id, key.id).await? {
+    match give_back(&mut *ctx.pool.acquire().await?, key.tenant_id, key.id).await? {
         0 => Err(ApiError::NotFound),
         places => Ok(Released { places }),
     }
@@ -101,25 +101,25 @@ async fn release(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiRe
 /// Delete the places of expired holds and of times that ended before `before`; run it now and then.
 #[utoipa::path(
     post,
-    path = "/orgs/{org_id}/reservations:purge",
+    path = "/tenants/{tenant_id}/reservations:purge",
     tag = "reservations",
-    params(("org_id" = Uuid, Path)),
+    params(("tenant_id" = Uuid, Path)),
     request_body = Purge,
     responses((status = 200, body = Released)),
 )]
 async fn purge(State(ctx): State<AppContext>, Input(request): Input<Purge>) -> ApiResult<Released> {
-    let deleted = sqlx::query("DELETE FROM reservations WHERE org_id = $1 AND (upper(during) <= $2 OR expires_at <= now())")
-        .bind(request.org_id)
+    let deleted = sqlx::query("DELETE FROM reservations WHERE tenant_id = $1 AND (upper(during) <= $2 OR expires_at <= now())")
+        .bind(request.tenant_id)
         .bind(request.before)
         .execute(&ctx.pool)
         .await?;
     Ok(Released { places: deleted.rows_affected() })
 }
 
-/// Bookings and holds of one org wait for each other until their transaction ends, so two cannot take one place.
-pub(super) async fn lock(conn: &mut PgConnection, org_id: Uuid) -> ApiResult<()> {
+/// Bookings and holds of one tenant wait for each other until their transaction ends, so two cannot take one place.
+pub(super) async fn lock(conn: &mut PgConnection, tenant_id: Uuid) -> ApiResult<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
-        .bind(org_id)
+        .bind(tenant_id)
         .execute(conn)
         .await?;
     Ok(())
@@ -128,7 +128,7 @@ pub(super) async fn lock(conn: &mut PgConnection, org_id: Uuid) -> ApiResult<()>
 /// One row per place `owner` takes; a hold's rows expire at `expires_at`.
 pub(super) async fn take(
     conn: &mut PgConnection,
-    org_id: Uuid,
+    tenant_id: Uuid,
     owner: Uuid,
     places: &[Place],
     expires_at: Option<DateTime<Utc>>,
@@ -136,11 +136,11 @@ pub(super) async fn take(
     let (participants, starts, ends, waitlist): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
         places.iter().map(|(id, (start, end), waitlist)| (*id, *start, *end, *waitlist)).multiunzip();
     sqlx::query(
-        "INSERT INTO reservations (org_id, id, owner_id, participant_id, during, waitlist, expires_at) \
+        "INSERT INTO reservations (tenant_id, id, owner_id, participant_id, during, waitlist, expires_at) \
          SELECT $1, gen_random_uuid(), $2, participant, tstzrange(starts, ends), waitlist, $7 \
          FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[], $6::bool[]) AS t(participant, starts, ends, waitlist)",
     )
-    .bind(org_id)
+    .bind(tenant_id)
     .bind(owner)
     .bind(participants)
     .bind(starts)
@@ -153,9 +153,9 @@ pub(super) async fn take(
 }
 
 /// Gives back every place `owner` takes; how many.
-pub(super) async fn give_back(conn: &mut PgConnection, org_id: Uuid, owner: Uuid) -> ApiResult<u64> {
-    let deleted = sqlx::query("DELETE FROM reservations WHERE org_id = $1 AND owner_id = $2")
-        .bind(org_id)
+pub(super) async fn give_back(conn: &mut PgConnection, tenant_id: Uuid, owner: Uuid) -> ApiResult<u64> {
+    let deleted = sqlx::query("DELETE FROM reservations WHERE tenant_id = $1 AND owner_id = $2")
+        .bind(tenant_id)
         .bind(owner)
         .execute(conn)
         .await?;
@@ -163,16 +163,16 @@ pub(super) async fn give_back(conn: &mut PgConnection, org_id: Uuid, owner: Uuid
 }
 
 /// Takes `places` out of the unexpired hold `hold`, one held row each; a conflict unless it holds them all.
-pub(super) async fn claim(conn: &mut PgConnection, org_id: Uuid, hold: Uuid, places: &[Place]) -> ApiResult<()> {
+pub(super) async fn claim(conn: &mut PgConnection, tenant_id: Uuid, hold: Uuid, places: &[Place]) -> ApiResult<()> {
     let (participants, starts, ends): (Vec<_>, Vec<_>, Vec<_>) = places.iter().map(|(id, (start, end), _)| (*id, *start, *end)).multiunzip();
     let claimed = sqlx::query(
         "WITH wanted AS (SELECT * FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[]) WITH ORDINALITY AS t(participant, starts, ends, n)), \
-         held AS (SELECT DISTINCT ON (w.n) r.id FROM wanted w JOIN reservations r ON r.org_id = $1 AND r.owner_id = $2 \
+         held AS (SELECT DISTINCT ON (w.n) r.id FROM wanted w JOIN reservations r ON r.tenant_id = $1 AND r.owner_id = $2 \
                   AND r.participant_id = w.participant AND r.during = tstzrange(w.starts, w.ends) AND r.expires_at > now() \
                   ORDER BY w.n, r.id) \
-         DELETE FROM reservations WHERE org_id = $1 AND id IN (SELECT id FROM held)",
+         DELETE FROM reservations WHERE tenant_id = $1 AND id IN (SELECT id FROM held)",
     )
-    .bind(org_id)
+    .bind(tenant_id)
     .bind(hold)
     .bind(participants)
     .bind(starts)

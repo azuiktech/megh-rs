@@ -78,12 +78,19 @@ pub struct ListRequest {
 
 /// Cursor paging (AIP-158); `page_token` is a cursor from `paginator-utils`.
 #[serde_with::serde_as]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PageRequest {
     #[serde_as(as = "Option<serde_with::PickFirst<(_, serde_with::DisplayFromStr)>>")]
     #[serde(default)]
     pub page_size: Option<u16>,
     pub page_token: Option<String>,
+}
+
+impl PageRequest {
+    /// The page size asked for, 50 when none is, at most 1000.
+    pub fn size(&self) -> u16 {
+        self.page_size.unwrap_or(PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -139,7 +146,7 @@ pub async fn fetch_page<T>(pool: &PgPool, mut query: QueryBuilder<'_, Postgres>,
 where
     T: for<'r> FromRow<'r, PgRow> + Serialize + Send + Unpin,
 {
-    let size = page.page_size.unwrap_or(PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+    let size = page.size();
     if let Some(token) = &page.page_token {
         let bad_token = || ApiError::BadRequest("invalid page_token".into());
         let cursor = Cursor::decode(token).map_err(|_| bad_token())?;

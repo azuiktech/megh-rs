@@ -84,7 +84,7 @@ impl<'a> UserRepo<'a> {
 
     /// Finds a user by email.
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL")
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1::citext AND deleted_at IS NULL")
             .bind(email)
             .fetch_optional(self.pool)
             .await
@@ -132,7 +132,7 @@ impl<'a> UserRepo<'a> {
     /// Stores a bcrypt hash of the password (portable with megh-go).
     pub async fn set_password(&self, user_id: Uuid, password: &str) -> Result<(), PasswordError> {
         let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)?;
-        let updated = sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1")
+        let updated = sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL")
             .bind(user_id)
             .bind(hash)
             .execute(self.pool)
@@ -143,7 +143,7 @@ impl<'a> UserRepo<'a> {
     /// The user with that email if the password matches, otherwise the reason it does not. megh-go stores an
     /// unset password as an empty string, which counts as no password.
     pub async fn verify_password(&self, email: &str, password: &str) -> Result<User, PasswordError> {
-        let stored: Option<Option<String>> = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1 AND deleted_at IS NULL")
+        let stored: Option<Option<String>> = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1::citext AND deleted_at IS NULL")
             .bind(email)
             .fetch_optional(self.pool)
             .await?;
@@ -190,7 +190,7 @@ impl<'a> UserRepo<'a> {
             r#"
             UPDATE users
             SET display_name = $2, photo_url = $3, updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND deleted_at IS NULL
             RETURNING *
             "#,
         )

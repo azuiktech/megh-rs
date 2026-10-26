@@ -43,7 +43,7 @@ impl<'a> ConnectedAccountRepo<'a> {
         provider: &str,
     ) -> Result<Option<ConnectedAccount>, sqlx::Error> {
         let account = sqlx::query_as::<_, ConnectedAccount>(
-            "SELECT * FROM connected_accounts WHERE (account_id = $1 OR email = $1) AND provider = $2 AND disconnected_at IS NULL LIMIT 1"
+            "SELECT * FROM connected_accounts WHERE (account_id = $1 OR email = $1::citext) AND provider = $2 AND disconnected_at IS NULL LIMIT 1"
         )
         .bind(identifier)
         .bind(provider)
@@ -97,7 +97,7 @@ impl<'a> ConnectedAccountRepo<'a> {
     /// Lists all active (non-disconnected) accounts associated with an email.
     pub async fn list_by_email(&self, email: &str) -> Result<Vec<ConnectedAccount>, sqlx::Error> {
         let accounts = sqlx::query_as::<_, ConnectedAccount>(
-            "SELECT * FROM connected_accounts WHERE email = $1 AND disconnected_at IS NULL ORDER BY created_at DESC"
+            "SELECT * FROM connected_accounts WHERE email = $1::citext AND disconnected_at IS NULL ORDER BY created_at DESC"
         )
         .bind(email)
         .fetch_all(self.pool)

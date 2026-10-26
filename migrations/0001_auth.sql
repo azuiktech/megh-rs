@@ -1,9 +1,11 @@
 -- Users, the provider accounts they connect, and their sessions.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- Emails compare without case (`citext`); a text parameter is cast to citext where an email is looked up.
+CREATE EXTENSION IF NOT EXISTS citext;
 
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT uuidv7(),
-    email TEXT NOT NULL,
+    email CITEXT NOT NULL,
     display_name VARCHAR(255) NOT NULL DEFAULT '',
     photo_url VARCHAR(1024) NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -20,7 +22,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account ON users (account_id, provid
 CREATE TABLE IF NOT EXISTS connected_accounts (
     account_id TEXT NOT NULL,
     provider TEXT NOT NULL,
-    email TEXT,
+    email CITEXT,
     access_token TEXT NOT NULL,
     refresh_token TEXT,
     token_type TEXT DEFAULT 'Bearer',
@@ -52,3 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
 -- Tables made before ids were v7 take the v7 default too.
 ALTER TABLE users ALTER COLUMN id SET DEFAULT uuidv7();
 ALTER TABLE sessions ALTER COLUMN id SET DEFAULT uuidv7();
+
+-- Tables made before emails were citext take it too.
+ALTER TABLE users ALTER COLUMN email TYPE citext;
+ALTER TABLE connected_accounts ALTER COLUMN email TYPE citext;

@@ -21,7 +21,12 @@ async fn users_columns_match_megh_go(pool: PgPool) {
     .await
     .unwrap();
 
-    assert_eq!(text_columns, ["account_id", "email", "password_hash", "provider"]);
+    assert_eq!(text_columns, ["account_id", "password_hash", "provider"]);
+    let email: String = sqlx::query_scalar("SELECT udt_name::text FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(email, "citext", "emails compare without case");
 }
 
 #[sqlx::test]

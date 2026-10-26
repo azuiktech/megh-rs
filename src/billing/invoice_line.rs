@@ -123,7 +123,10 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceLineDat
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceLineData>>) -> ApiResult<InvoiceLine> {
     let mut transaction = ctx.pool.begin().await?;
     ensure_line_draft::<InvoiceLineData>(&mut transaction, body.data.tenant_id, body.id).await?;
-    in_draft_invoice(&mut transaction, &body.data).await?;
+    let current = crud::get::<InvoiceLineData>(&mut *transaction, &Key { tenant_id: body.data.tenant_id, id: body.id }).await?;
+    (current.data.invoice_id == body.data.invoice_id)
+        .then_some(())
+        .ok_or_else(|| ApiError::BadRequest("invoice_id cannot be changed".into()))?;
     let replaced = crud::replace(&mut *transaction, body).await?;
     transaction.commit().await?;
     Ok(replaced)

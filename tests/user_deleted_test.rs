@@ -53,3 +53,15 @@ async fn signing_in_again_does_not_bring_a_deleted_user_back(pool: PgPool) {
     let still_deleted: bool = sqlx::query_scalar("SELECT deleted_at IS NOT NULL FROM users WHERE id = $1").bind(ann.id).fetch_one(&pool).await.unwrap();
     assert!(still_deleted);
 }
+
+#[sqlx::test]
+async fn a_deleted_user_gets_no_new_password_or_profile(pool: PgPool) {
+    let ann = deleted_ann(&pool).await;
+    let repo = UserRepo::new(&pool);
+
+    assert!(matches!(repo.set_password(ann.id, "new-pass").await, Err(PasswordError::UserNotFound)));
+    assert!(matches!(repo.update_profile(ann.id, "Mallory", "x").await, Err(sqlx::Error::RowNotFound)));
+
+    let (hash, name): (String, String) = sqlx::query_as("SELECT password_hash, display_name FROM users WHERE id = $1").bind(ann.id).fetch_one(&pool).await.unwrap();
+    assert!(bcrypt::verify("s3cret-pass", &hash).unwrap() && name.is_empty(), "the stored row is unchanged");
+}

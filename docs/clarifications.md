@@ -36,6 +36,11 @@ Read before proposing or changing anything.
   - #11: history backfill fetches every allowed topic, drops duplicates by event id and orders by time.
   - #13: the bare pattern `*` matches exactly one segment (as RabbitMQ's `*`); only `**` matches everything.
 - #10 (availability): "can be just a pagination, always return a max page based on cursor as a separate pr." Issue #219.
+- "fix for 8,15, 19,20. also add change log for all in the same pr": one PR for findings 8, 15, 19 and 20, with the CHANGELOG entries for every PR merged without one (#212, #215, #216, #218, #220) and for this one.
+  - "#8 is ok. sqlite needs COLLATE NOCASE. we need to support both postgress and sqlite". "#15 looks ok." "#20. how this works on sqlite likely json array? this is essentially is_array vs is_object kind of thing."
+  - "make 20 separate pr for both sqlite and postgres. and rest separate": #20 is issue #222, its own PR working on both databases; #221 keeps 8, 15, 19 and the changelog.
+  - Frozen tests changed for #19 and #8, approved: `a_line_belongs_to_a_draft_invoice_of_the_tenant` (a `PUT` to another invoice is a 400, the line stays on `first`, which is the one opened) and `users_columns_match_megh_go` ("expect email as citext and the other three as text").
+  - "19 is ok. that is bug. report correctly": a `PUT` that changes a line's `invoice_id` is a bug (a line never changes invoice) and is refused with 400, as `PATCH` refuses it.
 - "It was explicitly asked to have all list apis with pagination." Every list API pages (AIP-158 `page_size`/`page_token`); `appointments:available` is the one that does not yet (#219).
 - "it should be made a list api and not an action. check possibility to move it as a list api (but can not be made GET easily using the request shape). such as POST /tenants/{tenant_id}/available_slots"
   - A standard List must be GET with no body (AIP-132), and POST on a collection is create (AIP-133). Approved: "POST /tenants/{tenant_id}/slots:search returning Page {items, next_page_token}, with the design and the frozen-test changes as proposed." The body takes `page_size` (default 50, max 1000) and `page_token`; a page searches at most 7 days and never past `to`; the cursor is a `paginator-utils` cursor on `starts_at`; `next_available_day` and its 180-day look-ahead go; the grant is `slots:search`.

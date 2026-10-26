@@ -173,17 +173,18 @@ async fn a_line_belongs_to_a_draft_invoice_of_the_tenant(pool: PgPool) {
     }
 
     let item = format!("{lines}/{}", created["id"].as_str().unwrap());
-    let (status, put) = call(&app, "PUT", &item, with(line(second), json!({"description": "Whitening"}))).await;
-    assert_eq!((status, put["invoice_id"].clone(), put["description"].clone()), (StatusCode::OK, json!(second), json!("Whitening")), "{put}");
+    assert_eq!(call(&app, "PUT", &item, line(second)).await.0, StatusCode::BAD_REQUEST, "a put does not move a line");
+    let (status, put) = call(&app, "PUT", &item, with(line(first), json!({"description": "Whitening"}))).await;
+    assert_eq!((status, put["invoice_id"].clone(), put["description"].clone()), (StatusCode::OK, json!(first), json!("Whitening")), "{put}");
     let (status, patched) = call(&app, "PATCH", &item, json!({"quantity": "3"})).await;
     assert_eq!((status, patched["quantity"].clone(), patched["description"].clone()), (StatusCode::OK, json!("3"), json!("Whitening")), "{patched}");
     assert_eq!(call(&app, "PATCH", &item, json!({"invoice_id": first})).await.0, StatusCode::BAD_REQUEST, "a patch does not move a line");
     assert_eq!(call(&app, "PUT", &item, line(theirs)).await.0, StatusCode::BAD_REQUEST, "nor into another tenant's invoice");
     let on_first = call(&app, "GET", &format!("{lines}?filter=invoice_id%20%3D%20%22{first}%22"), Value::Null).await.1;
-    assert_eq!(on_first["items"].as_array().unwrap().len(), 1);
+    assert_eq!(on_first["items"].as_array().unwrap().len(), 2);
 
-    open(&pool, second).await;
-    assert_eq!(call(&app, "POST", &lines, line(second)).await.0, StatusCode::CONFLICT, "a new line on an invoice that is not a draft");
+    open(&pool, first).await;
+    assert_eq!(call(&app, "POST", &lines, line(first)).await.0, StatusCode::CONFLICT, "a new line on an invoice that is not a draft");
     assert_eq!(call(&app, "PUT", &item, line(second)).await.0, StatusCode::CONFLICT);
     assert_eq!(call(&app, "PATCH", &item, json!({"quantity": "4"})).await.0, StatusCode::CONFLICT);
     assert_eq!(call(&app, "DELETE", &item, Value::Null).await.0, StatusCode::CONFLICT);
@@ -215,4 +216,22 @@ fn invoices_and_lines_are_documented_with_their_grants() {
     }
     let tags: Vec<_> = api.tags.unwrap_or_default().into_iter().map(|tag| tag.name).collect();
     assert!(tags.contains(&"invoices".to_string()) && tags.contains(&"invoiceLines".to_string()));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_line_never_moves_to_another_invoice(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    let (mine, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
+    let app = app(pool.clone(), &grants(mine));
+    let invoices = format!("/api/v1/tenants/{mine}/invoices");
+    let (_, first) = call(&app, "POST", &invoices, invoice(ada)).await;
+    let (_, second) = call(&app, "POST", &invoices, invoice(ada)).await;
+    let first: Uuid = first["id"].as_str().unwrap().parse().unwrap();
+    let second: Uuid = second["id"].as_str().unwrap().parse().unwrap();
+    let (_, added) = call(&app, "POST", &format!("/api/v1/tenants/{mine}/invoiceLines"), line(first)).await;
+    let item = format!("/api/v1/tenants/{mine}/invoiceLines/{}", added["id"].as_str().unwrap());
+
+    assert_eq!(call(&app, "PUT", &item, line(second)).await.0, StatusCode::BAD_REQUEST, "PUT to another draft invoice");
+    assert_eq!(call(&app, "GET", &item, Value::Null).await.1["invoice_id"], json!(first), "the line is still on its own invoice");
+    assert_eq!(call(&app, "PUT", &item, line(first)).await.0, StatusCode::OK, "replacing on its own invoice still works");
 }

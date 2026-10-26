@@ -5,7 +5,7 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::postgres::PgRow;
-use sqlx::{FromRow, PgPool, QueryBuilder};
+use sqlx::{Acquire, FromRow, PgExecutor, PgPool, Postgres, QueryBuilder};
 use uuid::Uuid;
 use validator::Validate;
 
@@ -47,26 +47,26 @@ pub async fn list<T: Row>(
     fetch_page(pool, query, &request.page).await
 }
 
-pub async fn get<T: Row>(pool: &PgPool, key: &Key) -> ApiResult<Entity<Uuid, T>> {
+pub async fn get<'e, T: Row>(db: impl PgExecutor<'e>, key: &Key) -> ApiResult<Entity<Uuid, T>> {
     sqlx::query_as(&by_key::<T>(""))
         .bind(key.tenant_id)
         .bind(key.id)
-        .fetch_optional(pool)
+        .fetch_optional(db)
         .await?
         .ok_or(ApiError::NotFound)
 }
 
-pub async fn create<T: Row>(pool: &PgPool, data: T) -> ApiResult<Entity<Uuid, T>> {
-    Ok(TableEntity::insert(&Entity::new(Uuid::now_v7(), data), pool).await?)
+pub async fn create<'e, T: Row>(db: impl PgExecutor<'e>, data: T) -> ApiResult<Entity<Uuid, T>> {
+    Ok(TableEntity::insert(&Entity::new(Uuid::now_v7(), data), db).await?)
 }
 
-pub async fn replace<T: Row>(pool: &PgPool, body: Keyed<T>) -> ApiResult<Entity<Uuid, T>> {
-    Ok(TableEntity::update(&Entity::new(body.id, body.data), pool).await?)
+pub async fn replace<'e, T: Row>(db: impl PgExecutor<'e>, body: Keyed<T>) -> ApiResult<Entity<Uuid, T>> {
+    Ok(TableEntity::update(&Entity::new(body.id, body.data), db).await?)
 }
 
 /// JSON merge patch (RFC 7396) on the stored row, read and written in one transaction.
-pub async fn patch<T: Row>(pool: &PgPool, body: Changes) -> ApiResult<Entity<Uuid, T>> {
-    let mut transaction = pool.begin().await?;
+pub async fn patch<'c, T: Row>(db: impl Acquire<'c, Database = Postgres>, body: Changes) -> ApiResult<Entity<Uuid, T>> {
+    let mut transaction = db.begin().await?;
     let current: Entity<Uuid, T> = sqlx::query_as(&by_key::<T>(" FOR UPDATE"))
         .bind(body.key.tenant_id)
         .bind(body.key.id)
@@ -83,12 +83,11 @@ pub async fn patch<T: Row>(pool: &PgPool, body: Changes) -> ApiResult<Entity<Uui
 }
 
 /// Soft delete; answers with the deleted row.
-pub async fn delete<T: Row>(pool: &PgPool, key: &Key) -> ApiResult<Entity<Uuid, T>> {
-    get::<T>(pool, key)
-        .await?
-        .soft_delete(pool)
-        .await?
-        .ok_or(ApiError::NotFound)
+pub async fn delete<'c, T: Row>(db: impl Acquire<'c, Database = Postgres>, key: &Key) -> ApiResult<Entity<Uuid, T>> {
+    let mut transaction = db.begin().await?;
+    let deleted = get::<T>(&mut *transaction, key).await?.soft_delete(&mut *transaction).await?.ok_or(ApiError::NotFound)?;
+    transaction.commit().await?;
+    Ok(deleted)
 }
 
 fn by_key<T: Table>(suffix: &str) -> String {

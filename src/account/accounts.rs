@@ -88,49 +88,48 @@ impl Accounts {
         Ok(self.auth(provider, &account.account_id))
     }
 
-    /// The account's access token, refreshed first when expired. The row lock makes concurrent callers refresh once.
+    /// The account's access token, refreshed first when expired. No row is locked and no connection is held while the
+    /// provider answers; when two callers refresh at once, the last update is the one stored.
     async fn access_token(&self, provider: &str, account_id: &str) -> Result<String, AccountError> {
-        let mut tx = self.pool.begin().await?;
-        let account = sqlx::query_as::<_, ConnectedAccount>("SELECT * FROM connected_accounts WHERE account_id = $1 AND provider = $2 FOR UPDATE")
+        let account = sqlx::query_as::<_, ConnectedAccount>("SELECT * FROM connected_accounts WHERE account_id = $1 AND provider = $2")
             .bind(account_id)
             .bind(provider)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&self.pool)
             .await?
             .ok_or(AccountError::NotFound)?;
         if !account.is_connected() {
             return Err(AccountError::Disconnected);
         }
-        let access_token = self.decrypt(&account.access_token)?;
         if !account.is_expired(self.expiry_margin.as_secs() as i64) {
-            return Ok(access_token);
+            return self.decrypt(&account.access_token);
         }
         let refresh_token = account.refresh_token.map(|t| self.decrypt(&t)).transpose()?.ok_or(AccountError::NoRefreshToken)?;
         match self.request_refresh(provider, refresh_token).await {
-            Ok(tokens) => {
-                let stored_access = self.encrypt(&tokens.access_token)?;
-                let stored_refresh = tokens.refresh_token.as_deref().map(|t| self.encrypt(t)).transpose()?;
-                sqlx::query("UPDATE connected_accounts SET access_token = $3, refresh_token = COALESCE($4, refresh_token), expiry = $5, updated_at = NOW() WHERE account_id = $1 AND provider = $2")
-                    .bind(account_id)
-                    .bind(provider)
-                    .bind(stored_access)
-                    .bind(stored_refresh)
-                    .bind(tokens.token_expires_at)
-                    .execute(&mut *tx)
-                    .await?;
-                tx.commit().await?;
-                Ok(tokens.access_token)
-            }
+            Ok(tokens) => self.store_refreshed(provider, account_id, tokens).await,
             Err(error @ AccountError::InvalidGrant(_)) => {
                 sqlx::query("UPDATE connected_accounts SET disconnected_at = NOW(), updated_at = NOW() WHERE account_id = $1 AND provider = $2")
                     .bind(account_id)
                     .bind(provider)
-                    .execute(&mut *tx)
+                    .execute(&self.pool)
                     .await?;
-                tx.commit().await?;
                 Err(error)
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn store_refreshed(&self, provider: &str, account_id: &str, tokens: OAuth2Tokens) -> Result<String, AccountError> {
+        let stored_access = self.encrypt(&tokens.access_token)?;
+        let stored_refresh = tokens.refresh_token.as_deref().map(|t| self.encrypt(t)).transpose()?;
+        sqlx::query("UPDATE connected_accounts SET access_token = $3, refresh_token = COALESCE($4, refresh_token), expiry = $5, updated_at = NOW() WHERE account_id = $1 AND provider = $2")
+            .bind(account_id)
+            .bind(provider)
+            .bind(stored_access)
+            .bind(stored_refresh)
+            .bind(tokens.token_expires_at)
+            .execute(&self.pool)
+            .await?;
+        Ok(tokens.access_token)
     }
 
     fn encrypt(&self, plaintext: &str) -> Result<String, AccountError> {

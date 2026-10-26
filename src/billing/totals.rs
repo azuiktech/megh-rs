@@ -51,8 +51,10 @@ fn round(amount: Decimal, currency: &iso::Currency) -> Result<Micros, TotalsErro
     }
 }
 
-/// An invoice: the sums of its lines.
-pub fn invoice(lines: &[Amounts]) -> Amounts {
-    let sum = |amount: fn(&Amounts) -> Micros| Micros::new(lines.iter().map(|line| i64::from(amount(line))).fold(0, i64::saturating_add));
-    Amounts { sub_total: sum(|line| line.sub_total), tax_total: sum(|line| line.tax_total), total: sum(|line| line.total) }
+/// An invoice: the sums of its lines; `TooLarge` when a sum does not fit.
+pub fn invoice(lines: &[Amounts]) -> Result<Amounts, TotalsError> {
+    let sum = |amount: fn(&Amounts) -> Micros| {
+        lines.iter().try_fold(0, |sum: i64, line| sum.checked_add(i64::from(amount(line)))).map(Micros::new).ok_or(TotalsError::TooLarge)
+    };
+    Ok(Amounts { sub_total: sum(|line| line.sub_total)?, tax_total: sum(|line| line.tax_total)?, total: sum(|line| line.total)? })
 }

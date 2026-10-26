@@ -25,7 +25,7 @@ pub async fn open(pool: &PgPool, formats: &Formats, key: &Key) -> ApiResult<Invo
     let amounts = line_amounts(&mut transaction, &invoice, &lines).await?;
     store_lines(&mut transaction, key.tenant_id, &lines, &amounts).await?;
     let number = issue(&mut transaction, key.tenant_id, Numbered::Invoice, invoice.date, formats.invoice.as_ref()).await?;
-    let opened = store_invoice(&mut transaction, key, &number.to_string(), totals::invoice(&amounts)).await?;
+    let opened = store_invoice(&mut transaction, key, &number.to_string(), totals::invoice(&amounts).map_err(bad_total)?).await?;
     transaction.commit().await?;
     Ok(opened)
 }

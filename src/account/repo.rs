@@ -1,5 +1,6 @@
 //! PostgreSQL repository for ConnectedAccount persistence.
 
+use itertools::multiunzip;
 use sqlx::PgPool;
 use super::encryption::Encryptor;
 use super::model::ConnectedAccount;
@@ -102,6 +103,28 @@ impl<'a> ConnectedAccountRepo<'a> {
         .fetch_all(self.pool)
         .await?;
         accounts.into_iter().map(|a| self.decrypted(a)).collect()
+    }
+
+    /// Encrypts the tokens that were stored before the encryptor was set: every token that does not decrypt is
+    /// encrypted and saved. Run it once after turning encryption on; answers how many accounts changed.
+    pub async fn encrypt_stored(&self) -> Result<u64, sqlx::Error> {
+        let stored = sqlx::query_as::<_, ConnectedAccount>("SELECT * FROM connected_accounts").fetch_all(self.pool).await?;
+        let plaintext = stored.into_iter().filter(|account| self.decrypted(account.clone()).is_err());
+        let encrypted = plaintext.map(|account| self.encrypted(account)).collect::<Result<Vec<_>, _>>()?;
+        let (ids, providers, access, refresh): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
+            multiunzip(encrypted.into_iter().map(|account| (account.account_id, account.provider, account.access_token, account.refresh_token)));
+        let updated = sqlx::query(
+            "UPDATE connected_accounts c SET access_token = u.access_token, refresh_token = u.refresh_token, updated_at = NOW() \
+             FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[]) AS u(account_id, provider, access_token, refresh_token) \
+             WHERE c.account_id = u.account_id AND c.provider = u.provider",
+        )
+        .bind(ids)
+        .bind(providers)
+        .bind(access)
+        .bind(refresh)
+        .execute(self.pool)
+        .await?;
+        Ok(updated.rows_affected())
     }
 
     fn encrypted(&self, mut account: ConnectedAccount) -> Result<ConnectedAccount, sqlx::Error> {

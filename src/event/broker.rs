@@ -46,7 +46,7 @@ impl Broker {
             history_provider: Arc::new(NoopHistoryProvider),
             authorizer: Arc::new(|_, _| true),
             buffer_size: DEFAULT_BUFFER_SIZE,
-            seq: Arc::new(AtomicU64::new(0)),
+            seq: Arc::new(AtomicU64::new(restart_point())),
         }
     }
 
@@ -136,6 +136,11 @@ impl Broker {
     pub fn history_provider(&self) -> &Arc<dyn HistoryProvider> {
         &self.history_provider
     }
+}
+
+/// Where a new broker's ids start: the current time in microseconds, above every id an earlier process gave.
+fn restart_point() -> u64 {
+    chrono::Utc::now().timestamp_micros().unsigned_abs()
 }
 
 impl Default for Broker {

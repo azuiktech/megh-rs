@@ -12,7 +12,7 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use uuid::Uuid;
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
 use super::availability::{Place, Placed, fit_slot};
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Input, Key};
@@ -41,11 +41,18 @@ pub struct Released {
     pub places: u64,
 }
 
-/// Deletes the places of holds that expired and of times that ended before `before`.
+/// Deletes the places of holds that expired and of times that ended before `before`, which is not in the future.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
+#[validate(schema(function = "not_in_the_future"))]
 pub struct Purge {
     pub tenant_id: Uuid,
     pub before: DateTime<Utc>,
+}
+
+fn not_in_the_future(purge: &Purge) -> Result<(), ValidationError> {
+    (purge.before <= Utc::now())
+        .then_some(())
+        .ok_or_else(|| ValidationError::new("before cannot be in the future"))
 }
 
 impl IntoResponse for Hold {

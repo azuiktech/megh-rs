@@ -75,8 +75,10 @@ impl Subscriptions {
         found(self.find_subscription(tenant_id).await?)
     }
 
-    /// Replaces the tenant's subscription, keeping its id. Seats are at least the price's included seats.
+    /// Replaces the tenant's subscription, keeping its id. Fewer than one seat is `InvalidSeats`; seats are at least the
+    /// price's included seats.
     pub async fn subscribe(&self, tenant_id: Uuid, price_id: Uuid, seats: i64, metadata: Value) -> Result<Subscription, BillingError> {
+        (seats >= 1).then_some(()).ok_or(BillingError::InvalidSeats)?;
         let price: PlanPrice = found(sqlx::query_as("SELECT * FROM plan_prices WHERE id = $1").bind(price_id).fetch_optional(&self.pool).await?)?;
         let fresh = new_subscription(tenant_id, &price, seats, metadata);
         let subscription = match self.find_subscription(tenant_id).await? {

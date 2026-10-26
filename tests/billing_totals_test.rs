@@ -69,8 +69,15 @@ fn an_amount_too_large_to_keep_is_refused() {
 #[test]
 fn an_invoice_is_the_sum_of_its_lines_and_adds_up() {
     let lines = [amounts("26.97", "2.02", "28.99"), amounts("80.00", "0", "80.00"), amounts("0.01", "0.01", "0.02")];
-    let sum = invoice(&lines);
+    let sum = invoice(&lines).unwrap();
     assert_eq!(sum, amounts("106.98", "2.03", "109.01"));
     assert_eq!(i64::from(sum.sub_total) + i64::from(sum.tax_total), i64::from(sum.total));
-    assert_eq!(invoice(&[]), amounts("0", "0", "0"));
+    assert_eq!(invoice(&[]).unwrap(), amounts("0", "0", "0"));
+}
+
+#[test]
+fn an_invoice_too_large_to_keep_is_refused() {
+    let half = Micros::new(i64::MAX / 2 + 1);
+    let line = Amounts { sub_total: half, tax_total: Micros::new(0), total: half };
+    assert!(matches!(invoice(&[line, line]), Err(TotalsError::TooLarge)), "each line fits, their sum does not");
 }

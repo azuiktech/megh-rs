@@ -104,3 +104,17 @@ async fn a_refreshed_token_is_stored_encrypted_and_served_decrypted(pool: PgPool
     assert!(stored_access != "fresh-access" && stored_refresh != "fresh-refresh");
     assert_eq!(Encryptor::new(&KEY).decrypt(&stored_access).unwrap(), "fresh-access");
 }
+
+#[sqlx::test]
+async fn tokens_saved_before_encryption_was_on_are_encrypted_once(pool: PgPool) {
+    ConnectedAccountRepo::new(&pool).save(&account()).await.unwrap();
+    let repo = ConnectedAccountRepo::new(&pool).with_encryptor(Encryptor::new(&KEY));
+
+    assert_eq!(repo.encrypt_stored().await.unwrap(), 1);
+    assert_eq!(repo.encrypt_stored().await.unwrap(), 0, "already encrypted");
+
+    let (stored_access, stored_refresh) = stored_tokens(&pool).await;
+    assert_ne!((stored_access.as_str(), stored_refresh.as_str()), ("plain-access", "plain-refresh"));
+    let read = repo.get("acct", "google").await.unwrap().unwrap();
+    assert_eq!((read.access_token.as_str(), read.refresh_token.as_deref()), ("plain-access", Some("plain-refresh")));
+}

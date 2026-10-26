@@ -169,11 +169,11 @@ pub trait TableEntity: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postg
 
     /// Marks this row and everything a physical delete would remove (rows reached through foreign keys
     /// declared `ON DELETE CASCADE`) as deleted, in one transaction. `None` if the row is missing or already deleted.
-    async fn soft_delete(&self, pool: &sqlx::PgPool) -> Result<Option<Self>, sqlx::Error> where Self: Sized {
+    async fn soft_delete<'c>(&self, db: impl sqlx::Acquire<'c, Database = sqlx::Postgres>) -> Result<Option<Self>, sqlx::Error> where Self: Sized {
         let table = Self::TABLE_NAME;
         let where_clause = Self::PRIMARY_KEY.iter().map(|k| format!("{table}.{k} = p.{k}")).collect::<Vec<_>>().join(" AND ");
         let q = format!("UPDATE {table} SET deleted_at = now(), updated_at = now() FROM json_populate_record(NULL::{table}, $1::json) p WHERE {where_clause} AND {table}.deleted_at IS NULL RETURNING {table}.*");
-        let mut transaction = pool.begin().await?;
+        let mut transaction = db.begin().await?;
         let deleted = sqlx::query_as::<_, Self>(&q).bind(sqlx::types::Json(self)).fetch_optional(&mut *transaction).await?;
         if deleted.is_some() {
             crate::soft_delete::cascade(&mut transaction, table).await?;

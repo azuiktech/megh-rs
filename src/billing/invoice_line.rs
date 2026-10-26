@@ -2,14 +2,14 @@
 
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::PgConnection;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
-use super::draft::{ensure_draft, ensure_line_draft, refuse_changes, Line};
+use super::draft::{ensure_draft, ensure_line_draft, refuse_changes, Line, Lock};
 use super::invoice::InvoiceData;
 use super::value::{Micros, Percent, Quantity};
 use crate::auth::crud;
@@ -56,8 +56,8 @@ fn names_one_target(line: &InvoiceLineData) -> Result<(), ValidationError> {
 }
 
 /// The line's invoice must be an invoice of the tenant (a bad request if not) and still a draft (a conflict if not).
-async fn in_draft_invoice(pool: &PgPool, line: &InvoiceLineData) -> ApiResult<()> {
-    match ensure_draft::<InvoiceData>(pool, line.tenant_id, line.invoice_id).await {
+async fn in_draft_invoice(connection: &mut PgConnection, line: &InvoiceLineData) -> ApiResult<()> {
+    match ensure_draft::<InvoiceData>(connection, line.tenant_id, line.invoice_id, Lock::Share).await {
         Err(ApiError::NotFound) => Err(ApiError::BadRequest("invoice_id is not an invoice of the tenant".into())),
         other => other,
     }
@@ -105,8 +105,11 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 400), (status = 409)),
 )]
 async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceLineData>) -> ApiResult<InvoiceLine> {
-    in_draft_invoice(&ctx.pool, &data).await?;
-    crud::create(&ctx.pool, data).await
+    let mut transaction = ctx.pool.begin().await?;
+    in_draft_invoice(&mut transaction, &data).await?;
+    let created = crud::create(&mut *transaction, data).await?;
+    transaction.commit().await?;
+    Ok(created)
 }
 
 #[utoipa::path(
@@ -118,9 +121,12 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceLineDat
     responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceLineData>>) -> ApiResult<InvoiceLine> {
-    ensure_line_draft::<InvoiceLineData>(&ctx.pool, body.data.tenant_id, body.id).await?;
-    in_draft_invoice(&ctx.pool, &body.data).await?;
-    crud::replace(&ctx.pool, body).await
+    let mut transaction = ctx.pool.begin().await?;
+    ensure_line_draft::<InvoiceLineData>(&mut transaction, body.data.tenant_id, body.id).await?;
+    in_draft_invoice(&mut transaction, &body.data).await?;
+    let replaced = crud::replace(&mut *transaction, body).await?;
+    transaction.commit().await?;
+    Ok(replaced)
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -133,9 +139,12 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Invoice
     responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<InvoiceLine> {
-    ensure_line_draft::<InvoiceLineData>(&ctx.pool, body.key.tenant_id, body.key.id).await?;
+    let mut transaction = ctx.pool.begin().await?;
+    ensure_line_draft::<InvoiceLineData>(&mut transaction, body.key.tenant_id, body.key.id).await?;
     refuse_changes(&body, &["invoice_id"])?;
-    crud::patch(&ctx.pool, body).await
+    let patched = crud::patch(&mut *transaction, body).await?;
+    transaction.commit().await?;
+    Ok(patched)
 }
 
 #[utoipa::path(
@@ -146,6 +155,9 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     responses((status = 200, body = inline(Entity<Uuid, InvoiceLineData>)), (status = 404), (status = 409)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<InvoiceLine> {
-    ensure_line_draft::<InvoiceLineData>(&ctx.pool, key.tenant_id, key.id).await?;
-    crud::delete(&ctx.pool, &key).await
+    let mut transaction = ctx.pool.begin().await?;
+    ensure_line_draft::<InvoiceLineData>(&mut transaction, key.tenant_id, key.id).await?;
+    let deleted = crud::delete(&mut *transaction, &key).await?;
+    transaction.commit().await?;
+    Ok(deleted)
 }

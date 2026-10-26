@@ -2,7 +2,7 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
     email TEXT NOT NULL,
     display_name VARCHAR(255) NOT NULL DEFAULT '',
     photo_url VARCHAR(1024) NOT NULL DEFAULT '',
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS connected_accounts (
 CREATE INDEX IF NOT EXISTS idx_connected_accounts_email ON connected_accounts (email);
 
 CREATE TABLE IF NOT EXISTS sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
     user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     token_hash VARCHAR(64) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
@@ -48,3 +48,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions (token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);
+
+-- Tables made before ids were v7 take the v7 default too.
+ALTER TABLE users ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE sessions ALTER COLUMN id SET DEFAULT uuidv7();

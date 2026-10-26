@@ -55,9 +55,9 @@ mod tests {
     #[test]
     fn test_tenant_member_has_grant() {
         let member = Member {
-            id: Uuid::new_v4(),
-            tenant_id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
+            tenant_id: Uuid::now_v7(),
+            user_id: Uuid::now_v7(),
             role: "member".to_string(),
             joined_at: Utc::now(),
             invited_by: None,

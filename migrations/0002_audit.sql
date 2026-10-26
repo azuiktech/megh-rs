@@ -23,7 +23,7 @@ DECLARE
 BEGIN
     EXECUTE format(
         'INSERT INTO %I (id, table_name, record_id, action, actor_id, old_data, new_data, created_at)
-         VALUES (gen_random_uuid(), $1, $2, $3, NULLIF(current_setting(''megh.actor_id'', true), ''''), $4, $5, clock_timestamp())',
+         VALUES (uuidv7(), $1, $2, $3, NULLIF(current_setting(''megh.actor_id'', true), ''''), $4, $5, clock_timestamp())',
         TG_ARGV[0]
     ) USING
         TG_TABLE_NAME,

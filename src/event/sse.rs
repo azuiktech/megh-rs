@@ -49,7 +49,7 @@ async fn sse_handler(
     headers: HeaderMap,
     Query(query): Query<StreamQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let client_id = Uuid::new_v4().to_string();
+    let client_id = Uuid::now_v7().to_string();
     let rx = broker.register(&client_id, caller.map(|Extension(token)| token)).await;
 
     let topics: Vec<Topic> = query

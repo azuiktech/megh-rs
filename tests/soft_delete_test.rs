@@ -39,11 +39,11 @@ async fn schema(pool: &PgPool) {
 }
 
 async fn parent(pool: &PgPool, name: &str) -> Parent {
-    Parent::new(Uuid::new_v4(), ParentData { name: name.into() }).insert(pool).await.unwrap()
+    Parent::new(Uuid::now_v7(), ParentData { name: name.into() }).insert(pool).await.unwrap()
 }
 
 async fn row(pool: &PgPool, table: &str, parent_column: &str, parent: Uuid) -> Uuid {
-    let id = Uuid::new_v4();
+    let id = Uuid::now_v7();
     sqlx::query(&format!("INSERT INTO {table} (id, {parent_column}) VALUES ($1, $2)")).bind(id).bind(parent).execute(pool).await.unwrap();
     id
 }
@@ -54,7 +54,7 @@ async fn deleted_at(pool: &PgPool, table: &str, id: Uuid) -> Option<DateTime<Utc
 
 #[test]
 fn a_new_entity_is_not_deleted_and_shows_deleted_at_as_null() {
-    let entity = Parent::new(Uuid::new_v4(), ParentData { name: "p".into() });
+    let entity = Parent::new(Uuid::now_v7(), ParentData { name: "p".into() });
     assert_eq!(entity.deleted_at, None);
     assert!(serde_json::to_value(&entity).unwrap()["deleted_at"].is_null());
 }
@@ -83,7 +83,7 @@ async fn deleting_twice_or_deleting_a_missing_row_returns_nothing_and_keeps_the_
     let first = p.soft_delete(&pool).await.unwrap().expect("first delete").deleted_at;
     assert!(p.soft_delete(&pool).await.unwrap().is_none());
     assert_eq!(deleted_at(&pool, "parents", p.id).await, first);
-    let missing = Parent::new(Uuid::new_v4(), ParentData { name: "ghost".into() });
+    let missing = Parent::new(Uuid::now_v7(), ParentData { name: "ghost".into() });
     assert!(missing.soft_delete(&pool).await.unwrap().is_none());
 }
 
@@ -146,7 +146,7 @@ async fn a_foreign_key_without_on_delete_cascade_is_not_followed(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn a_tree_that_references_itself_is_deleted_down_to_the_leaves(pool: PgPool) {
     schema(&pool).await;
-    let node = |parent_id: Option<Uuid>, name: &str| Node::new(Uuid::new_v4(), NodeData { parent_id, name: name.into() });
+    let node = |parent_id: Option<Uuid>, name: &str| Node::new(Uuid::now_v7(), NodeData { parent_id, name: name.into() });
     let root = node(None, "root").insert(&pool).await.unwrap();
     let branch = node(Some(root.id), "branch").insert(&pool).await.unwrap();
     let leaf = node(Some(branch.id), "leaf").insert(&pool).await.unwrap();

@@ -127,7 +127,7 @@ impl Subscriptions {
             .execute(&self.pool)
             .await?;
         if updated.rows_affected() == 0 {
-            let item = SubscriptionItem { id: Uuid::new_v4(), subscription_id: subscription.id, add_on_id, quantity: Some(quantity), metadata: JsonText(metadata) };
+            let item = SubscriptionItem { id: Uuid::now_v7(), subscription_id: subscription.id, add_on_id, quantity: Some(quantity), metadata: JsonText(metadata) };
             item.insert(&self.pool).await?;
         }
         Ok(subscription)
@@ -160,7 +160,7 @@ fn new_subscription(tenant_id: Uuid, price: &PlanPrice, seats: i64, metadata: Va
         BillingInterval::Yearly => 12,
     };
     Subscription {
-        id: Uuid::new_v4(),
+        id: Uuid::now_v7(),
         tenant_id: tenant_id,
         plan_id: price.plan_id,
         price_id: price.id,

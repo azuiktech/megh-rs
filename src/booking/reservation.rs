@@ -144,7 +144,7 @@ pub(super) async fn take(
         places.iter().map(|(id, (start, end), waitlist)| (*id, *start, *end, *waitlist)).multiunzip();
     sqlx::query(
         "INSERT INTO reservations (tenant_id, id, owner_id, participant_id, during, waitlist, expires_at) \
-         SELECT $1, gen_random_uuid(), $2, participant, tstzrange(starts, ends), waitlist, $7 \
+         SELECT $1, uuidv7(), $2, participant, tstzrange(starts, ends), waitlist, $7 \
          FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[], $6::bool[]) AS t(participant, starts, ends, waitlist)",
     )
     .bind(tenant_id)

@@ -161,7 +161,7 @@ impl<'a> UserRepo<'a> {
     /// as password) and its membership (role `machine`), in one statement. As for any member, the grants must include
     /// `tenants:read:{tenant_id}` for the `authorizer` to let its token into the tenant's routes.
     pub async fn register_machine(&self, tenant_id: Uuid, name: &str, grants: Vec<String>) -> Result<Registered, PasswordError> {
-        let client_id = Uuid::new_v4().to_string();
+        let client_id = Uuid::now_v7().to_string();
         let secret = oauth2::CsrfToken::new_random_len(32).secret().clone();
         sqlx::query(
             "WITH machine AS (INSERT INTO users (provider, account_id, email, display_name, password_hash, updated_at)

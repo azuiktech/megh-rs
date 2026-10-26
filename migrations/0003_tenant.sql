@@ -1,6 +1,6 @@
 -- Tenants: the partition every other row belongs to, with its members, invitations and auto-join domains.
 CREATE TABLE IF NOT EXISTS tenants (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
     name TEXT,
     description TEXT DEFAULT '',
     email TEXT,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS tenants (
 );
 
 CREATE TABLE IF NOT EXISTS tenant_members (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id UUID NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
     user_id UUID NOT NULL,
     role TEXT DEFAULT 'member',
@@ -31,7 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_tenant_members_user_id ON tenant_members (user_id
 CREATE INDEX IF NOT EXISTS idx_tenant_members_tenant_id ON tenant_members (tenant_id);
 
 CREATE TABLE IF NOT EXISTS tenant_invites (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT uuidv7(),
     tenant_id UUID,
     email TEXT,
     token_hash TEXT,
@@ -47,3 +47,8 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
     tenant_id UUID PRIMARY KEY,
     auto_join_domains TEXT
 );
+
+-- Tables made before ids were v7 take the v7 default too.
+ALTER TABLE tenants ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE tenant_members ALTER COLUMN id SET DEFAULT uuidv7();
+ALTER TABLE tenant_invites ALTER COLUMN id SET DEFAULT uuidv7();

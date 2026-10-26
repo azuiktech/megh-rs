@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 async fn orders(pool: &PgPool) -> Uuid {
     sqlx::raw_sql("CREATE TABLE orders (id UUID PRIMARY KEY, total BIGINT)").execute(pool).await.unwrap();
-    Uuid::new_v4()
+    Uuid::now_v7()
 }
 
 async fn change(pool: &PgPool, id: Uuid) {

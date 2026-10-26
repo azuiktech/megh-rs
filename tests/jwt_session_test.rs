@@ -34,7 +34,7 @@ fn app(pool: PgPool) -> Router {
 async fn reader(pool: &PgPool) -> (Uuid, Member) {
     let login = UpsertUserInput { provider: "google".into(), account_id: "1".into(), email: "ann@example.com".into(), display_name: None, photo_url: None };
     let user = UserRepo::new(pool).upsert(&login).await.unwrap();
-    let tenant = Uuid::new_v4();
+    let tenant = Uuid::now_v7();
     sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, 'Acme')").bind(tenant).execute(pool).await.unwrap();
     let member: Member = sqlx::query_as(
         "INSERT INTO tenant_members (tenant_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]') RETURNING *",

@@ -46,7 +46,7 @@ async fn entities_read_rows_written_by_megh_go(pool: PgPool) {
 #[sqlx::test]
 async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
     let plan = Plan {
-        id: Uuid::new_v4(),
+        id: Uuid::now_v7(),
         sku: "pro".into(),
         name: "Pro".into(),
         description: None,
@@ -58,7 +58,7 @@ async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
     };
     plan.insert(&pool).await.unwrap();
     let add_on = AddOn {
-        id: Uuid::new_v4(),
+        id: Uuid::now_v7(),
         sku: "storage".into(),
         name: "Storage".into(),
         description: None,
@@ -84,10 +84,10 @@ async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
 #[sqlx::test]
 async fn subscription_status_reads_megh_go_text(pool: PgPool) {
     sqlx::query("INSERT INTO subscriptions (id, tenant_id, plan_id, price_id, status, seats) VALUES ($1, $2, $3, $4, 'past_due', 3)")
-        .bind(Uuid::new_v4())
-        .bind(Uuid::new_v4())
-        .bind(Uuid::new_v4())
-        .bind(Uuid::new_v4())
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
+        .bind(Uuid::now_v7())
         .execute(&pool)
         .await
         .unwrap();

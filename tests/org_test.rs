@@ -1,4 +1,6 @@
+use megh::booking::value::Contact;
 use megh::{Org, Orgs};
+use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -31,10 +33,11 @@ async fn columns(pool: &PgPool, table: &str) -> String {
 
 #[sqlx::test]
 async fn tables_match_megh_go(pool: PgPool) {
+    // `organizations` also has megh-rs's own contact and address columns (migration 0020).
     const TS: &str = "timestamp with time zone";
     assert_eq!(
         columns(&pool, "organizations").await,
-        format!("created_at:{TS},created_by:uuid,description:text,id:uuid,name:text,plan_id:uuid,sub_status:text,timezone:text,trial_ends_at:{TS},updated_at:{TS}")
+        format!("address:jsonb,created_at:{TS},created_by:uuid,description:text,email:text,home_phone:text,id:uuid,mobile_phone:text,name:text,plan_id:uuid,sub_status:text,timezone:text,trial_ends_at:{TS},updated_at:{TS},work_phone:text")
     );
     assert_eq!(
         columns(&pool, "organization_members").await,
@@ -138,4 +141,41 @@ async fn org_reads_rows_written_by_megh_go(pool: PgPool) {
     let org: Org = sqlx::query_as("SELECT * FROM organizations").fetch_one(&pool).await.unwrap();
 
     assert_eq!((org.name, org.updated_at, org.timezone.as_str(), org.sub_status.as_str()), (None, None, "UTC", "trialing"));
+}
+
+#[sqlx::test]
+async fn an_org_keeps_a_contact_and_an_address(pool: PgPool) {
+    let address = json!({"line_1": "1 Main St", "line_2": null, "city": "Austin", "region": "TX", "postal_code": "78701", "country": "US"});
+    sqlx::query("INSERT INTO organizations (name, email, home_phone, work_phone, mobile_phone, address) VALUES ('Acme', 'hello@acme.test', '+14155552671', '+14155552672', '+14155552673', $1)")
+        .bind(&address)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let org: Org = sqlx::query_as("SELECT * FROM organizations").fetch_one(&pool).await.unwrap();
+
+    let contact = org.contact;
+    let phones = [contact.home_phone, contact.work_phone, contact.mobile_phone].map(|phone| phone.unwrap().to_string());
+    assert_eq!((contact.email.unwrap().to_string().as_str(), phones), ("hello@acme.test", ["+14155552671".into(), "+14155552672".into(), "+14155552673".into()]));
+    assert_eq!(serde_json::to_value(org.address).unwrap(), address);
+}
+
+#[sqlx::test]
+async fn an_org_without_a_contact_or_an_address_reads_empty(pool: PgPool) {
+    sqlx::query("INSERT INTO organizations (name) VALUES ('Acme')").execute(&pool).await.unwrap();
+
+    let org: Org = sqlx::query_as("SELECT * FROM organizations").fetch_one(&pool).await.unwrap();
+
+    assert_eq!((org.contact, org.address), (Contact::default(), None));
+}
+
+#[sqlx::test]
+async fn migrating_again_keeps_a_contact_and_an_address(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    sqlx::query("INSERT INTO organizations (name, email) VALUES ('Acme', 'hello@acme.test')").execute(&pool).await.unwrap();
+
+    megh::migrate(&pool).await.unwrap();
+
+    let email: String = sqlx::query_scalar("SELECT email FROM organizations").fetch_one(&pool).await.unwrap();
+    assert_eq!(email, "hello@acme.test");
 }

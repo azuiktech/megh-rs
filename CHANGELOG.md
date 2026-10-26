@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-27
+- Fix: emails ignore case (`users.email` and `connected_accounts.email` are `citext`; lookups cast their parameter), so a provider reporting another case links to the same user and password login takes any case; `set_password` and `update_profile` do not change a soft-deleted user; a `PUT` that changes a line's `invoice_id` is a 400, so a line never moves to another invoice. Changes the `email` column type in the schema shared with megh-go (PR #223, issue #221)
+
 ## 2026-10-26
 - The availability search is a paged list: `POST /tenants/{tenant_id}/slots:search` (grant `slots:search`) replaces `appointments:available` and returns the `Page` every list returns (`items`, `next_page_token`), paged by `page_size` and `page_token` (AIP-158). A page covers start times in at most 7 days, never past `to`, and at most `page_size` slots, and loads only that stretch; `next_available_day` and its 180-day look-ahead are removed. Breaking for callers (PR #220, issue #219)
 - Fix events: a closed stream leaves the broker (`publish` drops clients whose channel is closed); history backfill returns every allowed topic's history, each event once, oldest first; the bare pattern `*` matches exactly one segment (PR #218, issue #217)

@@ -39,7 +39,7 @@ pub mod openapi;
 pub mod rest;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub use token::{jwt_session, AccessToken, JwtSession, JWT_COOKIE};
+pub use token::{csrf_unless_bearer, jwt_session, AccessToken, JwtSession, JWT_COOKIE};
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use http::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};

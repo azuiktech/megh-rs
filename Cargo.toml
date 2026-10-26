@@ -34,6 +34,7 @@ axum = { version = "0.8", optional = true }
 html-escape = { version = "0.2", optional = true }
 tracing = { version = "0.1", optional = true }
 axum-extra = { version = "0.12", features = ["cookie", "query", "typed-header"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.7", features = ["csrf"], optional = true }
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"], optional = true }
 tower-sessions = { version = "0.14", optional = true }
@@ -72,4 +73,4 @@ utoipa-scalar = { version = "0.4", features = ["axum"] }
 default = ["postgres", "client", "axum"]
 postgres = ["dep:sqlx", "dep:bcrypt", "dep:aes-gcm", "dep:base64"]
 client = ["dep:reqwest", "dep:reqwest-middleware", "dep:async-trait"]
-axum = ["dep:axum", "dep:axum-params", "dep:utoipa", "dep:utoipa-axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]
+axum = ["dep:axum", "dep:axum-params", "dep:utoipa", "dep:utoipa-axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]

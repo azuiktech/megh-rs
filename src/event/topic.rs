@@ -24,7 +24,7 @@ impl Topic {
         if pattern.0.is_empty() || self.0.is_empty() {
             return pattern.0 == self.0;
         }
-        if pattern.0 == "*" || pattern.0 == "**" {
+        if pattern.0 == "**" {
             return true;
         }
         let pat_parts: Vec<&str> = pattern.0.split('/').collect();
@@ -80,6 +80,12 @@ mod tests {
         let topic = Topic::new("courses/123/chat");
         assert!(topic.matches(&Topic::new("courses/*/chat")));
         assert!(!topic.matches(&Topic::new("courses/*")));
+    }
+
+    #[test]
+    fn a_single_star_matches_one_segment_only() {
+        assert!(Topic::new("news").matches(&Topic::new("*")));
+        assert!(!Topic::new("courses/1/chat").matches(&Topic::new("*")));
     }
 
     #[test]

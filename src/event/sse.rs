@@ -15,7 +15,11 @@ use tokio_stream::StreamExt;
 use tower_http::csrf::CsrfLayer;
 use uuid::Uuid;
 
+use futures_util::future::join_all;
+use itertools::Itertools;
+
 use super::broker::Broker;
+use super::history::HistoryFuture;
 use super::model::{Event, HistoryOptions, SubscriptionRequest, SubscriptionResponse};
 use super::topic::Topic;
 use crate::auth::AccessToken;
@@ -87,35 +91,30 @@ async fn fetch_replayed(
     topics: &[Topic],
     limit: Option<usize>,
 ) -> Vec<Event> {
-    if let Some(id) = last_id {
-        if let Some(buffered) = broker.replay_since(id, topics).await {
-            return buffered;
+    let history = broker.history_provider();
+    match (last_id, limit) {
+        (Some(id), _) => match broker.replay_since(id, topics).await {
+            Some(buffered) => buffered,
+            None => every_topic(topics, |topic| history.fetch_history_since_id(topic, id, limit)).await,
+        },
+        (None, Some(limit)) => {
+            let opts = HistoryOptions { since: None, limit: Some(limit) };
+            every_topic(topics, |topic| history.fetch_history(topic, &opts)).await
         }
-        for topic in topics {
-            if let Ok(history) = broker
-                .history_provider()
-                .fetch_history_since_id(topic, id, limit)
-                .await
-            {
-                if !history.is_empty() {
-                    return history;
-                }
-            }
-        }
-    } else if let Some(lim) = limit {
-        let opts = HistoryOptions {
-            since: None,
-            limit: Some(lim),
-        };
-        for topic in topics {
-            if let Ok(hist) = broker.history_provider().fetch_history(topic, &opts).await {
-                if !hist.is_empty() {
-                    return hist;
-                }
-            }
-        }
+        (None, None) => Vec::new(),
     }
-    Vec::new()
+}
+
+/// The history of every topic, each event once, oldest first. A topic whose history fails adds nothing.
+async fn every_topic<'a>(topics: &'a [Topic], fetch: impl FnMut(&'a Topic) -> HistoryFuture<'a>) -> Vec<Event> {
+    join_all(topics.iter().map(fetch))
+        .await
+        .into_iter()
+        .flatten()
+        .flatten()
+        .unique_by(|event| event.id.clone())
+        .sorted_by_key(|event| event.timestamp)
+        .collect()
 }
 
 fn to_sse_event(e: Event) -> SseEvent {

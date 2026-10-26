@@ -31,6 +31,11 @@ Read before proposing or changing anything.
   - Revoke test: sending the revocation is the `oauth2` library's job; the test checks only megh's decision of which token is revoked. "do NOT write test just to satisfy your ego. if a test needed to check complilation etc do so in scratch, not a regular test. Tests should be real & meaningful & catch logics and bugs."
   - #17 (RFC 7009): `POST /auth/{provider}/revoke` takes `{"account_id"}` and revokes the stored token of the signed-in user's own account (404 otherwise), as `disconnect` finds it; the SDK's `revokeOAuth` takes the account id.
 - "v7 uuid need to be merged. it should be simple change" (#214): every `new_v4` becomes `now_v7`, every `gen_random_uuid()` becomes `uuidv7()` (PostgreSQL 18+), the `uuid` crate's `v4` feature is dropped, and tables that already exist get the v7 default by `ALTER ... SET DEFAULT`.
+- "now come to events related bugs first." The events group is 1, 11 and 13 of the review (issue #217). Design "approved as proposed":
+  - #1: `publish` first drops the clients whose channel is closed (tokio's `Sender::is_closed`), then sends to the rest.
+  - #11: history backfill fetches every allowed topic, drops duplicates by event id and orders by time.
+  - #13: the bare pattern `*` matches exactly one segment (as RabbitMQ's `*`); only `**` matches everything.
+- #10 (availability): "can be just a pagination, always return a max page based on cursor as a separate pr."
 
 ## 2026-10-26 — tenant and org
 

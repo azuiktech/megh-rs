@@ -113,7 +113,8 @@ impl Broker {
         state.clients.get(client_id).is_some_and(|client| client.owner.as_ref().map(|owner| owner.sub) == caller.map(|token| token.sub))
     }
 
-    /// Broadcasts an event to all clients with matching subscription patterns.
+    /// Broadcasts an event to all clients with matching subscription patterns, first dropping the clients whose stream
+    /// has closed.
     pub async fn publish(&self, mut event: Event) {
         if event.id.is_empty() {
             let next_seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
@@ -122,7 +123,8 @@ impl Broker {
 
         self.replay_buffer.write().await.push(event.clone());
 
-        let state = self.state.read().await;
+        let mut state = self.state.write().await;
+        state.clients.retain(|_, client| !client.tx.is_closed());
         for client in state.clients.values() {
             if client.topics.iter().any(|p| event.topic.matches(p)) {
                 let _ = client.tx.try_send(event.clone());

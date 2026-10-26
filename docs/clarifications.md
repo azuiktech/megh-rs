@@ -38,6 +38,9 @@ Read before proposing or changing anything.
 - #10 (availability): "can be just a pagination, always return a max page based on cursor as a separate pr." Issue #219.
 - "fix for 8,15, 19,20. also add change log for all in the same pr": one PR for findings 8, 15, 19 and 20, with the CHANGELOG entries for every PR merged without one (#212, #215, #216, #218, #220) and for this one.
   - "#8 is ok. sqlite needs COLLATE NOCASE. we need to support both postgress and sqlite". "#15 looks ok." "#20. how this works on sqlite likely json array? this is essentially is_array vs is_object kind of thing."
+  - #20 (#222): sqlx has no annotation for an array or an object column (only `json`). "for Vec<T> mark is_array. postgres store native array, and sqlite text as json. for json both stores json."
+    - "Add the per-database has-filter SQL now (PostgreSQL and SQLite), with sqlx's sqlite feature for tests, and test the SQLite SQL on an in-memory SQLite database."
+    - Frozen test change approved: "add is_array to rest_filter_test's ColumnMeta, true for staff_ids".
   - "make 20 separate pr for both sqlite and postgres. and rest separate": #20 is issue #222, its own PR working on both databases; #221 keeps 8, 15, 19 and the changelog.
   - Frozen tests changed for #19 and #8, approved: `a_line_belongs_to_a_draft_invoice_of_the_tenant` (a `PUT` to another invoice is a 400, the line stays on `first`, which is the one opened) and `users_columns_match_megh_go` ("expect email as citext and the other three as text").
   - "19 is ok. that is bug. report correctly": a `PUT` that changes a line's `invoice_id` is a bug (a line never changes invoice) and is refused with 400, as `PATCH` refuses it.

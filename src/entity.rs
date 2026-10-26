@@ -26,6 +26,8 @@ pub struct ColumnMeta {
     pub name: &'static str,
     pub is_primary_key: bool,
     pub is_json: bool,
+    /// A `Vec<…>` field not stored as JSON: a native array in PostgreSQL, JSON text in SQLite.
+    pub is_array: bool,
     pub has_default: bool,
 }
 

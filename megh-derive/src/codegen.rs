@@ -15,12 +15,14 @@ pub fn generate_table_impl(ident: &Ident, config: &TableConfig) -> TokenStream {
         let name = &col.name;
         let is_pk = col.is_primary_key;
         let is_json = col.is_json;
+        let is_array = col.is_array;
         let has_def = col.has_default;
         quote! {
             #crate_path::ColumnMeta {
                 name: #name,
                 is_primary_key: #is_pk,
                 is_json: #is_json,
+                is_array: #is_array,
                 has_default: #has_def,
             }
         }

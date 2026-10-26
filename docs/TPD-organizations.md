@@ -14,6 +14,7 @@
 | O2 | `Orgs`: org lifecycle, members, grants | `[ ]` | — |
 | O3 | `Orgs`: invitations (redeem by token or email) and auto-join domains | `[ ]` | — |
 | O4 | `Onboarding`: membership at login | `[ ]` | — |
+| O6 | Contact and address on `Org`: `contact: Contact` (flattened `email`, `home_phone`, `work_phone`, `mobile_phone`) and `address: Option<Address>` (JSONB), the layout and types of booking's `Client` (`booking::value`); migration `0020_org_contact_address.sql`, all nullable and not in megh-go (its `OrgRecord` ignores them). Read-only until `Orgs::update` (O2); `:open` still keeps `bill_to` as drafted | `[x]` | #208 / #207 |
 | O5 | Memberships in `/auth/me` and the login response | `[~]` login response done (F14, #60/#30); `/auth/me` still returns `{user}` only | with #30 |
 
 Features are not delivered in number order.
@@ -103,7 +104,7 @@ Open:
 ### 6.2 Types (`Invite`, `Invitation`, `InviteStatus` and `OrgChanges` arrive with the features that use them)
 
 ```rust
-pub struct Org { id: Uuid, name: Option<String>, description: Option<String>, timezone: String,
+pub struct Org { id: Uuid, name: Option<String>, description: Option<String>, contact: Contact, address: Option<Address>, timezone: String,
                  sub_status: String, trial_ends_at: Option<DateTime<Utc>>, plan_id: Option<Uuid>,
                  created_by: Option<Uuid>, created_at: DateTime<Utc>, updated_at: Option<DateTime<Utc>> }
 pub struct Member { id, organization_id, user_id: Uuid, role: String, grants: Vec<String>,   // JSON array in a text column

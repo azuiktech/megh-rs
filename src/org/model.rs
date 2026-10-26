@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::booking::value::{Address, Contact};
 
-/// Organization tenant stored in table `organizations` (same columns as megh-go).
+/// Organization tenant stored in table `organizations` (megh-go's columns, plus a contact and an address).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 pub struct Org {

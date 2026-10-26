@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-26
+- Org has a contact and an address: `Org::contact` (`email`, `home_phone`, `work_phone`, `mobile_phone`) and `Org::address`, the layout and types of booking's `Client`; migration `0020_org_contact_address.sql` adds the nullable columns (not in megh-go). Fields only until the org lifecycle (O2) can set them; `:open` still keeps `bill_to` as drafted (PR #208, issue #207)
 - The CSRF check does not apply to a bearer token: `megh::auth::csrf_unless_bearer` skips the `CsrfLayer` for a request with `Authorization: Bearer` and applies it to any other, so a machine or a page on another site writes with its bearer token while cookie requests stay checked (`jwt_session` uses only the bearer token when one is present, so the header cannot carry a cookie request past the check); the example uses it on the API routes (PR #206, issue #205)
 
 ## 2026-10-25

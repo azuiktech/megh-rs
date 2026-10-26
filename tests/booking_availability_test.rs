@@ -130,7 +130,7 @@ impl Clinic {
         }
         sqlx::query(
             "INSERT INTO reservations (tenant_id, id, owner_id, participant_id, during, waitlist) \
-             VALUES ($1, gen_random_uuid(), $2, $3::uuid, tstzrange($4::timestamptz, $5::timestamptz), $6)",
+             VALUES ($1, uuidv7(), $2, $3::uuid, tstzrange($4::timestamptz, $5::timestamptz), $6)",
         )
         .bind(self.tenant)
         .bind(appointment)

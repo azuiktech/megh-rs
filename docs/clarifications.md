@@ -30,6 +30,7 @@ Read before proposing or changing anything.
   - No library has an access-token claims type (`jsonwebtoken` has none; `oauth2`'s introspection response needs `active`). "Move only the AccessToken struct into its own file compiled with axum; keep its constructor in token.rs."
   - Revoke test: sending the revocation is the `oauth2` library's job; the test checks only megh's decision of which token is revoked. "do NOT write test just to satisfy your ego. if a test needed to check complilation etc do so in scratch, not a regular test. Tests should be real & meaningful & catch logics and bugs."
   - #17 (RFC 7009): `POST /auth/{provider}/revoke` takes `{"account_id"}` and revokes the stored token of the signed-in user's own account (404 otherwise), as `disconnect` finds it; the SDK's `revokeOAuth` takes the account id.
+- "v7 uuid need to be merged. it should be simple change" (#214): every `new_v4` becomes `now_v7`, every `gen_random_uuid()` becomes `uuidv7()` (PostgreSQL 18+), the `uuid` crate's `v4` feature is dropped, and tables that already exist get the v7 default by `ALTER ... SET DEFAULT`.
 
 ## 2026-10-26 — tenant and org
 

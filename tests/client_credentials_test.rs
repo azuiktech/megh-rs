@@ -190,7 +190,7 @@ async fn an_authorization_header_that_is_not_basic_is_invalid_client(pool: PgPoo
 
 #[sqlx::test]
 async fn registering_in_a_tenant_that_does_not_exist_leaves_no_user(pool: PgPool) {
-    let result = UserRepo::new(&pool).register_machine(Uuid::new_v4(), "ci", vec![]).await;
+    let result = UserRepo::new(&pool).register_machine(Uuid::now_v7(), "ci", vec![]).await;
 
     assert!(result.is_err());
     let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&pool).await.unwrap();

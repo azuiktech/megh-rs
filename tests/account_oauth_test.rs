@@ -217,7 +217,7 @@ async fn test_connected_account_repo_persistence() {
     };
 
     let repo = megh::ConnectedAccountRepo::new(&pool);
-    let account_id = format!("test_acc_{}", uuid::Uuid::new_v4());
+    let account_id = format!("test_acc_{}", uuid::Uuid::now_v7());
     let email = format!("{}@example.com", account_id);
 
     let acc = ConnectedAccount {

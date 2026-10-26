@@ -14,9 +14,9 @@ use megh::{authorizer, Member};
 
 fn create_educator_member() -> Member {
     Member {
-        id: Uuid::new_v4(),
-        tenant_id: Uuid::new_v4(),
-        user_id: Uuid::new_v4(),
+        id: Uuid::now_v7(),
+        tenant_id: Uuid::now_v7(),
+        user_id: Uuid::now_v7(),
         role: "member".to_string(),
         joined_at: Utc::now(),
         invited_by: None,
@@ -26,9 +26,9 @@ fn create_educator_member() -> Member {
 
 fn create_student_member() -> Member {
     Member {
-        id: Uuid::new_v4(),
-        tenant_id: Uuid::new_v4(),
-        user_id: Uuid::new_v4(),
+        id: Uuid::now_v7(),
+        tenant_id: Uuid::now_v7(),
+        user_id: Uuid::now_v7(),
         role: "member".to_string(),
         joined_at: Utc::now(),
         invited_by: None,

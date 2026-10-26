@@ -47,11 +47,11 @@ async fn tenant_tables_have_their_columns(pool: PgPool) {
 
 #[sqlx::test]
 async fn memberships_reads_rows_written_directly(pool: PgPool) {
-    let user = Uuid::new_v4();
+    let user = Uuid::now_v7();
     for (grants, joined) in [(Some(r#"["invoices:read"]"#), "2026-01-02"), (Some("[]"), "2026-01-01"), (None, "2026-01-03")] {
         let tenant: Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(&pool).await.unwrap();
         sqlx::query("INSERT INTO tenant_members (id, tenant_id, user_id, grants, joined_at) VALUES ($1, $2, $3, $4, $5::date)")
-            .bind(Uuid::new_v4())
+            .bind(Uuid::now_v7())
             .bind(tenant)
             .bind(user)
             .bind(grants)

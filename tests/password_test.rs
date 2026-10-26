@@ -37,7 +37,7 @@ async fn verify_says_why_it_failed(pool: PgPool) {
     assert!(matches!(repo.verify_password("ann@example.com", "x").await, Err(PasswordError::NoPassword)));
     repo.set_password(ann.id, "s3cret-pass").await.unwrap();
     assert!(matches!(repo.verify_password("ann@example.com", "wrong").await, Err(PasswordError::WrongPassword)));
-    assert!(matches!(repo.set_password(Uuid::new_v4(), "x").await, Err(PasswordError::UserNotFound)));
+    assert!(matches!(repo.set_password(Uuid::now_v7(), "x").await, Err(PasswordError::UserNotFound)));
 }
 
 #[sqlx::test]

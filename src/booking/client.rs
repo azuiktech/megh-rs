@@ -25,6 +25,10 @@ pub struct ClientData {
     pub last_name: Name,
     #[sqlx(try_from = "String")]
     pub name: Name,
+    /// What it is, such as patient or supplier.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, example = "supplier")]
+    pub role: Option<Name>,
     #[serde(flatten)]
     #[sqlx(flatten)]
     pub contact: Contact,

@@ -3,6 +3,40 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-10-27 — products sold along with services (S6 scope)
+
+- "I am not interested in a full inventory management." Products are bought and sold alongside the services booking already has: a hair colour appointment bills the colour used, or similar consumables; a dental RCT adds a tooth as a product.
+- "Not sure want to create a StockMove. Likely an invoice itself can handle this." Xero (tracked items, stock changed by documents) was the reference checked.
+- 1. A product is needed; like a service, a product can have hierarchy/grouping.
+- 2. The same product (same SKU) may be available in multiple tenants, but not the same inventory (unlike a service, which has no inventory).
+- 3. A product purchased by the salon can be invoiced, so revenue can be tracked; that increases the item count and debits the cost.
+- 4. When an appointment gets an additional product, its availability is checked, like provider and resource; the invoice has it as a line item, counting to the total appointment cost, and it is deducted from stock.
+- "A product is a product with its name, sku, cost etc. How much of that product in a location is a different thing, those are invoiced/purchased/sold." The product holds no stock count; the stock of a product at a location is separate, and invoices (purchased, sold) change it.
+- "There is a product, and stock of it."
+- "A tenant holds a stock. Like a location/salon etc will have the inventory."
+- "When tenant purchase it is purchase, when tenant sale, it is sale."
+- "Cost is usually associated with product. And product cost can be changed over time."
+- "Once a product is sold its count goes down. This is whether via appointment or direct sell."
+- Purchase is option A: "supplier is outside the scope, not a tenant. Tenant purchase." The tenant records its own purchase; opening it adds to the tenant's stock.
+- "An invoice has two parties with variety, a tenant and customer." First, the tenant invoices a customer: an appointment booked ("who is coming to the salon"), a product purchase, a subscription for a SaaS. Second, "the tenant itself gets some product/service ... I as a business purchase certain items and gets invoiced" (as agentivity does, which works on this).
+- "There are 4 things I want: PO, Invoice, Bill, Receipt." "Here xero model is way better." "Both direction is perfectly possible with hubspot, xero, quickbook etc." This brings back the purchase side and the order cut on 2026-10-23.
+- Invoice and Bill: "They are same with a type payable/receivable."
+- "Receipt is auto generated. Again likely no separate entity is needed. Once an invoice gets paid, it just gets status update/stamped."
+- "So as a code only a PO & invoice are two separate entity in db."
+- "Keep payment as it is now." A payment is the receipt, tied to its invoice by `invoice_id`. "For now keep it. Usually nobody pays in part as my scope of work. So it is always 1:1. Hubspot also has same model."
+- The other party of an invoice "can not be a tenant ... it is client. Every appointment has a client/paying customer in the payment. There are three entity tenant, member, customer, depending on buyer/seller. If we forget member, and just use tenant & customer, then one tenant can be another customer. May be a way to represent this (some system use a universal user to represent both side), or it can be id + which kind." Chosen: "Use id + kind (client or tenant) for the other party."
+- A supplier: "no separate entity. I want it to hold a booking with a supplier also. Just like a provider having a role, have client also a role."
+- Approved: "Client gets role: Option<Name>, the same as Provider; existing clients have none."
+- "Booked appointment doesn't hold the stocks. It is deducted only when completed. That is when payment is received. The stock is tied up with just the payment."
+- "A succeeded payment of a bill adds its products to stock, the mirror of a sale."
+- "When a succeeded payment is refunded in full, fails or is voided, its stock change is undone."
+- PO: "need some check. May be even PO can be dropped, and it stored as same account payable invoice with additional information, and generated on the fly than another entity." Chosen: "The PO is a payable invoice that is still a draft, with the PO fields on it; no PO entity."
+- Product cost "edited over time" is not correct: "when Product changes price, it should keep the history of the price as ledger." "Invoice is always on the current price: I book appointment today, my invoice is today's product/service price, doesn't matter when the appointment is completed. History is just to keep the ledger. Same can be done for service also."
+- Approved: "one Price ledger for products and services (item id + kind), price and cost, appended on every change; Product and Service hold no price."
+- "Take the defaults": a new `0006` migration; a tenant may stock another tenant's product; a sale payment with too little stock is refused (409); a `reference` field for the PO number; the receivable/payable field is named `kind`. "A price is required when a product or service is created."
+- "Types approved. Existing services stay without a price until one is added; booking one with no price is a 409." Five PRs in order: client role; product, stock and price; invoice kind, party and PO fields; stock changes on payment; appointment products and the availability check.
+- Product and stock "can live in booking module. Can rename it to better later."
+
 ## 2026-10-26 — fixing the code review findings
 
 - "Take the issues as a group. First all the serious bugs like 18, 12, 9 etc." The first group is 9, 12, 18 and the data loss and corruption findings: 4, 5, 14, 16 (numbers of `docs/code-review.md`).

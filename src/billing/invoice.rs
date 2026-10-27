@@ -1,4 +1,5 @@
-//! Invoice: a request for payment from a customer, which is a tenant. A draft is edited freely; `:open` gives it its
+//! Invoice: a request for payment, receivable (the tenant bills its party) or payable (a bill to the tenant; a PO
+//! while a draft). The party is a client of the tenant or a tenant. A draft is edited freely; `:open` gives it its
 //! number and fixes its totals, and an open invoice is not changed. Whether it is paid or overdue follows from
 //! `amount_paid`, `balance_due` and `due_date`.
 
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
+use sqlx::PgExecutor;
 use uuid::Uuid;
 use validator::Validate;
 
@@ -32,13 +34,34 @@ pub enum InvoiceStatus {
     Void,
 }
 
+/// Which way the money goes: to the tenant (receivable) or from it (payable, Xero's `ACCPAY`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, sqlx::Type, ToSchema)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceKind {
+    #[default]
+    Receivable,
+    Payable,
+}
+
+/// What `party_id` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum PartyKind {
+    Client,
+    Tenant,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "billing_invoices", keys = ["tenant_id", "id"])]
 pub struct InvoiceData {
-    /// The seller.
     pub tenant_id: Uuid,
-    /// The customer: a tenant.
-    pub customer_id: Uuid,
+    #[serde(default)]
+    pub kind: InvoiceKind,
+    /// The other party: the customer of a receivable invoice, the supplier of a payable one.
+    pub party_id: Uuid,
+    pub party_kind: PartyKind,
     /// Made by the app's `Ids` when the invoice is opened.
     #[schema(value_type = Option<String>)]
     pub number: Option<Name>,
@@ -52,6 +75,14 @@ pub struct InvoiceData {
     pub bill_to: Option<Address>,
     #[serde(default)]
     pub comments: String,
+    /// The PO number, or the supplier's own number of a bill.
+    #[serde(default)]
+    pub reference: String,
+    #[serde(default)]
+    pub delivery_date: Option<NaiveDate>,
+    #[serde(default)]
+    #[sqlx(json(nullable))]
+    pub deliver_to: Option<Address>,
     /// Worked out from the lines and fixed when the invoice is opened (HubSpot stores the same amounts).
     #[serde(default)]
     pub sub_total: Micros,
@@ -77,6 +108,20 @@ fn check(invoice: &InvoiceData) -> ApiResult<()> {
         .then_some(())
         .ok_or_else(|| ApiError::BadRequest("an invoice is a draft until it is opened".into()))?;
     invoice.number.is_none().then_some(()).ok_or_else(|| ApiError::BadRequest("the number is made when the invoice is opened".into()))
+}
+
+/// The party must be a client of the tenant or a tenant (400 otherwise).
+async fn ensure_party<'e>(db: impl PgExecutor<'e>, invoice: &InvoiceData) -> ApiResult<()> {
+    let query = "SELECT CASE WHEN $3 = 'client' \
+                 THEN EXISTS (SELECT 1 FROM clients WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL) \
+                 ELSE EXISTS (SELECT 1 FROM tenants WHERE id = $2) END";
+    let found: bool = sqlx::query_scalar(query)
+        .bind(invoice.tenant_id)
+        .bind(invoice.party_id)
+        .bind(invoice.party_kind)
+        .fetch_one(db)
+        .await?;
+    found.then_some(()).ok_or_else(|| ApiError::BadRequest("party_id is not a client of the tenant or a tenant".into()))
 }
 
 /// The custom methods; the path segment is `:open` or `:void`.
@@ -164,6 +209,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
 )]
 async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) -> ApiResult<Invoice> {
     check(&data)?;
+    ensure_party(&ctx.pool, &data).await?;
     crud::create(&ctx.pool, data).await
 }
 
@@ -179,6 +225,7 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Invoice
     let mut transaction = ctx.pool.begin().await?;
     ensure_draft::<InvoiceData>(&mut transaction, body.data.tenant_id, body.id, Lock::Update).await?;
     check(&body.data)?;
+    ensure_party(&mut *transaction, &body.data).await?;
     let replaced = crud::replace(&mut *transaction, body).await?;
     transaction.commit().await?;
     Ok(replaced)
@@ -196,7 +243,7 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Invoice
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Invoice> {
     let mut transaction = ctx.pool.begin().await?;
     ensure_draft::<InvoiceData>(&mut transaction, body.key.tenant_id, body.key.id, Lock::Update).await?;
-    refuse_changes(&body, &["status", "customer_id", "number"])?;
+    refuse_changes(&body, &["status", "kind", "party_id", "party_kind", "number"])?;
     let patched = crud::patch(&mut *transaction, body).await?;
     transaction.commit().await?;
     Ok(patched)

@@ -10,9 +10,11 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::Validate;
 
+use super::price::{self, ItemKind, Priced};
 use super::value::{Attributes, Name};
 use crate::auth::crud;
 use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::billing::value::{Currency, Micros};
 use crate::{Entity, Table};
 
 /// A stretch of the client's time and the provider groups it needs (none, one or two).
@@ -47,6 +49,16 @@ pub struct ServiceData {
     #[validate(length(min = 1), nested)]
     #[sqlx(json)]
     pub steps: Vec<Step>,
+    /// What one of quantity counts; a session unless given.
+    #[serde(default = "session")]
+    #[sqlx(try_from = "String")]
+    #[schema(value_type = String, example = "session")]
+    pub unit: Name,
+    /// The current price of one unit, in millionths of `currency`.
+    #[schema(value_type = i64, example = 150000000)]
+    pub price: Micros,
+    #[schema(value_type = String, example = "USD")]
+    pub currency: Currency,
     #[serde(default)]
     #[sqlx(json)]
     #[schema(value_type = Object)]
@@ -54,6 +66,22 @@ pub struct ServiceData {
 }
 
 pub type Service = Entity<Uuid, ServiceData>;
+
+fn session() -> Name {
+    Name::try_new("session").expect("a name")
+}
+
+impl Priced for ServiceData {
+    const KIND: ItemKind = ItemKind::Service;
+
+    fn tenant_id(&self) -> Uuid {
+        self.tenant_id
+    }
+
+    fn price(&self) -> (Micros, Currency) {
+        (self.price, self.currency.clone())
+    }
+}
 
 pub fn routes() -> OpenApiRouter<AppContext> {
     OpenApiRouter::new()
@@ -103,7 +131,7 @@ async fn create(
     State(ctx): State<AppContext>,
     Input(data): Input<ServiceData>,
 ) -> ApiResult<Service> {
-    crud::create(&ctx.pool, data).await
+    price::create(&ctx.pool, data).await
 }
 
 #[utoipa::path(
@@ -118,7 +146,7 @@ async fn replace(
     State(ctx): State<AppContext>,
     Input(body): Input<Keyed<ServiceData>>,
 ) -> ApiResult<Service> {
-    crud::replace(&ctx.pool, body).await
+    price::replace(&ctx.pool, body).await
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -131,7 +159,7 @@ async fn replace(
     responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Service> {
-    crud::patch(&ctx.pool, body).await
+    price::patch(&ctx.pool, body).await
 }
 
 #[utoipa::path(

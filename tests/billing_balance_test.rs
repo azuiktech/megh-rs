@@ -23,7 +23,7 @@ async fn tenant(pool: &PgPool, name: &str) -> Uuid {
 
 /// An open invoice of 100.00.
 async fn invoice(pool: &PgPool, tenant: Uuid, customer: Uuid) -> Uuid {
-    sqlx::query_scalar("INSERT INTO billing_invoices (tenant_id, id, customer_id, number, status, date, due_date, currency, total, balance_due) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD', $5, $5) RETURNING id")
+    sqlx::query_scalar("INSERT INTO billing_invoices (tenant_id, id, party_id, number, status, date, due_date, currency, total, balance_due) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD', $5, $5) RETURNING id")
         .bind(tenant)
         .bind(Uuid::now_v7())
         .bind(customer)

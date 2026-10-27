@@ -5,7 +5,8 @@
 use std::time::Duration;
 
 use axum::middleware::{from_fn, from_fn_with_state};
-use axum::Router;
+use axum::{Extension, Router};
+use megh::billing::ids::{Formats, Middle, Numbering};
 use megh::auth::rest::AppContext;
 use megh::auth::client_credentials::token_router;
 use megh::auth::http::basic_login_router;
@@ -35,6 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (api, spec) = OpenApiRouter::with_openapi(megh::booking::openapi()).nest("/api/v1", routes).split_for_parts();
     let api = api
         .layer(from_fn(authorizer))
+        .layer(Extension(Formats::new(Numbering::new("INV", "-", Middle::Year, 4)?, Numbering::new("PAY", "-", Middle::None, 4)?)))
         .layer(from_fn_with_state(jwt.clone(), jwt_session))
         .route_layer(from_fn_with_state(CsrfLayer::new(), csrf_unless_bearer))
         .with_state(AppContext { pool });

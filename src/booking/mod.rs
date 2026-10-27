@@ -10,6 +10,10 @@ pub mod blockout;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod client;
 #[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod price;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod product;
+#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod provider;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod reservation;
@@ -19,6 +23,8 @@ pub mod resource;
 pub mod schedule;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod service;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod stock;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use api::{openapi, rewrite_aip_136, router};
@@ -44,6 +50,9 @@ mod api {
             (name = "schedules", description = "Open time: the days a recurrence gives, from `starts_at` to `ends_at`, for a provider, a room and services, or any when left out."),
             (name = "blockouts", description = "Time taken out of the schedules: holidays, lunch, a broken instrument."),
             (name = "appointments", description = "Booked time of one client, one service, one room and its providers. Status moves through `:book`, `:confirm`, `:complete`, and DELETE cancels."),
+            (name = "products", description = "What is sold or used with a service: a SKU unique per owner, its unit and current price. `:stock` is the tenant's stock of it."),
+            (name = "prices", description = "The price ledger of products and services: each price with when it took effect. Read only; a create or a price change of the item adds a row."),
+            (name = "stocks", description = "How much of a product a tenant holds; the product may be another tenant's. Read only."),
             (name = "reservations", description = "Holds: a slot's places kept for 10 minutes while it is being booked; not an appointment."),
         ),
         modifiers(&SignedIn),
@@ -63,6 +72,9 @@ mod api {
             .merge(super::provider::routes())
             .merge(super::client::routes())
             .merge(super::service::routes())
+            .merge(super::product::routes())
+            .merge(super::price::routes())
+            .merge(super::stock::routes())
             .merge(super::schedule::routes())
             .merge(super::blockout::routes())
             .merge(super::appointment::routes())

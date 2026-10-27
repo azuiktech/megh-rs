@@ -80,7 +80,7 @@ impl Clinic {
         let albert = post("providers", person("Albert", "dentist")).await;
         let raj = post("providers", person("Raj", "dentist")).await;
         let extraction = post("services", json!({
-            "name": "Tooth extraction", "setup": "PT10M", "cleanup": "PT10M",
+            "name": "Tooth extraction", "setup": "PT10M", "cleanup": "PT10M", "price": 150000000, "currency": "USD",
             "steps": [
                 {"duration": "PT15M", "provider1": "hygienist"},
                 {"duration": "PT45M", "provider1": "hygienist", "provider2": "dentist"},
@@ -88,7 +88,7 @@ impl Clinic {
             ]
         }))
         .await;
-        let float = post("services", json!({"name": "Float", "steps": [{"duration": "PT1H"}]})).await;
+        let float = post("services", json!({"name": "Float", "steps": [{"duration": "PT1H"}], "price": 50000000, "currency": "USD"})).await;
         let mut pods = Vec::new();
         for name in ["Pod 1", "Pod 2"] {
             pods.push(post("resources", json!({"name": name, "role": "pod", "waitlist": 1})).await);

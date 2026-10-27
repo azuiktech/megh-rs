@@ -16,7 +16,7 @@
 | S3 | `POST …/invoices/{id}:open` and `:void` (`billing::lifecycle`, like booking's appointment verbs): `:open` needs a line (409), live taxes of the org on the lines (400), takes the number from the app's invoice `Ids` (the scope is the invoice date), stores each line's `sub_total` and `total` and the invoice's `sub_total`, `tax_total`, `total`, `amount_paid = 0`, `balance_due = total`, keeps `bill_to` as drafted (the customer org has no address yet), in one transaction; `:void` only an open invoice with `amount_paid = 0` (409 otherwise), keeping its number. `billing::totals`: a line's base (quantity times price less the discount), its tax (the sum of its tax percents, on the rounded base) and total are each rounded to the currency's minor unit, half up (`Money::round`); the invoice is the sum of its lines. The app gives the router `Formats` (invoice and payment `Ids`) as an axum `Extension` | `[x]` | #190 / #189 |
 | S4 | Payments keep the invoice balance (`billing::balance`: `record`, `replace`, `patch`, `remove`, each one transaction that locks the invoice first and refreshes it): `amount_paid` is the sum of `amount` less `refunded` over the processing and succeeded payments, `balance_due` is the total less that; a payment for an invoice that is not open is a 409, one that pays more than is owed a 409 (nothing recorded, no number used); the payment's number comes from the app's payment `Ids` (`Formats`, scope: the payment date) when it is recorded and is never changed (a body that sets `number` is a 400); a PUT or PATCH may not move the payment to another invoice; a refund is a PATCH of `refunded`; changing or deleting a payment of an invoice that is not open is a 409 | `[~]` | #192 / #191 |
 | S5 | `parent_id` on `organizations`; a customer org must have the seller as its parent; creating a `Client` creates its org | `[ ]` | — |
-| S6 | Products sold with services (section 7), in five PRs: S6a `Client.role`; S6b `Product`, `Stock`, `Price`; S6c invoice `kind`, party and PO fields; S6d stock changes on payment; S6e appointment products and the availability check | `[~]` | #228 (S6a) / #227 |
+| S6 | Products sold with services (section 7): `Client.role` (#228); products, the price ledger and stock, invoice `kind`, party and PO fields, stock changes on payment, appointment products (#229) | `[~]` | #228, #229 / #227 |
 
 ## 2. Money (`megh::money`)
 
@@ -86,7 +86,7 @@ Fields follow HubSpot's invoice, line item and payment objects (the stored amoun
 
 - **Values** (`billing::value`): `Micros` (millionths of the invoice's currency), `Currency` (ISO 4217), `Quantity`, `Percent`, `PaymentMethod` (`cash | cheque | card | bank_transfer | other`).
 - **`Tax`:** name and a percentage.
-- **`Invoice`:** `customer_id` is a tenant (there is no vendor or client entity here); `number` is `None` while a draft; `status` `draft | open | void`; `date`, `due_date`, `currency`, `bill_to` (the customer's address, copied at `:open`), `comments`; `sub_total`, `tax_total`, `total`, `amount_paid`, `balance_due` (stored, as HubSpot does, so overdue and unpaid are plain `WHERE` clauses). Created only as a draft; changed or deleted only while a draft (409 otherwise); `status`, `customer_id` and `number` are not patched (400).
+- **`Invoice`:** the party is set by `party_id` and `party_kind` (section 7); `number` is `None` while a draft; `status` `draft | open | void`; `date`, `due_date`, `currency`, `bill_to` (the customer's address, copied at `:open`), `comments`; `sub_total`, `tax_total`, `total`, `amount_paid`, `balance_due` (stored, as HubSpot does, so overdue and unpaid are plain `WHERE` clauses). Created only as a draft; changed or deleted only while a draft (409 otherwise); `status`, `customer_id` and `number` are not patched (400).
 - **`InvoiceLine`:** a product (no table yet), a service with its appointment, or neither; quantity, unit price, discount percent, tax ids. Locked with its invoice. A line names a product or a service, not both.
 - **`Payment`:** one payment pays one open invoice (409 if draft or void; 400 if not the org's); its number is made when it is recorded; `amount > 0`; `refunded` between nothing and `amount`; `method`, `status` `processing | succeeded | failed | void`; `invoice_id` is not patched.
 - **Numbers:** the app passes an `Ids` function (S2) and the result is stored as a `Name`; a row of `billing_counters` per org, kind of document and scope numbers them, and a new scope (a new year, say) starts at 1.
@@ -107,11 +107,17 @@ pub struct ProductData {
     pub sku: Name,                      // unique per owner
     pub name: Name,
     pub description: String,
-    pub unit: Name,
+    pub unit: Name,                     // what one of quantity counts: tube, ml, piece
+    pub price: Micros,                  // the current price of one unit
+    pub currency: Currency,
     pub attributes: Attributes,         // grouping, as for a service
 }
 
-#[table(name = "stocks", keys = ["tenant_id", "product_id"])]
+pub unit: Name,                         // on ServiceData, "session" unless given
+pub price: Micros,                      // on ServiceData, required on create
+pub currency: Currency,
+
+#[table(name = "stocks", keys = ["tenant_id", "id"])]
 pub struct StockData {
     pub tenant_id: Uuid,                // the tenant holding it; the product may be another tenant's
     pub product_id: Uuid,
@@ -124,18 +130,18 @@ pub struct PriceData {
     pub item_id: Uuid,
     pub item_kind: ItemKind,            // Product | Service
     pub price: Micros,
-    pub cost: Micros,
     pub currency: Currency,
-    pub starts_at: DateTime<Utc>,
+    pub effective_at: DateTime<Utc>,
 }
 
 pub products: Vec<Used>,                // on AppointmentData, a JSON column, default []
 pub struct Used { pub product_id: Uuid, pub quantity: Quantity }
 ```
 
-- `Product` and `Service` hold no price. `Price` is a ledger: a change appends a row, rows are never changed or deleted; the current price is the newest row with `starts_at` at or before now.
-- Creating a product or service takes its first price in the same request. Services that exist today have none until one is added; booking one with no price is a 409.
-- Booking an appointment checks each product against the tenant's `on_hand` (409 if too little), with the provider and resource fit. A booked appointment holds no stock. Its lines are charged the price in effect at `booked_at`, whenever the appointment is completed.
+- A product or service holds its current `price` and `unit`. `Price` is the ledger of its prices: a create, and a `PUT` or `PATCH` that changes `price` or `currency`, adds a row effective at that moment, in the same transaction. Nobody writes the ledger directly; rows are never changed or deleted.
+- Routes: products CRUD (a repeated SKU of the owner is a 409) and `GET /products/{id}:stock`, the tenant's stock of it; `GET /prices`, `/prices/{id}` and `GET /stocks`, `/stocks/{id}`, read only. A stock row has its own id and one row per tenant and product.
+- Services stored before prices cost 0 USD a session, with no ledger row until their price changes.
+- Booking an appointment checks each product against the tenant's `on_hand` (409 if too little), with the provider and resource fit. A PATCH of `products` is checked the same way. A booked appointment holds no stock. The app enters its invoice lines at the item's current price.
 
 **Billing** (`src/billing`):
 
@@ -149,6 +155,6 @@ pub deliver_to: Option<Address>,
 ```
 
 - The other party is a client (a supplier is a client with a role) or a tenant. A PO is a payable invoice that is still a draft; it has no entity of its own.
-- `Payment` is unchanged; it is the receipt, one per invoice in practice. When it becomes `succeeded`, a receivable invoice's product lines leave the invoice tenant's stock (409 if too little) and a payable invoice's enter it. A full refund, `failed` or `void` undoes that change. In the transaction that already locks the invoice and refreshes its balance.
+- `Payment` is unchanged; it is the receipt, one per invoice in practice. When it becomes `succeeded`, a receivable invoice's product lines leave the invoice tenant's stock (409 if too little) and a payable invoice's enter it. A full refund, `failed`, `void` or a deleted payment undoes that change. The products move once per invoice: while it has a succeeded payment not refunded in full. In the transaction that already locks the invoice and refreshes its balance.
 
-**Migration `0006`:** tables `products`, `stocks`, `prices`; `clients.role` (nullable, existing clients have none); `appointments.products` (default `[]`); on `billing_invoices`, `customer_id` renamed `party_id`, new `party_kind`, `kind`, `reference`, `delivery_date`, `deliver_to`, existing rows `party_kind = 'tenant'` and `kind = 'receivable'`.
+**Migration `0006`:** tables `products`, `stocks`, `prices`; `clients.role` (nullable, existing clients have none); `services.unit`, `price`, `currency` (defaults `session`, 0, `USD`); `appointments.products` (default `[]`); on `billing_invoices`, `customer_id` renamed `party_id` (without its tenant foreign key; `0005` now names it `party_id`, and its index moves to `0006` as `billing_invoices_party`), new `party_kind`, `kind`, `reference`, `delivery_date`, `deliver_to`, existing rows `party_kind = 'tenant'` and `kind = 'receivable'`.

@@ -160,7 +160,7 @@ async fn an_issued_id_is_a_name_that_an_invoice_can_keep(pool: PgPool) {
     let (mine, customer) = (tenant(&pool).await, tenant(&pool).await);
     let numbering = Numbering::new("INV", "-", Middle::Year, 4).unwrap();
     let number = next(&pool, mine, Numbered::Invoice, day(2026, 10, 22), &numbering).await;
-    sqlx::query("INSERT INTO billing_invoices (tenant_id, id, customer_id, number, status, date, due_date, currency) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD')")
+    sqlx::query("INSERT INTO billing_invoices (tenant_id, id, party_id, number, status, date, due_date, currency) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD')")
         .bind(mine)
         .bind(Uuid::now_v7())
         .bind(customer)

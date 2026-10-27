@@ -63,7 +63,8 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
             {"duration": "PT45M", "provider1": "hygienist", "provider2": "dentist"},
             {"duration": "PT15M", "provider1": "hygienist", "provider2": null}
         ],
-        "attributes": {"category": "surgery"}
+        "attributes": {"category": "surgery"},
+        "price": 150000000, "currency": "USD"
     });
     let (status, saved) = call(&app, "POST", &collection, extraction.clone()).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
@@ -74,7 +75,7 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
     );
 
     let (status, colour) = call(&app, "POST", &collection, json!({
-        "name": "Hair colour",
+        "name": "Hair colour", "price": 60000000, "currency": "USD",
         "steps": [{"duration": "PT30M", "provider1": "stylist"}, {"duration": "PT30M"}, {"duration": "PT20M", "provider1": "stylist"}]
     }))
     .await;
@@ -91,12 +92,12 @@ async fn service_with_setup_steps_and_cleanup(pool: PgPool) {
     );
 
     for bad in [
-        json!({"name": "X", "steps": []}),
-        json!({"name": "X"}),
-        json!({"name": "X", "steps": [{"duration": "45 minutes"}]}),
-        json!({"name": "X", "setup": "ten", "steps": [{"duration": "PT5M"}]}),
-        json!({"name": "X", "steps": [{"duration": "PT5M", "provider1": ""}]}),
-        json!({"name": "", "steps": [{"duration": "PT5M"}]}),
+        json!({"name": "X", "steps": [], "price": 1, "currency": "USD"}),
+        json!({"name": "X", "price": 1, "currency": "USD"}),
+        json!({"name": "X", "steps": [{"duration": "45 minutes"}], "price": 1, "currency": "USD"}),
+        json!({"name": "X", "setup": "ten", "steps": [{"duration": "PT5M"}], "price": 1, "currency": "USD"}),
+        json!({"name": "X", "steps": [{"duration": "PT5M", "provider1": ""}], "price": 1, "currency": "USD"}),
+        json!({"name": "", "steps": [{"duration": "PT5M"}], "price": 1, "currency": "USD"}),
     ] {
         assert_eq!(
             call(&app, "POST", &collection, bad.clone()).await.0,

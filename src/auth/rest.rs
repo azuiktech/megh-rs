@@ -38,6 +38,7 @@ impl IntoResponse for ApiError {
         let status = match &self {
             Self::NotFound | Self::Database(sqlx::Error::RowNotFound) => StatusCode::NOT_FOUND,
             Self::Database(sqlx::Error::Database(error)) if error.is_foreign_key_violation() => StatusCode::BAD_REQUEST,
+            Self::Database(sqlx::Error::Database(error)) if error.is_unique_violation() => StatusCode::CONFLICT,
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,

@@ -107,11 +107,17 @@ pub struct ProductData {
     pub sku: Name,                      // unique per owner
     pub name: Name,
     pub description: String,
-    pub unit: Name,
+    pub unit: Name,                     // what one of quantity counts: tube, ml, piece
+    pub price: Micros,                  // the current price of one unit
+    pub currency: Currency,
     pub attributes: Attributes,         // grouping, as for a service
 }
 
-#[table(name = "stocks", keys = ["tenant_id", "product_id"])]
+pub unit: Name,                         // on ServiceData, "session" unless given
+pub price: Micros,                      // on ServiceData, required on create
+pub currency: Currency,
+
+#[table(name = "stocks", keys = ["tenant_id", "id"])]
 pub struct StockData {
     pub tenant_id: Uuid,                // the tenant holding it; the product may be another tenant's
     pub product_id: Uuid,
@@ -124,17 +130,17 @@ pub struct PriceData {
     pub item_id: Uuid,
     pub item_kind: ItemKind,            // Product | Service
     pub price: Micros,
-    pub cost: Micros,
     pub currency: Currency,
-    pub starts_at: DateTime<Utc>,
+    pub effective_at: DateTime<Utc>,
 }
 
 pub products: Vec<Used>,                // on AppointmentData, a JSON column, default []
 pub struct Used { pub product_id: Uuid, pub quantity: Quantity }
 ```
 
-- `Product` and `Service` hold no price. `Price` is a ledger: a change appends a row, rows are never changed or deleted; the current price is the newest row with `starts_at` at or before now.
-- Creating a product or service takes its first price in the same request. Services that exist today have none until one is added; booking one with no price is a 409.
+- A product or service holds its current `price` and `unit`. `Price` is the ledger of its prices: a create, and a `PUT` or `PATCH` that changes `price` or `currency`, adds a row effective at that moment, in the same transaction. Nobody writes the ledger directly; rows are never changed or deleted.
+- Routes: products CRUD (a repeated SKU of the owner is a 409) and `GET /products/{id}:stock`, the tenant's stock of it; `GET /prices`, `/prices/{id}` and `GET /stocks`, `/stocks/{id}`, read only. A stock row has its own id and one row per tenant and product.
+- Services stored before prices cost 0 USD a session, with no ledger row until their price changes.
 - Booking an appointment checks each product against the tenant's `on_hand` (409 if too little), with the provider and resource fit. A booked appointment holds no stock. Its lines are charged the price in effect at `booked_at`, whenever the appointment is completed.
 
 **Billing** (`src/billing`):
@@ -151,4 +157,4 @@ pub deliver_to: Option<Address>,
 - The other party is a client (a supplier is a client with a role) or a tenant. A PO is a payable invoice that is still a draft; it has no entity of its own.
 - `Payment` is unchanged; it is the receipt, one per invoice in practice. When it becomes `succeeded`, a receivable invoice's product lines leave the invoice tenant's stock (409 if too little) and a payable invoice's enter it. A full refund, `failed` or `void` undoes that change. In the transaction that already locks the invoice and refreshes its balance.
 
-**Migration `0006`:** tables `products`, `stocks`, `prices`; `clients.role` (nullable, existing clients have none); `appointments.products` (default `[]`); on `billing_invoices`, `customer_id` renamed `party_id`, new `party_kind`, `kind`, `reference`, `delivery_date`, `deliver_to`, existing rows `party_kind = 'tenant'` and `kind = 'receivable'`.
+**Migration `0006`:** tables `products`, `stocks`, `prices`; `clients.role` (nullable, existing clients have none); `services.unit`, `price`, `currency` (defaults `session`, 0, `USD`); `appointments.products` (default `[]`); on `billing_invoices`, `customer_id` renamed `party_id`, new `party_kind`, `kind`, `reference`, `delivery_date`, `deliver_to`, existing rows `party_kind = 'tenant'` and `kind = 'receivable'`.

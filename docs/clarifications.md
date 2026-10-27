@@ -5,6 +5,16 @@ Read before proposing or changing anything.
 
 ## 2026-10-27 — products sold along with services (S6 scope)
 
+- Changelog: "why are you adding changelog separately? why don't you follow instructions from claude.md?" The entry goes in the change's own PR (global CLAUDE.md), not on merge; the entry for #228 goes in the S6b PR ("go ahead").
+- S6b contract "approved with the defaults": routes for products (create takes the first price as `"price": {"price", "cost", "currency"}`, 400 without it; a price in PUT/PATCH is a 400), prices (list, get, append only; the item must be the tenant's product or service), stocks (read only); grants `products:*`, `prices:*`, `stocks:read`; tables in `0006_products.sql`. "Service price required now and the two frozen tests updated" (`booking_service_test`, `booking_availability_test`). "starts_at defaults to now and may be later, never earlier." "S6b as one PR."
+- Stock: "for a product getting stock detail? then /products/{product_id}:stock or similar. For stock by id /stocks/{stock_id}." A stock row has its own id.
+- "do not lie. I never mentioned 'price and cost'." Entries above that quote "Yes: …", "Take the defaults …", "Types approved …", "S6b contract approved …" and "amount" are the text of reply buttons Claude wrote, which the user clicked; they are not the user's words.
+- "Every item has current price/cost/amount whatever common vocab used for all cases, and unit. And ledger has the changes and effective date."
+- "For naming you can choose any consistent naming." Chosen: `price` and `currency` on the item, `effective_at` on the ledger row.
+- Revised S6b contract, "Yes.": products CRUD with `sku` (unique per owner, 409), `name`, `description`, `unit`, `price`, `currency`, `attributes`; `GET /products/{id}:stock`; services gain `unit`, `price`, `currency`, price required on create; `GET /prices` and `/prices/{id}` read only (`item_id`, `item_kind`, `price`, `currency`, `effective_at`); a create, or a PUT/PATCH that changes price or currency, writes a ledger row in the same transaction; `GET /stocks` and `/stocks/{id}` read only, a stock row has its own id; existing services get a price of 0 USD and no ledger row until changed; the two service tests get a price.
+- Unit is the unit of measure, what one quantity counts (tube, ml, box, piece, session); explained and answered "ok."
+- Price: "what is price and cost? an item has just one thing. Use same naming convention like other entities." The one value is named `amount` (as on a payment); there is no cost. A price row is `{tenant_id, item_id, item_kind, amount, currency, starts_at}`.
+
 - "I am not interested in a full inventory management." Products are bought and sold alongside the services booking already has: a hair colour appointment bills the colour used, or similar consumables; a dental RCT adds a tooth as a product.
 - "Not sure want to create a StockMove. Likely an invoice itself can handle this." Xero (tracked items, stock changed by documents) was the reference checked.
 - 1. A product is needed; like a service, a product can have hierarchy/grouping.

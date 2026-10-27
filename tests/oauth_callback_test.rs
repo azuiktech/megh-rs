@@ -223,3 +223,71 @@ async fn a_deleted_user_cannot_sign_in_through_the_provider(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(get_page(&app, "/auth/me", &cookie).await.status(), StatusCode::UNAUTHORIZED);
 }
+
+async fn tenants(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM tenants").fetch_one(pool).await.unwrap()
+}
+
+async fn me(app: &Router, cookie: &str) -> Value {
+    serde_json::from_str(&body(get_page(app, "/auth/me", cookie).await).await).unwrap()
+}
+
+/// Completes a login and answers the signed-in session's cookie.
+async fn log_in(app: &Router) -> String {
+    let (cookie, state, _) = start_login(app).await;
+    let response = get_page(app, &format!("/auth/stub/callback?code=abc&state={state}"), &cookie).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    response.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_string()
+}
+
+#[sqlx::test]
+async fn a_first_login_creates_a_tenant_owned_by_the_user_with_every_grant(pool: PgPool) {
+    let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
+
+    let cookie = log_in(&app).await;
+
+    assert_eq!(tenants(&pool).await, 1);
+    let me: Value = serde_json::from_str(&body(get_page(&app, "/auth/me", &cookie).await).await).unwrap();
+    let memberships = me["memberships"].as_array().unwrap();
+    assert_eq!(memberships.len(), 1);
+    assert_eq!((memberships[0]["role"].as_str(), memberships[0]["grants"].clone()), (Some("owner"), json!(["*"])));
+    assert_eq!(memberships[0]["user_id"], me["user"]["id"]);
+    let named: Option<String> = sqlx::query_scalar("SELECT name FROM tenants").fetch_one(&pool).await.unwrap();
+    assert_eq!(named.as_deref(), Some("ann@example.com"));
+}
+
+#[sqlx::test]
+async fn a_later_login_keeps_the_users_tenant(pool: PgPool) {
+    let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
+    let first = log_in(&app).await;
+    let tenant = me(&app, &first).await["memberships"][0]["tenant_id"].clone();
+
+    let second = log_in(&app).await;
+
+    assert_eq!(tenants(&pool).await, 1);
+    assert_eq!(me(&app, &second).await["memberships"][0]["tenant_id"], tenant);
+}
+
+#[sqlx::test]
+async fn a_user_who_already_has_a_membership_gets_no_new_tenant(pool: PgPool) {
+    let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
+    let user: uuid::Uuid = sqlx::query_scalar("INSERT INTO users (id, email) VALUES ($1, 'ann@example.com') RETURNING id")
+        .bind(uuid::Uuid::now_v7())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let acme: uuid::Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO tenant_members (id, tenant_id, user_id, grants) VALUES ($1, $2, $3, '[\"invoices:read\"]')")
+        .bind(uuid::Uuid::now_v7())
+        .bind(acme)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cookie = log_in(&app).await;
+
+    assert_eq!(tenants(&pool).await, 1);
+    let me: Value = serde_json::from_str(&body(get_page(&app, "/auth/me", &cookie).await).await).unwrap();
+    assert_eq!(me["memberships"][0]["tenant_id"], json!(acme));
+}

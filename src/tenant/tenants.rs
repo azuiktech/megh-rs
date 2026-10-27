@@ -3,7 +3,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::Member;
+use super::{Member, Tenant};
 
 /// Failure of a tenant operation.
 #[derive(Debug, thiserror::Error)]
@@ -30,5 +30,24 @@ impl Tenants {
             .bind(user_id)
             .fetch_all(&self.pool)
             .await?)
+    }
+
+    /// A new tenant with `owner` as its first member (role `owner`, grants `["*"]`), in one transaction.
+    pub async fn create(&self, name: &str, owner: Uuid) -> Result<Tenant, TenantError> {
+        let mut transaction = self.pool.begin().await?;
+        let tenant: Tenant = sqlx::query_as("INSERT INTO tenants (id, name, created_by) VALUES ($1, $2, $3) RETURNING *")
+            .bind(Uuid::now_v7())
+            .bind(name)
+            .bind(owner)
+            .fetch_one(&mut *transaction)
+            .await?;
+        sqlx::query("INSERT INTO tenant_members (id, tenant_id, user_id, role, grants) VALUES ($1, $2, $3, 'owner', '[\"*\"]')")
+            .bind(Uuid::now_v7())
+            .bind(tenant.id)
+            .bind(owner)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(tenant)
     }
 }

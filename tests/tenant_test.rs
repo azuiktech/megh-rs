@@ -105,3 +105,16 @@ async fn migrating_again_keeps_a_contact_and_an_address(pool: PgPool) {
     let email: String = sqlx::query_scalar("SELECT email FROM tenants").fetch_one(&pool).await.unwrap();
     assert_eq!(email, "hello@acme.test");
 }
+
+#[sqlx::test]
+async fn a_created_tenant_has_its_owner_as_first_member_with_every_grant(pool: PgPool) {
+    let owner = Uuid::now_v7();
+
+    let tenant = Tenants::new(pool.clone()).create("Ann's", owner).await.unwrap();
+
+    assert_eq!((tenant.name.as_deref(), tenant.created_by), (Some("Ann's"), Some(owner)));
+    let members = Tenants::new(pool).memberships(owner).await.unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!((members[0].tenant_id, members[0].role.as_str()), (tenant.id, "owner"));
+    assert_eq!(members[0].grants, ["*"]);
+}

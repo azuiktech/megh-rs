@@ -125,6 +125,8 @@ impl MeghAuthState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthMeResponse {
     pub user: User,
+    /// The user's memberships, earliest first.
+    pub memberships: Vec<crate::tenant::Member>,
 }
 
 pub(crate) const USER_ID: &str = "user_id";
@@ -370,10 +372,20 @@ pub async fn oauth_callback(
         };
         let user = UserRepo::new(&state.pool).upsert(&login).await.map_err(disabled)?;
         save_account(&state, &provider_id, info, &tokens).await?;
+        give_a_tenant(&state, &user).await?;
         sign_in(&session, user.id).await?;
         serde_json::json!({ "type": "oauth_success", "user": user })
     };
     Ok(popup(&state, payload, return_to))
+}
+
+/// A user with no membership gets a tenant of their own, named after their email.
+async fn give_a_tenant(state: &MeghAuthState, user: &User) -> Result<(), AuthError> {
+    let tenants = Tenants::new(state.pool.clone());
+    if tenants.memberships(user.id).await?.is_empty() {
+        tenants.create(&user.email, user.id).await?;
+    }
+    Ok(())
 }
 
 async fn save_account(state: &MeghAuthState, provider: &str, info: OAuthUserInfo, tokens: &BasicTokenResponse) -> Result<ConnectedAccount, AuthError> {
@@ -461,9 +473,10 @@ pub async fn oauth_revoke(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Returns the current authenticated user.
-pub async fn auth_me(auth: AuthUser) -> Json<AuthMeResponse> {
-    Json(AuthMeResponse { user: auth.user })
+/// Returns the current authenticated user and their memberships.
+pub async fn auth_me(State(state): State<MeghAuthState>, auth: AuthUser) -> Result<Json<AuthMeResponse>, AuthError> {
+    let memberships = Tenants::new(state.pool.clone()).memberships(auth.user.id).await?;
+    Ok(Json(AuthMeResponse { user: auth.user, memberships }))
 }
 
 /// Ends the current session and clears the JWT cookie (a token already issued stays valid until it expires).

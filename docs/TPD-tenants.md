@@ -31,7 +31,7 @@ pub struct Tenants { .. }     // holds the injected pool
 impl Tenants { pub fn new(pool: PgPool) -> Self; pub async fn memberships(&self, user_id: Uuid) -> Result<Vec<Member>, TenantError> }
 ```
 
-`Tenant` and `Member` keep megh-go's columns: `name`/`description` can be NULL, and so can `updated_at` (4 of 85 rows in a real megh-go database); a NULL, `[]` or `null` `grants` value means no grants. Everything else about tenants (create, members, grants, invitations, onboarding) is pending; there is no route and `/auth/me` returns no memberships. `Member` is also what the `authorizer` middleware reads from request extensions, which the application must supply. Tests: `has_grant` unit test, `authorizer_test.rs`, `course_authorizer_test.rs`, `tenant_test.rs`.
+`Tenant` and `Member` keep megh-go's columns: `name`/`description` can be NULL, and so can `updated_at` (4 of 85 rows in a real megh-go database); a NULL, `[]` or `null` `grants` value means no grants. `Tenants::create(name, owner)` makes a tenant with its owner as first member (role `owner`, grants `["*"]`) in one transaction; an OAuth login by a user with no membership creates one named after the user's email, and `/auth/me` returns the user's memberships (#225). Everything else about tenants (members, grants, invitations, the rest of onboarding) is pending; there is no route. `Member` is also what the `authorizer` middleware reads from request extensions, which the application must supply. Tests: `has_grant` unit test, `authorizer_test.rs`, `course_authorizer_test.rs`, `tenant_test.rs`.
 
 ## 3. Schema parity with megh-go
 

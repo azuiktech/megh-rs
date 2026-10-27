@@ -12,7 +12,9 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::crud::{self, Row};
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::auth::rest::{
+    ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page,
+};
 use crate::billing::value::{Currency, Micros};
 use crate::{Entity, Table, TableEntity};
 
@@ -63,7 +65,7 @@ pub(super) async fn replace<T: Priced>(
         tenant_id: body.data.tenant_id(),
         id: body.id,
     };
-    let before = crud::get::<T>(&mut *transaction, &key).await?.data.price();
+    let before = locked_price::<T>(&mut transaction, &key).await?;
     let saved = crud::replace(&mut *transaction, body).await?;
     record(&mut transaction, Some(before), &saved).await?;
     transaction.commit().await?;
@@ -72,14 +74,29 @@ pub(super) async fn replace<T: Priced>(
 
 pub(super) async fn patch<T: Priced>(pool: &PgPool, body: Changes) -> ApiResult<Entity<Uuid, T>> {
     let mut transaction = pool.begin().await?;
-    let before = crud::get::<T>(&mut *transaction, &body.key)
-        .await?
-        .data
-        .price();
+    let before = locked_price::<T>(&mut transaction, &body.key).await?;
     let saved = crud::patch::<T>(&mut *transaction, body).await?;
     record(&mut transaction, Some(before), &saved).await?;
     transaction.commit().await?;
     Ok(saved)
+}
+
+/// The item's price, its row locked until the transaction ends, so changes of one item are recorded in turn.
+async fn locked_price<T: Priced>(
+    transaction: &mut PgTransaction<'_>,
+    key: &Key,
+) -> ApiResult<(Micros, Currency)> {
+    let sql = format!(
+        "SELECT * FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
+        T::TABLE_NAME
+    );
+    sqlx::query_as::<_, Entity<Uuid, T>>(&sql)
+        .bind(key.tenant_id)
+        .bind(key.id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .map(|item| item.data.price())
+        .ok_or(ApiError::NotFound)
 }
 
 /// Adds the item's price to the ledger unless it is the price it had before.

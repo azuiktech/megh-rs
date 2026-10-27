@@ -17,6 +17,7 @@ use validator::{Validate, ValidationError};
 
 use super::availability::fit;
 use super::reservation::{claim, give_back, lock, take};
+use super::stock::{ensure_on_hand, Used};
 use super::value::{Attributes, Name};
 use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
@@ -64,6 +65,11 @@ pub struct AppointmentData {
     #[sqlx(json)]
     #[validate(nested)]
     pub payment: Payment,
+    /// The products it uses; they must be on hand when it is booked or they change.
+    #[serde(default)]
+    #[sqlx(json)]
+    #[validate(nested)]
+    pub products: Vec<Used>,
     /// Set by the server when the appointment is stored.
     #[serde(default)]
     #[schema(read_only)]
@@ -129,7 +135,7 @@ pub struct Action {
 }
 
 /// Fields a PATCH may change without moving the appointment.
-const CHANGEABLE: [&str; 5] = ["tenant_id", "id", "note", "payment", "attributes"];
+const CHANGEABLE: [&str; 6] = ["tenant_id", "id", "note", "payment", "products", "attributes"];
 /// Fields that move the appointment; a move is checked like a booking.
 const MOVES: [&str; 4] = ["starts_at", "ends_at", "resource_id", "provider_ids"];
 /// Fields only the server sets; a PATCH that sends them keeps the stored values.
@@ -184,6 +190,7 @@ async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -
         .ok_or_else(|| ApiError::BadRequest("a new appointment is booked or waitlist".to_string()))?;
     let mut transaction = ctx.pool.begin().await?;
     lock(&mut transaction, data.tenant_id).await?;
+    ensure_on_hand(&mut transaction, data.tenant_id, &data.products).await?;
     let places = fit(&mut transaction, &data, booking.reservation_id).await?;
     if let Some(hold) = booking.reservation_id {
         claim(&mut transaction, data.tenant_id, hold, &places).await?;
@@ -225,10 +232,24 @@ async fn patch(
     if let Some(field) = body.changes.keys().find(|field| !is(&CHANGEABLE, field) && !is(&MOVES, field)) {
         return Err(ApiError::BadRequest(format!("{field} cannot be changed")));
     }
+    ensure_products(&ctx.pool, &body).await?;
     match body.changes.keys().any(|field| is(&MOVES, field)) {
         true => move_to(&ctx.pool, body).await,
         false => crud::patch(&ctx.pool, body).await,
     }
+}
+
+/// Products a PATCH sets must be on hand.
+async fn ensure_products(pool: &PgPool, body: &Changes) -> ApiResult<()> {
+    let used: Vec<Used> = body
+        .changes
+        .get("products")
+        .filter(|products| !products.is_null())
+        .map(|products| serde_json::from_value(products.clone()))
+        .transpose()
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?
+        .unwrap_or_default();
+    ensure_on_hand(&mut *pool.acquire().await?, body.key.tenant_id, &used).await
 }
 
 /// A move: under the booking lock, the changed appointment must pass the booking check for its status,

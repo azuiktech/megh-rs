@@ -50,7 +50,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 }
 
 fn invoice(customer: Uuid) -> Value {
-    json!({"customer_id": customer, "status": "draft", "date": "2026-10-22", "due_date": "2026-11-21", "currency": "USD"})
+    json!({"party_kind": "tenant", "party_id": customer, "status": "draft", "date": "2026-10-22", "due_date": "2026-11-21", "currency": "USD"})
 }
 
 fn with(mut body: Value, extra: Value) -> Value {
@@ -113,7 +113,7 @@ async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
 
     assert_eq!(call(&mine_app, "PUT", &item, with(invoice(ada), json!({"status": "open"}))).await.0, StatusCode::BAD_REQUEST, "a PUT does not open it");
     assert_eq!(call(&mine_app, "PUT", &item, with(invoice(ada), json!({"number": "INV-1"}))).await.0, StatusCode::BAD_REQUEST, "a PUT does not number it");
-    for (field, value) in [("status", json!("open")), ("customer_id", json!(bea)), ("number", json!("INV-1"))] {
+    for (field, value) in [("status", json!("open")), ("party_id", json!(bea)), ("number", json!("INV-1"))] {
         assert_eq!(call(&mine_app, "PATCH", &item, json!({field: value})).await.0, StatusCode::BAD_REQUEST, "patching {field}");
     }
     assert_eq!(call(&mine_app, "PATCH", &format!("/api/v1/tenants/{mine}/invoices/{}", Uuid::now_v7()), json!({"comments": "x"})).await.0, StatusCode::NOT_FOUND);

@@ -44,7 +44,7 @@ mod api {
         info(title = "megh billing", description = "Taxes, invoices and payments."),
         tags(
             (name = "taxes", description = "Percentage taxes a line can carry."),
-            (name = "invoices", description = "A request for payment from a customer tenant. Created as a draft and changed only while a draft."),
+            (name = "invoices", description = "A request for payment: `receivable` from its party (a client of the tenant or a tenant) or `payable` to it (a bill; a PO while a draft). Created as a draft and changed only while a draft."),
             (name = "invoiceLines", description = "The products and services billed on an invoice, with quantity, unit price, discount and taxes. Changed only while the invoice is a draft."),
             (name = "payments", description = "Money received for an open invoice, by cash, cheque, card or bank transfer; a refund is the `refunded` part of the payment."),
         ),

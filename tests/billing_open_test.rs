@@ -59,7 +59,7 @@ fn path(tenant: Uuid, collection: &str) -> String {
 }
 
 async fn draft(app: &Router, tenant: Uuid, customer: Uuid, date: &str) -> Uuid {
-    let body = json!({"customer_id": customer, "status": "draft", "date": date, "due_date": "2027-12-01", "currency": "USD"});
+    let body = json!({"party_kind": "tenant", "party_id": customer, "status": "draft", "date": date, "due_date": "2027-12-01", "currency": "USD"});
     let (status, created) = call(app, "POST", &path(tenant, "invoices"), body).await;
     assert_eq!(status, StatusCode::OK, "{created}");
     created["id"].as_str().unwrap().parse().unwrap()
@@ -94,7 +94,7 @@ async fn opening_numbers_the_invoice_and_fixes_the_totals(pool: PgPool) {
     let app = app(pool.clone(), mine);
     let (_, tax) = call(&app, "POST", &path(mine, "taxes"), json!({"name": "Sales tax", "rate": "7.5"})).await;
     let address = json!({"line_1": "1 Main St", "line_2": null, "city": "Austin", "region": "TX", "postal_code": "78701", "country": "US"});
-    let (_, created) = call(&app, "POST", &path(mine, "invoices"), json!({"customer_id": customer, "status": "draft", "date": "2026-10-22", "due_date": "2026-11-21", "currency": "USD", "bill_to": address, "comments": "thanks"})).await;
+    let (_, created) = call(&app, "POST", &path(mine, "invoices"), json!({"party_kind": "tenant", "party_id": customer, "status": "draft", "date": "2026-10-22", "due_date": "2026-11-21", "currency": "USD", "bill_to": address, "comments": "thanks"})).await;
     let invoice: Uuid = created["id"].as_str().unwrap().parse().unwrap();
     let first = add_line(&app, mine, invoice, json!({"quantity": "3", "unit_price": 9990000, "discount": "10", "tax_ids": [tax["id"]]})).await;
     let second = add_line(&app, mine, invoice, json!({"position": 2, "description": "Whitening", "unit_price": 80000000})).await;
@@ -105,7 +105,7 @@ async fn opening_numbers_the_invoice_and_fixes_the_totals(pool: PgPool) {
     assert_eq!(opened["number"], "INV-2026-0001", "the scope is the year of the invoice date");
     assert_eq!((opened["sub_total"].clone(), opened["tax_total"].clone(), opened["total"].clone()), (json!(106970000), json!(2020000), json!(108990000)));
     assert_eq!((opened["amount_paid"].clone(), opened["balance_due"].clone()), (json!(0), json!(108990000)));
-    assert_eq!((opened["bill_to"].clone(), opened["comments"].clone(), opened["customer_id"].clone()), (address, json!("thanks"), json!(customer)), "what the draft had is kept");
+    assert_eq!((opened["bill_to"].clone(), opened["comments"].clone(), opened["party_id"].clone()), (address, json!("thanks"), json!(customer)), "what the draft had is kept");
 
     let (one, two) = (stored_line(&app, mine, &first).await, stored_line(&app, mine, &second).await);
     assert_eq!((one["sub_total"].clone(), one["total"].clone()), (json!(26970000), json!(28990000)), "the lines keep their totals");

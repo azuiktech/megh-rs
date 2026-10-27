@@ -1,7 +1,7 @@
 //! B4 (docs/TPD-billing.md): the billing tables store and return every entity, and refuse what the types say cannot be.
 
 use chrono::NaiveDate;
-use megh::billing::invoice::{InvoiceData, InvoiceStatus};
+use megh::billing::invoice::{InvoiceData, InvoiceKind, InvoiceStatus, PartyKind};
 use megh::billing::invoice_line::InvoiceLineData;
 use megh::billing::payment::{PaymentData, PaymentStatus};
 use megh::billing::tax::TaxData;
@@ -44,7 +44,9 @@ where
 fn invoice(tenant: Uuid, customer: Uuid) -> InvoiceData {
     InvoiceData {
         tenant_id: tenant,
-        customer_id: customer,
+        kind: InvoiceKind::Receivable,
+        party_id: customer,
+        party_kind: PartyKind::Tenant,
         number: None,
         status: InvoiceStatus::Draft,
         date: day(),
@@ -52,6 +54,9 @@ fn invoice(tenant: Uuid, customer: Uuid) -> InvoiceData {
         currency: Currency::try_new("usd").unwrap(),
         bill_to: None,
         comments: String::new(),
+        reference: String::new(),
+        delivery_date: None,
+        deliver_to: None,
         sub_total: Micros::default(),
         tax_total: Micros::default(),
         total: Micros::default(),
@@ -130,7 +135,6 @@ async fn the_database_refuses_what_the_types_cannot_be(pool: PgPool) {
 
     let both = InvoiceLineData { product_id: Some(Uuid::now_v7()), service_id: Some(service(&pool, mine).await), ..line(mine, owed.id) };
     assert!(store(&pool, both).await.is_err(), "a line names a product or a service, not both");
-    assert!(store(&pool, invoice(mine, Uuid::now_v7())).await.is_err(), "a customer is a tenant");
     assert!(store(&pool, line(mine, Uuid::now_v7())).await.is_err(), "a line belongs to an invoice of the tenant");
     assert!(store(&pool, payment(mine, Uuid::now_v7())).await.is_err(), "a payment is for an invoice of the tenant");
     assert!(store(&pool, PaymentData { amount: Micros::new(0), ..payment(mine, owed.id) }).await.is_err(), "a payment is of something");

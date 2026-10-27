@@ -53,3 +53,23 @@ CREATE TABLE IF NOT EXISTS stocks (
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, product_id)
 );
+
+-- An invoice is receivable or payable (a bill; a PO while a draft), and its other party is a client of the tenant or
+-- a tenant. Invoices stored before bill their tenant customer.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'billing_invoices' AND column_name = 'customer_id') THEN
+        ALTER TABLE billing_invoices DROP CONSTRAINT IF EXISTS billing_invoices_customer_id_fkey;
+        ALTER TABLE billing_invoices RENAME COLUMN customer_id TO party_id;
+    END IF;
+END $$;
+ALTER INDEX IF EXISTS billing_invoices_customer RENAME TO billing_invoices_party;
+CREATE INDEX IF NOT EXISTS billing_invoices_party ON billing_invoices (tenant_id, party_id, due_date) WHERE deleted_at IS NULL;
+ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS party_kind TEXT NOT NULL DEFAULT 'tenant' CHECK (party_kind IN ('client', 'tenant'));
+ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'receivable' CHECK (kind IN ('receivable', 'payable'));
+ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS reference TEXT NOT NULL DEFAULT '';
+ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS delivery_date DATE;
+ALTER TABLE billing_invoices ADD COLUMN IF NOT EXISTS deliver_to JSONB;
+
+-- The products an appointment uses.
+ALTER TABLE appointments ADD COLUMN IF NOT EXISTS products JSONB NOT NULL DEFAULT '[]';

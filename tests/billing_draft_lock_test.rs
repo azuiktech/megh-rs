@@ -40,7 +40,7 @@ async fn call(app: Router, method: &'static str, uri: String, body: Value) -> (S
 }
 
 fn invoice(customer: Uuid) -> Value {
-    json!({"customer_id": customer, "status": "draft", "date": "2026-10-22", "due_date": "2026-11-21", "currency": "USD"})
+    json!({"party_kind": "tenant", "party_id": customer, "status": "draft", "date": "2026-10-22", "due_date": "2026-11-21", "currency": "USD"})
 }
 
 fn line(invoice: &str) -> Value {

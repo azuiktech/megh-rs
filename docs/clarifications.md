@@ -5,6 +5,9 @@ Read before proposing or changing anything.
 
 ## 2026-10-27 — products sold along with services (S6 scope)
 
+- "Do not be over clever, and split to 1000 PRs just to reduce size. I warned you multiple times." The rest of S6 (invoice kind and party, stock on payment, appointment products) goes on the #229 branch, one PR.
+- "If I say a size limit, I say it for the feature. NOT by splitting the feature to 1000s of small PRs. Do not try to be clever and bypass the rules." The limit asks for a small feature (less code), not for more PRs.
+
 - Changelog: "why are you adding changelog separately? why don't you follow instructions from claude.md?" The entry goes in the change's own PR (global CLAUDE.md), not on merge; the entry for #228 goes in the S6b PR ("go ahead").
 - S6b contract "approved with the defaults": routes for products (create takes the first price as `"price": {"price", "cost", "currency"}`, 400 without it; a price in PUT/PATCH is a 400), prices (list, get, append only; the item must be the tenant's product or service), stocks (read only); grants `products:*`, `prices:*`, `stocks:read`; tables in `0006_products.sql`. "Service price required now and the two frozen tests updated" (`booking_service_test`, `booking_availability_test`). "starts_at defaults to now and may be later, never earlier." "S6b as one PR."
 - Stock: "for a product getting stock detail? then /products/{product_id}:stock or similar. For stock by id /stocks/{stock_id}." A stock row has its own id.

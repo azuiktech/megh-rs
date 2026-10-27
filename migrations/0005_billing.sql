@@ -99,11 +99,11 @@ CREATE TABLE IF NOT EXISTS billing_taxes (
     PRIMARY KEY (tenant_id, id)
 );
 
--- The customer is a tenant. A line names a product (no table yet), a service and its appointment, or neither.
+-- The party is a client of the tenant or a tenant (0006). A line names a product (no table yet), a service and its appointment, or neither.
 CREATE TABLE IF NOT EXISTS billing_invoices (
     tenant_id UUID NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
     id UUID NOT NULL,
-    customer_id UUID NOT NULL REFERENCES tenants (id),
+    party_id UUID NOT NULL,
     number TEXT,
     status TEXT NOT NULL CHECK (status IN ('draft', 'open', 'void')),
     date DATE NOT NULL,
@@ -123,7 +123,6 @@ CREATE TABLE IF NOT EXISTS billing_invoices (
     PRIMARY KEY (tenant_id, id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS billing_invoices_number ON billing_invoices (tenant_id, number) WHERE number IS NOT NULL AND deleted_at IS NULL;
-CREATE INDEX IF NOT EXISTS billing_invoices_customer ON billing_invoices (tenant_id, customer_id, due_date) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS billing_invoices_owed ON billing_invoices (tenant_id, due_date) WHERE status = 'open' AND balance_due > 0 AND deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS billing_invoice_lines (

@@ -6,6 +6,7 @@ pub mod audit;
 pub mod auth;
 pub mod billing;
 pub mod booking;
+pub mod bytea;
 pub mod entity;
 pub mod event;
 pub mod money;
@@ -20,7 +21,7 @@ pub use event::{
 #[cfg(feature = "axum")]
 pub use event::{events_router, events_router_with_csrf};
 
-pub use entity::{Bytea, ColumnMeta, Entity, JsonText, Table, NOT_DELETED};
+pub use entity::{ColumnMeta, Entity, JsonText, Table, NOT_DELETED};
 #[cfg(feature = "postgres")]
 pub use entity::TableEntity;
 pub use megh_derive::Table;

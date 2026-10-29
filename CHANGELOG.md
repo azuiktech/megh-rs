@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-29
+- Every operation in the booking and billing OpenAPI description has its own id, `{tag}_{handler}` (`invoices_create`, `invoiceLines_list`, `invoices_act`); they were the handler names, so `create`, `list` and the rest each named every resource's route (PR #231, issue #230)
+
 ## 2026-10-27
 - Products, a price ledger and stock: `products` (SKU unique per owner, a repeat is a 409; `unit`, current `price` and `currency`) with `GET /products/{id}:stock`; services gain `unit` (`session` by default), `price` and `currency`, the price required on create (existing services cost 0 USD); `prices` (read only) gets a row when an item is created or its price or currency changes, with `effective_at`; `stocks` (read only) holds a tenant's stock of a product, which may be another tenant's. A unique violation is a 409, not a 500. An invoice is `receivable` or `payable` (a bill; a PO while a draft, with `reference`, `delivery_date`, `deliver_to`), and its party is `party_id` with `party_kind` (`client` or `tenant`), replacing `customer_id` (existing invoices bill their tenant). While an invoice has a succeeded payment not refunded in full, its product lines are out of the tenant's stock (receivable, 409 if too little) or in it (payable). An appointment lists the `products` it uses, which must be on hand when it is booked or they change. The `booking` example gives billing its invoice and payment numbering. Breaking: creating a service needs `price` and `currency`; invoices take `party_id` and `party_kind` instead of `customer_id` (PR #229, issue #227)
 - A client has an optional `role`, as a provider has (a supplier is a client with a role); migration `0006_products.sql` adds `clients.role`, existing clients have none. First of the five PRs of S6, products sold with services (PR #228, issue #227)

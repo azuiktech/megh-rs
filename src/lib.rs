@@ -6,6 +6,7 @@ pub mod audit;
 pub mod auth;
 pub mod billing;
 pub mod booking;
+pub mod bytea;
 pub mod entity;
 pub mod event;
 pub mod money;

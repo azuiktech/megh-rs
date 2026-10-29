@@ -10,6 +10,7 @@ Format:
 ```
 
 ## 2026-10-29
+- `megh::Bytea`: a `bytea` field of an entity, written as Postgres hex text (`\x…`) so `insert`, `upsert` and `save` store its bytes; a plain `Vec<u8>` field was stored as the text of a JSON array (PR #NNN, issue #232)
 - Every operation in the booking and billing OpenAPI description has its own id, `{tag}_{handler}` (`invoices_create`, `invoiceLines_list`, `invoices_act`); they were the handler names, so `create`, `list` and the rest each named every resource's route (PR #231, issue #230)
 
 ## 2026-10-27

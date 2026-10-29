@@ -21,6 +21,26 @@ impl<T: DeserializeOwned + Default> TryFrom<Option<String>> for JsonText<T> {
     }
 }
 
+/// The bytes of a `bytea` column. Rows are written through JSON, where Postgres reads a bytea as hex text
+/// (`\\x2550…`), so that is how these bytes serialize; a plain `Vec<u8>` would be written as the text of a JSON array.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(transparent))]
+pub struct Bytea(pub Vec<u8>);
+
+impl Serialize for Bytea {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("\\x{}", hex::encode(&self.0)))
+    }
+}
+
+impl<'de> Deserialize<'de> for Bytea {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let digits = text.strip_prefix("\\x").ok_or_else(|| serde::de::Error::custom("bytea text starts with \\x"))?;
+        hex::decode(digits).map(Bytea).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColumnMeta {
     pub name: &'static str,

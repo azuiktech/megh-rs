@@ -17,7 +17,8 @@ impl Modify for SignedIn {
     }
 }
 
-/// Each route's grants, as the authorizer derives them from its path, in the session scheme's scopes.
+/// Each route's grants, as the authorizer derives them from its path, in the session scheme's scopes; and an
+/// operation id unique across routers, `{tag}_{handler}`.
 pub struct Granted;
 
 impl Modify for Granted {
@@ -25,7 +26,10 @@ impl Modify for Granted {
         api.paths.paths.iter_mut().for_each(|(path, item)| {
             [("GET", &mut item.get), ("POST", &mut item.post), ("PUT", &mut item.put), ("PATCH", &mut item.patch), ("DELETE", &mut item.delete)]
                 .into_iter()
-                .for_each(|(method, operation)| operation.iter_mut().for_each(|operation| grant(operation, method, path)));
+                .for_each(|(method, operation)| operation.iter_mut().for_each(|operation| {
+                    grant(operation, method, path);
+                    name(operation);
+                }));
         });
     }
 }
@@ -33,4 +37,9 @@ impl Modify for Granted {
 fn grant(operation: &mut Operation, method: &str, path: &str) {
     let grants: Vec<String> = request_grants(method, path, path).into_iter().map(|grant| grant.0).collect();
     operation.security = Some(["session", "bearer"].map(|scheme| SecurityRequirement::new(scheme, grants.clone())).to_vec());
+}
+
+fn name(operation: &mut Operation) {
+    let tag = operation.tags.iter().flatten().next().cloned().unwrap_or_default();
+    operation.operation_id = operation.operation_id.take().map(|handler| format!("{tag}_{handler}"));
 }

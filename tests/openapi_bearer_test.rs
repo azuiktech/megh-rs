@@ -24,3 +24,13 @@ fn every_operation_accepts_the_cookie_or_the_bearer_token() {
         assert_eq!(alternatives, [vec!["session"], vec!["bearer"]], "{operation}");
     }
 }
+
+#[test]
+fn every_operation_has_its_own_id_named_by_its_tag() {
+    let spec = spec();
+    let operations: Vec<&Value> = spec["paths"].as_object().unwrap().values().flat_map(|item| item.as_object().unwrap().values()).collect();
+    let ids: std::collections::HashSet<&str> = operations.iter().map(|operation| operation["operationId"].as_str().unwrap()).collect();
+
+    assert_eq!(ids.len(), operations.len());
+    assert!(ids.contains("invoices_create") && ids.contains("invoiceLines_list") && ids.contains("payments_create") && ids.contains("invoices_act"));
+}

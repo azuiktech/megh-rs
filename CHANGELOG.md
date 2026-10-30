@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-10-30
+- A tenant's connections: `connections_router(state)` serves `GET`/`POST /tenants/{tenant_id}/connections`, `PUT`/`DELETE …/connections/{id}` and `POST …/connections/{id}:disconnect` (cards that disconnect, reconnect and are deleted), and OAuth with any site, `GET …/connections/oauth?url=` and its `/callback`, which finds the site's authorization server (RFC 9728, 8414), registers (RFC 7591) and signs in with PKCE through `rmcp`. A generic connection is a site by URL with a bearer token, an API key (`X-API-Key` unless another header is given) or OAuth, stored under its own id with the site's icon. `/auth/{provider}/connect?tenant_id=` connects any account for a tenant the user is a member of (one another tenant has is a 409). `Connections::secret(tenant_id, id)` answers what a request carries, refreshing an expired OAuth token. Migration `0007_connections.sql` adds `id`, `tenant_id`, `url`, `icon_url`, `auth`, `key_header` and `oauth` to `connected_accounts`. `@megh/auth` gains `connections`, `connect`, `reconnect`, `disconnect`, `remove` and a `tenant` for `connectWithOAuth` (PR #235, issue #234)
+
 ## 2026-10-29
 - `#[serde(with = "megh::bytea")]` on a `Vec<u8>` field of an entity writes it as Postgres hex text (`\x…`), so `insert`, `upsert` and `save` store its bytes in a `bytea` column; without it the field was stored as the text of a JSON array (PR #233, issue #232)
 - Every operation in the booking and billing OpenAPI description has its own id, `{tag}_{handler}` (`invoices_create`, `invoiceLines_list`, `invoices_act`); they were the handler names, so `create`, `list` and the rest each named every resource's route (PR #231, issue #230)

@@ -271,6 +271,8 @@ pub struct FlowQuery {
     return_to: Option<String>,
     #[serde(default)]
     scope: Vec<String>,
+    /// The tenant a connect is for.
+    tenant_id: Option<Uuid>,
 }
 
 /// The `state` of a connect starts with this, which is how its callback tells it from a login.
@@ -287,14 +289,19 @@ pub async fn oauth_login(
 }
 
 /// Starts the OAuth flow for another account of the signed-in user (`/auth/google/connect?scope=...`, `scope` repeated
-/// for each extra scope). The callback stores the account and leaves the session as it is.
+/// for each extra scope), or with `tenant_id` for a tenant the user is a member of. The callback stores the account
+/// and leaves the session as it is.
 pub async fn oauth_connect(
     State(state): State<MeghAuthState>,
     Path(provider_id): Path<String>,
     ListQuery(query): ListQuery<FlowQuery>,
-    _auth: AuthUser,
+    auth: AuthUser,
     session: Session,
 ) -> Result<Redirect, AuthError> {
+    if let Some(tenant) = query.tenant_id {
+        member_of(&state, &auth.user, tenant).await?;
+    }
+    session.insert(&tenant_key(&provider_id), query.tenant_id).await?;
     authorize(&state, &provider_id, &session, query.return_to, (CONNECT_STATE, "consent"), query.scope).await
 }
 
@@ -355,11 +362,11 @@ pub async fn oauth_callback(
     }
 
     let payload = if connecting {
-        let user = current_user(&session, &state.pool).await?;
-        if !user.email.eq_ignore_ascii_case(&info.email) {
-            return Err(AuthError(StatusCode::FORBIDDEN, "that account's email is not yours"));
-        }
-        let account = save_account(&state, &provider_id, info, &tokens).await?;
+        let tenant: Option<Uuid> = session.remove(&tenant_key(&provider_id)).await?.flatten();
+        let account = match tenant {
+            Some(tenant) => save_tenant_account(&state, &provider_id, tenant, info, &tokens).await?,
+            None => save_own_account(&state, &session, &provider_id, info, &tokens).await?,
+        };
         let account = AccountView { account_id: account.account_id, provider: account.provider, email: account.email };
         serde_json::json!({ "type": "oauth_connect_success", "account": account })
     } else {
@@ -388,6 +395,42 @@ async fn give_a_tenant(state: &MeghAuthState, user: &User) -> Result<(), AuthErr
     Ok(())
 }
 
+/// Errs with `403` unless `user` is a member of `tenant`.
+async fn member_of(state: &MeghAuthState, user: &User, tenant: Uuid) -> Result<(), AuthError> {
+    let memberships = Tenants::new(state.pool.clone()).memberships(user.id).await?;
+    let member = memberships.iter().any(|membership| membership.tenant_id == tenant);
+    member.then_some(()).ok_or(AuthError(StatusCode::FORBIDDEN, "you are not a member of that tenant"))
+}
+
+/// Saves an account of the signed-in user's own: its email must be theirs.
+async fn save_own_account(state: &MeghAuthState, session: &Session, provider: &str, info: OAuthUserInfo, tokens: &BasicTokenResponse) -> Result<ConnectedAccount, AuthError> {
+    let user = current_user(session, &state.pool).await?;
+    if !user.email.eq_ignore_ascii_case(&info.email) {
+        return Err(AuthError(StatusCode::FORBIDDEN, "that account's email is not yours"));
+    }
+    save_account(state, provider, info, tokens).await
+}
+
+/// Saves any account as `tenant`'s, unless another tenant has it (`409`).
+async fn save_tenant_account(state: &MeghAuthState, provider: &str, tenant: Uuid, info: OAuthUserInfo, tokens: &BasicTokenResponse) -> Result<ConnectedAccount, AuthError> {
+    let owner: Option<Option<Uuid>> = sqlx::query_scalar("SELECT tenant_id FROM connected_accounts WHERE account_id = $1 AND provider = $2 AND deleted_at IS NULL")
+        .bind(&info.subject)
+        .bind(provider)
+        .fetch_optional(&state.pool)
+        .await?;
+    if owner.flatten().is_some_and(|owner| owner != tenant) {
+        return Err(AuthError(StatusCode::CONFLICT, "another tenant has connected that account"));
+    }
+    let account = save_account(state, provider, info, tokens).await?;
+    sqlx::query("UPDATE connected_accounts SET tenant_id = $3, auth = 'oauth', deleted_at = NULL WHERE account_id = $1 AND provider = $2")
+        .bind(&account.account_id)
+        .bind(provider)
+        .bind(tenant)
+        .execute(&state.pool)
+        .await?;
+    Ok(account)
+}
+
 async fn save_account(state: &MeghAuthState, provider: &str, info: OAuthUserInfo, tokens: &BasicTokenResponse) -> Result<ConnectedAccount, AuthError> {
     let tokens = OAuth2Tokens::from(tokens);
     let account = ConnectedAccount {
@@ -407,7 +450,7 @@ async fn save_account(state: &MeghAuthState, provider: &str, info: OAuthUserInfo
 
 /// The page the flow ends on: in a popup it posts `payload` to the opening page and closes itself, otherwise it goes
 /// on to the page the flow was started from, or the page after login.
-fn popup(state: &MeghAuthState, payload: serde_json::Value, return_to: Option<String>) -> Response {
+pub(crate) fn popup(state: &MeghAuthState, payload: serde_json::Value, return_to: Option<String>) -> Response {
     let target = state.web_origin.as_deref().unwrap_or(&state.app_origin);
     let html = format!(
         r#"<!doctype html><meta charset="utf-8"><body data-payload="{}" data-target="{}" data-fallback="{}"><script>
@@ -488,6 +531,11 @@ pub async fn auth_logout(session: Session, jar: CookieJar) -> Result<(CookieJar,
 
 fn attempt_key(provider: &str) -> String {
     format!("oauth:{provider}")
+}
+
+/// Where the session keeps the tenant a connect is for.
+fn tenant_key(provider: &str) -> String {
+    format!("oauth:{provider}:tenant")
 }
 
 /// The PKCE verifier and the page to return to of the login this callback answers. The stored attempt is consumed, so

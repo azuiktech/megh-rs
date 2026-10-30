@@ -6,8 +6,8 @@
 //!     `connected`, `created_at`. Never a token. A deleted account and another tenant's are not listed.
 //!   - `POST /connections` with `{url, bearer: {token}}` or `{url, api_key: {key, header?}}`: a generic connection,
 //!     `provider` `url` and `account_id` its own `id`, so tenants connecting the same URL keep their own; an API key is sent in `X-API-Key` unless `header` says otherwise.
-//!     Its icon is the site's `<link rel="icon">`, made absolute, else `{origin}/favicon.ico`. A body without an
-//!     `http(s)` URL, or without exactly one of `bearer` and `api_key`, is refused (`400`).
+//!     An optional `spec_url` is its OpenAPI document, kept through reconnects. Its icon is the site's `<link rel="icon">`, made absolute, else `{origin}/favicon.ico`. A body without an
+//!     `http(s)` URL, with a `spec_url` that is not one, or without exactly one of `bearer` and `api_key`, is refused (`400`).
 //!   - `POST /connections/{id}:disconnect`: disconnects it; it is still listed, `connected: false`.
 //!   - `PUT /connections/{id}` with `{bearer}` or `{api_key}`: connects it again with new credentials.
 //!   - `DELETE /connections/{id}`: disconnects and deletes it (`204`); it is no longer listed.
@@ -273,4 +273,38 @@ async fn an_expired_oauth_token_is_refreshed_before_it_is_used(pool: PgPool) {
     let connections = Connections::new(pool.clone()).with_providers(std::sync::Arc::new([("google".to_string(), google)].into()));
 
     assert_eq!(connections.secret(mine, id).await.unwrap(), Secret::Bearer("fresh".into()));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_connections_spec_url_is_kept_and_shown(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    let mine = tenant(&pool).await;
+    let app = app(&pool, grants(mine));
+    let url = site("<html></html>").await;
+    let path = format!("/api/v1/tenants/{mine}/connections");
+
+    let (_, with_spec) = call(&app, "POST", &path, json!({"url": format!("{url}/v3"), "spec_url": format!("{url}/openapi.json"), "bearer": {"token": "t"}})).await;
+    let (_, without) = call(&app, "POST", &path, json!({"url": format!("{url}/v4"), "bearer": {"token": "t"}})).await;
+    let id = with_spec["id"].as_str().unwrap();
+    call(&app, "POST", &format!("{path}/{id}:disconnect"), Value::Null).await;
+    let (_, again) = call(&app, "PUT", &format!("{path}/{id}"), json!({"bearer": {"token": "new"}})).await;
+
+    assert_eq!(with_spec["spec_url"], json!(format!("{url}/openapi.json")));
+    assert_eq!(without["spec_url"], Value::Null);
+    assert_eq!(again["spec_url"], json!(format!("{url}/openapi.json")), "a reconnect keeps it");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_spec_url_that_is_not_http_is_refused(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    let mine = tenant(&pool).await;
+    let app = app(&pool, grants(mine));
+    let path = format!("/api/v1/tenants/{mine}/connections");
+
+    for spec_url in ["", "not a url", "file:///etc/passwd"] {
+        let (status, answer) = call(&app, "POST", &path, json!({"url": "https://example.com", "spec_url": spec_url, "bearer": {"token": "t"}})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{spec_url:?} answered {answer}");
+    }
+    let (_, listed) = call(&app, "GET", &path, Value::Null).await;
+    assert_eq!(listed, json!([]));
 }

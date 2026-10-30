@@ -11,6 +11,7 @@ export interface Connection {
   account_id: string
   email:      string | null
   url:        string | null
+  spec_url:   string | null
   icon_url:   string | null
   auth:       'oauth' | 'bearer' | 'api_key' | null
   key_header: string | null
@@ -21,8 +22,8 @@ export interface Connection {
 /** How a site signs its requests: a bearer token, or an API key sent in `header` (default `X-API-Key`). */
 export type SiteCredentials = { bearer: { token: string } } | { api_key: { key: string; header?: string } }
 
-/** A site to connect: by its credentials, or by signing in there with OAuth. */
-export type Site = { url: string } & (SiteCredentials | { oauth: true })
+/** A site to connect, with its OpenAPI document: by its credentials, or by signing in there with OAuth. */
+export type Site = { url: string; spec_url?: string } & (SiteCredentials | { oauth: true })
 
 export interface AuthConfig<User> {
   /** Backend base URL, e.g. 'http://localhost:8080'. No trailing slash. */
@@ -216,7 +217,8 @@ export class Auth<User = Record<string, unknown>> {
    */
   async connect(tenant: string, site: Site, mode: SignInMode = 'auto'): Promise<Connection> {
     if ('oauth' in site) {
-      const url = `${this.#base}${this.#connectionsPath(tenant)}/oauth?${new URLSearchParams({ url: site.url })}`
+      const query = new URLSearchParams({ url: site.url, ...(site.spec_url ? { spec_url: site.spec_url } : {}) })
+      const url = `${this.#base}${this.#connectionsPath(tenant)}/oauth?${query}`
       return this.#connection(await this.#connectInPopup(url, 'megh-site-connect', mode))
     }
     const res = await this.fetch(this.#connectionsPath(tenant), { method: 'POST', body: JSON.stringify(site) })

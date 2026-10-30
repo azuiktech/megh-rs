@@ -1,7 +1,7 @@
 // Specification: a tenant's connections from the browser (issue #234).
 //
 // - `connections(tenant)` lists them: `GET /tenants/{tenant}/connections`.
-// - `connect(tenant, { url, bearer } | { url, api_key })` adds a site: `POST /tenants/{tenant}/connections`.
+// - `connect(tenant, { url, spec_url?, bearer } | { url, spec_url?, api_key })` adds a site: `POST /tenants/{tenant}/connections`.
 // - `connect(tenant, { url, oauth: true })` signs in at the site in a popup opened on
 //   `/tenants/{tenant}/connections/oauth?url=`, and resolves with the connection the popup posts.
 // - `reconnect(tenant, id, credentials)` is `PUT /tenants/{tenant}/connections/{id}`; with `{ oauth: true, url }` it
@@ -53,10 +53,10 @@ describe('connections', () => {
   it('to a site are added with a bearer token or an API key', async () => {
     const auth = new Auth({ base })
     answer.body = { id: 'c1' }
-    await auth.connect(tenant, { url: 'https://crm.example', bearer: { token: 'tok' } })
+    await auth.connect(tenant, { url: 'https://crm.example', spec_url: 'https://crm.example/openapi.json', bearer: { token: 'tok' } })
     await auth.connect(tenant, { url: 'https://shop.example', api_key: { key: 'k', header: 'X-Shop-Key' } })
     expect(requests).toEqual([
-      { path: '/tenants/t1/connections', method: 'POST', body: { url: 'https://crm.example', bearer: { token: 'tok' } } },
+      { path: '/tenants/t1/connections', method: 'POST', body: { url: 'https://crm.example', spec_url: 'https://crm.example/openapi.json', bearer: { token: 'tok' } } },
       { path: '/tenants/t1/connections', method: 'POST', body: { url: 'https://shop.example', api_key: { key: 'k', header: 'X-Shop-Key' } } },
     ])
   })
@@ -67,6 +67,14 @@ describe('connections', () => {
     post({ type: 'oauth_connect_success', connection: { id: 'c9', auth: 'oauth' } })
     expect(await connecting).toEqual({ id: 'c9', auth: 'oauth' })
     expect(opened).toEqual(['http://api.test/api/v1/tenants/t1/connections/oauth?url=https%3A%2F%2Fmcp.example%2Fmcp'])
+  })
+
+  it('to a site by OAuth carry its spec URL', async () => {
+    const { opened, post } = browser()
+    const connecting = new Auth({ base }).connect(tenant, { url: 'https://api.example/v3', spec_url: 'https://api.example/openapi.json', oauth: true }, 'popup')
+    post({ type: 'oauth_connect_success', connection: { id: 'c9' } })
+    await connecting
+    expect(opened).toEqual(['http://api.test/api/v1/tenants/t1/connections/oauth?url=https%3A%2F%2Fapi.example%2Fv3&spec_url=https%3A%2F%2Fapi.example%2Fopenapi.json'])
   })
 
   it('are reconnected, disconnected and removed', async () => {

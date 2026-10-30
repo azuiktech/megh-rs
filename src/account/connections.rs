@@ -40,6 +40,8 @@ pub struct Connection {
     pub account_id: String,
     pub email: Option<String>,
     pub url: Option<String>,
+    /// The OpenAPI document of the REST API at `url`.
+    pub spec_url: Option<String>,
     pub icon_url: Option<String>,
     pub auth: Option<Auth>,
     pub key_header: Option<String>,
@@ -108,6 +110,7 @@ struct SecretRow {
 #[derive(Debug, Deserialize)]
 pub struct NewConnection {
     url: String,
+    spec_url: Option<String>,
     #[serde(flatten)]
     credentials: Credentials,
 }
@@ -115,7 +118,7 @@ pub struct NewConnection {
 const DEFAULT_KEY_HEADER: &str = "X-API-Key";
 /// The provider of a generic connection: a site, by its URL.
 const SITE: &str = "url";
-const COLUMNS: &str = "id, provider, account_id, email, url, icon_url, auth, key_header, disconnected_at IS NULL AS connected, created_at";
+const COLUMNS: &str = "id, provider, account_id, email, url, spec_url, icon_url, auth, key_header, disconnected_at IS NULL AS connected, created_at";
 const OF_TENANT: &str = "tenant_id = $1 AND id = $2 AND deleted_at IS NULL";
 
 impl Credentials {
@@ -187,26 +190,26 @@ impl Connections {
         let icon = self.icon_of(&url).await;
         let id = Uuid::now_v7();
         let sql = format!(
-            "INSERT INTO connected_accounts (id, account_id, provider, access_token, tenant_id, url, icon_url, auth, key_header) \
-             VALUES ($2, $3, 'url', $4, $1, $5, $6, $7, $8) RETURNING {COLUMNS}"
+            "INSERT INTO connected_accounts (id, account_id, provider, access_token, tenant_id, url, icon_url, auth, key_header, spec_url) \
+             VALUES ($2, $3, 'url', $4, $1, $5, $6, $7, $8, $9) RETURNING {COLUMNS}"
         );
         let query = sqlx::query_as(&sql).bind(tenant_id).bind(id).bind(id.to_string()).bind(self.encrypt(&token)?);
-        Ok(query.bind(&new.url).bind(icon.as_str()).bind(auth).bind(header).fetch_one(&self.pool).await?)
+        Ok(query.bind(&new.url).bind(icon.as_str()).bind(auth).bind(header).bind(&new.spec_url).fetch_one(&self.pool).await?)
     }
 
     /// Connects the tenant to the site at `url` with the OAuth credentials rmcp got from it.
-    pub(crate) async fn create_oauth(&self, tenant_id: Uuid, url: &str, credentials: StoredCredentials) -> Result<Connection, ConnectionError> {
+    pub(crate) async fn create_oauth(&self, tenant_id: Uuid, (url, spec_url): (&str, Option<&str>), credentials: StoredCredentials) -> Result<Connection, ConnectionError> {
         let parsed = Url::parse(url).map_err(|_| ConnectionError::Invalid("url must be an http(s) URL"))?;
         let icon = self.icon_of(&parsed).await;
         let access = credentials.token_response.as_ref().map(|token| token.access_token().secret().clone()).unwrap_or_default();
         let grant = serde_json::to_string(&credentials).map_err(|_| ConnectionError::Encryption)?;
         let id = Uuid::now_v7();
         let sql = format!(
-            "INSERT INTO connected_accounts (id, account_id, provider, access_token, tenant_id, url, icon_url, auth, oauth) \
-             VALUES ($2, $3, 'url', $4, $1, $5, $6, 'oauth', $7) RETURNING {COLUMNS}"
+            "INSERT INTO connected_accounts (id, account_id, provider, access_token, tenant_id, url, icon_url, auth, oauth, spec_url) \
+             VALUES ($2, $3, 'url', $4, $1, $5, $6, 'oauth', $7, $8) RETURNING {COLUMNS}"
         );
         let query = sqlx::query_as(&sql).bind(tenant_id).bind(id).bind(id.to_string()).bind(self.encrypt(&access)?);
-        Ok(query.bind(url).bind(icon.as_str()).bind(self.encrypt(&grant)?).fetch_one(&self.pool).await?)
+        Ok(query.bind(url).bind(icon.as_str()).bind(self.encrypt(&grant)?).bind(spec_url).fetch_one(&self.pool).await?)
     }
 
     /// Connects the tenant's site connection `id` again with the OAuth credentials rmcp got from it.
@@ -330,7 +333,7 @@ mod routes {
 
     /// `GET`/`POST /tenants/{tenant_id}/connections`, `PUT`/`DELETE /tenants/{tenant_id}/connections/{id}`,
     /// `POST /tenants/{tenant_id}/connections/{id}:disconnect`, and the OAuth flow with a site,
-    /// `GET /tenants/{tenant_id}/connections/oauth?url=` (`&id=` to connect that card again) and its `/callback`; to be nested under the API behind
+    /// `GET /tenants/{tenant_id}/connections/oauth?url=` (`&spec_url=` its OpenAPI document, `&id=` to connect that card again) and its `/callback`; to be nested under the API behind
     /// `authorizer`, with a session layer. The `:disconnect` route needs `megh::booking::rewrite_aip_136` around the app.
     pub fn connections_router(state: MeghAuthState) -> Router {
         let connections = Connections::new(state.pool.clone()).with_providers(state.providers.clone());
@@ -379,6 +382,7 @@ mod routes {
     #[derive(Deserialize)]
     struct Site {
         url: String,
+        spec_url: Option<String>,
         id: Option<Uuid>,
     }
 
@@ -392,6 +396,7 @@ mod routes {
     #[derive(Serialize, Deserialize)]
     struct Pending {
         url: String,
+        spec_url: Option<String>,
         client_id: String,
         id: Option<Uuid>,
     }
@@ -402,7 +407,7 @@ mod routes {
         let started = site_oauth::start(&site.url, &callback, SessionStates(session.clone())).await?;
         let csrf = reqwest::Url::parse(&started.authorize_url).ok().and_then(|url| url.query_pairs().find(|(key, _)| key == "state").map(|(_, state)| state.into_owned()));
         let csrf = csrf.ok_or(ConnectionError::OAuth("the sign-in URL has no state".into()))?;
-        session.insert(&pending_key(&csrf), Pending { url: site.url, client_id: started.client_id, id: site.id }).await.map_err(session_failed)?;
+        session.insert(&pending_key(&csrf), Pending { url: site.url, spec_url: site.spec_url, client_id: started.client_id, id: site.id }).await.map_err(session_failed)?;
         Ok(Redirect::to(&started.authorize_url))
     }
 
@@ -421,7 +426,7 @@ mod routes {
         let credentials = site_oauth::finish(&pending.url, &pending.client_id, &redirect_uri, code, SessionStates(session)).await?;
         let connection = match pending.id {
             Some(id) => shared.connections.reconnect_oauth(tenant_id, id, credentials).await?,
-            None => shared.connections.create_oauth(tenant_id, &pending.url, credentials).await?,
+            None => shared.connections.create_oauth(tenant_id, (&pending.url, pending.spec_url.as_deref()), credentials).await?,
         };
         Ok(popup(&shared.auth, serde_json::json!({ "type": "oauth_connect_success", "connection": connection }), None))
     }

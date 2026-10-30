@@ -215,3 +215,20 @@ async fn a_disconnected_oauth_card_is_connected_again_not_added(pool: PgPool) {
     assert_eq!(listed.iter().map(|connection| (connection.id, connection.connected)).collect::<Vec<_>>(), [(id, true)]);
     assert_eq!(connections.secret(mine, id).await.unwrap(), Secret::Bearer("first".into()));
 }
+
+#[sqlx::test(migrations = false)]
+async fn a_site_connected_by_oauth_keeps_its_spec_url(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    let mine = tenant(&pool).await;
+    let site = site(3600).await;
+    let app = app(&pool, mine);
+    let spec = format!("{}/openapi.json", site.origin);
+
+    let start = get_page(&app, &format!("/api/v1/tenants/{mine}/connections/oauth?url={}/mcp&spec_url={spec}", site.origin), "").await;
+    let cookie = start.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_string();
+    let state = location(&start).query_pairs().find(|(key, _)| key == "state").unwrap().1.into_owned();
+    get_page(&app, &format!("/api/v1/tenants/{mine}/connections/oauth/callback?code=abc&state={state}"), &cookie).await;
+    let listed = Connections::new(pool.clone()).list(mine).await.unwrap();
+
+    assert_eq!(listed[0].spec_url.as_deref(), Some(spec.as_str()));
+}

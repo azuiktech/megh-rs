@@ -209,6 +209,18 @@ impl Connections {
         Ok(query.bind(url).bind(icon.as_str()).bind(self.encrypt(&grant)?).fetch_one(&self.pool).await?)
     }
 
+    /// Connects the tenant's site connection `id` again with the OAuth credentials rmcp got from it.
+    pub(crate) async fn reconnect_oauth(&self, tenant_id: Uuid, id: Uuid, credentials: StoredCredentials) -> Result<Connection, ConnectionError> {
+        let access = credentials.token_response.as_ref().map(|token| token.access_token().secret().clone()).unwrap_or_default();
+        let grant = serde_json::to_string(&credentials).map_err(|_| ConnectionError::Encryption)?;
+        let sql = format!(
+            "UPDATE connected_accounts SET access_token = $3, oauth = $4, auth = 'oauth', key_header = NULL, disconnected_at = NULL, updated_at = NOW() \
+             WHERE {OF_TENANT} AND provider = '{SITE}' RETURNING {COLUMNS}"
+        );
+        let query = sqlx::query_as(&sql).bind(tenant_id).bind(id).bind(self.encrypt(&access)?).bind(self.encrypt(&grant)?);
+        query.fetch_optional(&self.pool).await?.ok_or(ConnectionError::NotFound)
+    }
+
     /// Connects the tenant's generic connection `id` again, with new credentials.
     pub async fn reconnect(&self, tenant_id: Uuid, id: Uuid, credentials: Credentials) -> Result<Connection, ConnectionError> {
         let (token, auth, header) = credentials.stored()?;
@@ -318,7 +330,7 @@ mod routes {
 
     /// `GET`/`POST /tenants/{tenant_id}/connections`, `PUT`/`DELETE /tenants/{tenant_id}/connections/{id}`,
     /// `POST /tenants/{tenant_id}/connections/{id}:disconnect`, and the OAuth flow with a site,
-    /// `GET /tenants/{tenant_id}/connections/oauth?url=` and its `/callback`; to be nested under the API behind
+    /// `GET /tenants/{tenant_id}/connections/oauth?url=` (`&id=` to connect that card again) and its `/callback`; to be nested under the API behind
     /// `authorizer`, with a session layer. The `:disconnect` route needs `megh::booking::rewrite_aip_136` around the app.
     pub fn connections_router(state: MeghAuthState) -> Router {
         let connections = Connections::new(state.pool.clone()).with_providers(state.providers.clone());
@@ -363,9 +375,11 @@ mod routes {
         }
     }
 
+    /// The site to sign in at, and the card it connects again, if any.
     #[derive(Deserialize)]
     struct Site {
         url: String,
+        id: Option<Uuid>,
     }
 
     #[derive(Deserialize)]
@@ -379,6 +393,7 @@ mod routes {
     struct Pending {
         url: String,
         client_id: String,
+        id: Option<Uuid>,
     }
 
     /// Sends the browser to sign in at the site, after finding its OAuth server and registering with it.
@@ -387,7 +402,7 @@ mod routes {
         let started = site_oauth::start(&site.url, &callback, SessionStates(session.clone())).await?;
         let csrf = reqwest::Url::parse(&started.authorize_url).ok().and_then(|url| url.query_pairs().find(|(key, _)| key == "state").map(|(_, state)| state.into_owned()));
         let csrf = csrf.ok_or(ConnectionError::OAuth("the sign-in URL has no state".into()))?;
-        session.insert(&pending_key(&csrf), Pending { url: site.url, client_id: started.client_id }).await.map_err(session_failed)?;
+        session.insert(&pending_key(&csrf), Pending { url: site.url, client_id: started.client_id, id: site.id }).await.map_err(session_failed)?;
         Ok(Redirect::to(&started.authorize_url))
     }
 
@@ -404,7 +419,10 @@ mod routes {
         let redirect_uri = format!("{}{}", shared.auth.app_origin.trim_end_matches('/'), uri.path());
         let code = (callback.code.as_str(), callback.state.as_str());
         let credentials = site_oauth::finish(&pending.url, &pending.client_id, &redirect_uri, code, SessionStates(session)).await?;
-        let connection = shared.connections.create_oauth(tenant_id, &pending.url, credentials).await?;
+        let connection = match pending.id {
+            Some(id) => shared.connections.reconnect_oauth(tenant_id, id, credentials).await?,
+            None => shared.connections.create_oauth(tenant_id, &pending.url, credentials).await?,
+        };
         Ok(popup(&shared.auth, serde_json::json!({ "type": "oauth_connect_success", "connection": connection }), None))
     }
 

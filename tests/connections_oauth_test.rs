@@ -6,6 +6,7 @@
 //! - `GET /tenants/{tenant_id}/connections/oauth/callback?code&state` takes the token and connects the site: a
 //!   generic connection with `auth` `oauth`, its URL and icon. The page tells its opener `oauth_connect_success`. A
 //!   state this session did not start is refused and connects nothing.
+//! - With `&id={id}`, the flow connects the tenant's disconnected card `id` again instead of adding one.
 //! - `Connections::secret` answers the token, refreshed at the site when it expires.
 //! - As megh reads a path, the routes need the `oauth` and `callback` grants beside `connections`.
 
@@ -191,4 +192,26 @@ async fn a_site_that_offers_no_oauth_is_refused(pool: PgPool) {
     let refused = get_page(&app, &format!("/api/v1/tenants/{mine}/connections/oauth?url={plain}/api"), "").await;
 
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_disconnected_oauth_card_is_connected_again_not_added(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    let mine = tenant(&pool).await;
+    let site = site(3600).await;
+    let app = app(&pool, mine);
+    connect(&app, mine, &site).await;
+    let connections = Connections::new(pool.clone()).with_encryptor(Encryptor::new(&KEY));
+    let id = connections.list(mine).await.unwrap()[0].id;
+    connections.disconnect(mine, id).await.unwrap();
+
+    let start = get_page(&app, &format!("/api/v1/tenants/{mine}/connections/oauth?url={}/mcp&id={id}", site.origin), "").await;
+    let cookie = start.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_string();
+    let state = location(&start).query_pairs().find(|(key, _)| key == "state").unwrap().1.into_owned();
+    let done = get_page(&app, &format!("/api/v1/tenants/{mine}/connections/oauth/callback?code=abc&state={state}"), &cookie).await;
+    let listed = connections.list(mine).await.unwrap();
+
+    assert_eq!(done.status(), StatusCode::OK);
+    assert_eq!(listed.iter().map(|connection| (connection.id, connection.connected)).collect::<Vec<_>>(), [(id, true)]);
+    assert_eq!(connections.secret(mine, id).await.unwrap(), Secret::Bearer("first".into()));
 }

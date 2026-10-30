@@ -4,7 +4,8 @@
 // - `connect(tenant, { url, bearer } | { url, api_key })` adds a site: `POST /tenants/{tenant}/connections`.
 // - `connect(tenant, { url, oauth: true })` signs in at the site in a popup opened on
 //   `/tenants/{tenant}/connections/oauth?url=`, and resolves with the connection the popup posts.
-// - `reconnect(tenant, id, credentials)` is `PUT /tenants/{tenant}/connections/{id}`, `disconnect(tenant, id)` is
+// - `reconnect(tenant, id, credentials)` is `PUT /tenants/{tenant}/connections/{id}`; with `{ oauth: true, url }` it
+//   signs in again in a popup on `…/connections/oauth?url=&id=`; `disconnect(tenant, id)` is
 //   `POST …/{id}:disconnect`, `remove(tenant, id)` is `DELETE …/{id}`.
 // - `connectWithOAuth(provider, scopes, mode, tenant)` connects a known provider's account for the tenant.
 // - A refused request throws the server's reason.
@@ -81,6 +82,14 @@ describe('connections', () => {
       { path: '/tenants/t1/connections/c1:disconnect', method: 'POST', body: undefined },
       { path: '/tenants/t1/connections/c1', method: 'DELETE', body: undefined },
     ])
+  })
+
+  it('by OAuth are connected again by signing in again', async () => {
+    const { opened, post } = browser()
+    const connecting = new Auth({ base }).reconnect(tenant, 'c9', { oauth: true, url: 'https://mcp.example/mcp' }, 'popup')
+    post({ type: 'oauth_connect_success', connection: { id: 'c9', connected: true } })
+    expect(await connecting).toEqual({ id: 'c9', connected: true })
+    expect(opened).toEqual(['http://api.test/api/v1/tenants/t1/connections/oauth?url=https%3A%2F%2Fmcp.example%2Fmcp&id=c9'])
   })
 
   it('of a known provider are made for the tenant', async () => {

@@ -422,7 +422,7 @@ async fn save_tenant_account(state: &MeghAuthState, provider: &str, tenant: Uuid
         return Err(AuthError(StatusCode::CONFLICT, "another tenant has connected that account"));
     }
     let account = save_account(state, provider, info, tokens).await?;
-    sqlx::query("UPDATE connected_accounts SET tenant_id = $3, auth = 'oauth' WHERE account_id = $1 AND provider = $2")
+    sqlx::query("UPDATE connected_accounts SET tenant_id = $3, auth = 'oauth', deleted_at = NULL WHERE account_id = $1 AND provider = $2")
         .bind(&account.account_id)
         .bind(provider)
         .bind(tenant)

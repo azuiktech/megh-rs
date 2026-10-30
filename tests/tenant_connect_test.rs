@@ -170,3 +170,20 @@ async fn a_connect_without_a_tenant_keeps_the_own_email_check(pool: PgPool) {
 
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 }
+
+#[sqlx::test]
+async fn an_account_connected_again_after_its_card_was_deleted_is_back(pool: PgPool) {
+    let (app, stub) = fixture(pool.clone()).await;
+    let cookie = sign_in(&app).await;
+    let tenant: uuid::Uuid = own_tenant(&app, &cookie).await.parse().unwrap();
+    *stub.userinfo.lock().unwrap() = person("inbox", "orders@shop.example");
+    connect_for(&app, &cookie, &tenant.to_string()).await;
+    let connections = megh::Connections::new(pool.clone());
+    let id = connections.list(tenant).await.unwrap()[0].id;
+    connections.delete(tenant, id).await.unwrap();
+
+    connect_for(&app, &cookie, &tenant.to_string()).await;
+    let listed = connections.list(tenant).await.unwrap();
+
+    assert_eq!(listed.iter().map(|connection| (connection.account_id.as_str(), connection.connected)).collect::<Vec<_>>(), [("inbox", true)]);
+}

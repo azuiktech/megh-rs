@@ -217,18 +217,25 @@ export class Auth<User = Record<string, unknown>> {
   async connect(tenant: string, site: Site, mode: SignInMode = 'auto'): Promise<Connection> {
     if ('oauth' in site) {
       const url = `${this.#base}${this.#connectionsPath(tenant)}/oauth?${new URLSearchParams({ url: site.url })}`
-      const data = await this.#connectInPopup(url, 'megh-site-connect', mode)
-      if (!data.connection) throw new Error('Connect completed without connection payload')
-      return data.connection as Connection
+      return this.#connection(await this.#connectInPopup(url, 'megh-site-connect', mode))
     }
     const res = await this.fetch(this.#connectionsPath(tenant), { method: 'POST', body: JSON.stringify(site) })
     return this.#json(res, 'Connect failed')
   }
 
-  /** Connect the tenant's site connection `id` again, with new credentials. */
-  async reconnect(tenant: string, id: string, credentials: SiteCredentials): Promise<Connection> {
+  /** Connect the tenant's site connection `id` again: with new credentials, or by signing in at `url` again. */
+  async reconnect(tenant: string, id: string, credentials: SiteCredentials | { oauth: true; url: string }, mode: SignInMode = 'auto'): Promise<Connection> {
+    if ('oauth' in credentials) {
+      const url = `${this.#base}${this.#connectionsPath(tenant)}/oauth?${new URLSearchParams({ url: credentials.url, id })}`
+      return this.#connection(await this.#connectInPopup(url, 'megh-site-connect', mode))
+    }
     const res = await this.fetch(`${this.#connectionsPath(tenant)}/${id}`, { method: 'PUT', body: JSON.stringify(credentials) })
     return this.#json(res, 'Reconnect failed')
+  }
+
+  #connection(data: Record<string, unknown>): Connection {
+    if (!data.connection) throw new Error('Connect completed without connection payload')
+    return data.connection as Connection
   }
 
   /** Disconnect the tenant's connection `id`; its card stays. */

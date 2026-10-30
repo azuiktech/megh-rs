@@ -2,7 +2,7 @@
 //!
 //! - `GET /tenants/{tenant_id}/connections/oauth?url={url}` finds the site's authorization server (RFC 9728, 8414),
 //!   registers as a client (RFC 7591) with the callback `{app_origin}{this path}/callback`, and sends the browser to
-//!   sign in with PKCE. A site that offers no OAuth is refused (`400`).
+//!   sign in with PKCE. A site that offers no OAuth is refused (`400`), as is a `spec_url` that is not an http(s) URL.
 //! - `GET /tenants/{tenant_id}/connections/oauth/callback?code&state` takes the token and connects the site: a
 //!   generic connection with `auth` `oauth`, its URL and icon. The page tells its opener `oauth_connect_success`. A
 //!   state this session did not start is refused and connects nothing.
@@ -231,4 +231,16 @@ async fn a_site_connected_by_oauth_keeps_its_spec_url(pool: PgPool) {
     let listed = Connections::new(pool.clone()).list(mine).await.unwrap();
 
     assert_eq!(listed[0].spec_url.as_deref(), Some(spec.as_str()));
+}
+
+#[sqlx::test(migrations = false)]
+async fn an_oauth_start_with_a_spec_url_that_is_not_http_is_refused(pool: PgPool) {
+    megh::migrate(&pool).await.unwrap();
+    let mine = tenant(&pool).await;
+    let site = site(3600).await;
+    let app = app(&pool, mine);
+
+    let refused = get_page(&app, &format!("/api/v1/tenants/{mine}/connections/oauth?url={}/mcp&spec_url=file:///etc/passwd", site.origin), "").await;
+
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
 }

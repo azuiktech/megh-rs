@@ -121,6 +121,14 @@ const SITE: &str = "url";
 const COLUMNS: &str = "id, provider, account_id, email, url, spec_url, icon_url, auth, key_header, disconnected_at IS NULL AS connected, created_at";
 const OF_TENANT: &str = "tenant_id = $1 AND id = $2 AND deleted_at IS NULL";
 
+fn http_url(url: &str, invalid: &'static str) -> Result<Url, ConnectionError> {
+    Url::parse(url).ok().filter(|url| matches!(url.scheme(), "http" | "https")).ok_or(ConnectionError::Invalid(invalid))
+}
+
+fn check_spec_url(spec_url: Option<&str>) -> Result<(), ConnectionError> {
+    spec_url.map_or(Ok(()), |spec| http_url(spec, "spec_url must be an http(s) URL").map(drop))
+}
+
 impl Credentials {
     /// The token stored, how it is sent, and the header an API key goes in.
     fn stored(self) -> Result<(String, Auth, Option<String>), ConnectionError> {
@@ -184,8 +192,8 @@ impl Connections {
 
     /// Connects the tenant to the site at `url`, with the site's icon.
     pub async fn create(&self, tenant_id: Uuid, new: NewConnection) -> Result<Connection, ConnectionError> {
-        let url = Url::parse(&new.url).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
-        let url = url.ok_or(ConnectionError::Invalid("url must be an http(s) URL"))?;
+        let url = http_url(&new.url, "url must be an http(s) URL")?;
+        check_spec_url(new.spec_url.as_deref())?;
         let (token, auth, header) = new.credentials.stored()?;
         let icon = self.icon_of(&url).await;
         let id = Uuid::now_v7();
@@ -403,6 +411,7 @@ mod routes {
 
     /// Sends the browser to sign in at the site, after finding its OAuth server and registering with it.
     async fn start_oauth(State(auth): State<MeghAuthState>, OriginalUri(uri): OriginalUri, Query(site): Query<Site>, session: Session) -> Result<Redirect, ConnectionError> {
+        super::check_spec_url(site.spec_url.as_deref())?;
         let callback = format!("{}{}/callback", auth.app_origin.trim_end_matches('/'), uri.path());
         let started = site_oauth::start(&site.url, &callback, SessionStates(session.clone())).await?;
         let csrf = reqwest::Url::parse(&started.authorize_url).ok().and_then(|url| url.query_pairs().find(|(key, _)| key == "state").map(|(_, state)| state.into_owned()));

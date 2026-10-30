@@ -3,6 +3,10 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-10-30 — a connection's spec URL
+
+- A connection keeps an optional OpenAPI `spec_url`. Asked whether it must be an http(s) URL like `url`: "Yes, validate it". Anything else is refused (`400`), on `POST /connections` and on the OAuth start.
+
 ## 2026-10-27 — products sold along with services (S6 scope)
 
 - "Do not be over clever, and split to 1000 PRs just to reduce size. I warned you multiple times." The rest of S6 (invoice kind and party, stock on payment, appointment products) goes on the #229 branch, one PR.

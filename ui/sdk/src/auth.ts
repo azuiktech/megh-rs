@@ -4,6 +4,26 @@ export interface ConnectedAccount {
   email:      string
 }
 
+/** A tenant's account at a known provider or a site, as its card shows it: never its token. */
+export interface Connection {
+  id:         string
+  provider:   string
+  account_id: string
+  email:      string | null
+  url:        string | null
+  icon_url:   string | null
+  auth:       'oauth' | 'bearer' | 'api_key' | null
+  key_header: string | null
+  connected:  boolean
+  created_at: string | null
+}
+
+/** How a site signs its requests: a bearer token, or an API key sent in `header` (default `X-API-Key`). */
+export type SiteCredentials = { bearer: { token: string } } | { api_key: { key: string; header?: string } }
+
+/** A site to connect: by its credentials, or by signing in there with OAuth. */
+export type Site = { url: string } & (SiteCredentials | { oauth: true })
+
 export interface AuthConfig<User> {
   /** Backend base URL, e.g. 'http://localhost:8080'. No trailing slash. */
   base: string
@@ -176,30 +196,86 @@ export class Auth<User = Record<string, unknown>> {
    * Opens a popup (or redirect) to the provider's consent page.
    * On success the popup closes and the ConnectedAccount is returned.
    */
-  async connectWithOAuth(provider: string, scopes: string[] = [], mode: SignInMode = 'auto'): Promise<ConnectedAccount> {
-    const params = scopes.length ? '?' + scopes.map(s => 'scope=' + encodeURIComponent(s)).join('&') : ''
-    const connectUrl = `${this.#base}/auth/${provider}/connect${params}`
+  async connectWithOAuth(provider: string, scopes: string[] = [], mode: SignInMode = 'auto', tenant?: string): Promise<ConnectedAccount> {
+    const params = new URLSearchParams(scopes.map((scope) => ['scope', scope]))
+    if (tenant) params.append('tenant_id', tenant)
+    const query = params.size ? `?${params}` : ''
+    const data = await this.#connectInPopup(`${this.#base}/auth/${provider}/connect${query}`, `megh-${provider}-connect`, mode)
+    if (!data.account) throw new Error('Connect completed without account payload')
+    return data.account as ConnectedAccount
+  }
 
+  /** The tenant's connections, connected or not. */
+  async connections(tenant: string): Promise<Connection[]> {
+    return this.#json(await this.fetch(this.#connectionsPath(tenant)), 'Listing connections failed')
+  }
+
+  /**
+   * Connect the tenant to a site: with a bearer token or an API key, or `oauth: true` to sign in there in a popup
+   * (megh finds the site's OAuth server and registers with it).
+   */
+  async connect(tenant: string, site: Site, mode: SignInMode = 'auto'): Promise<Connection> {
+    if ('oauth' in site) {
+      const url = `${this.#base}${this.#connectionsPath(tenant)}/oauth?${new URLSearchParams({ url: site.url })}`
+      const data = await this.#connectInPopup(url, 'megh-site-connect', mode)
+      if (!data.connection) throw new Error('Connect completed without connection payload')
+      return data.connection as Connection
+    }
+    const res = await this.fetch(this.#connectionsPath(tenant), { method: 'POST', body: JSON.stringify(site) })
+    return this.#json(res, 'Connect failed')
+  }
+
+  /** Connect the tenant's site connection `id` again, with new credentials. */
+  async reconnect(tenant: string, id: string, credentials: SiteCredentials): Promise<Connection> {
+    const res = await this.fetch(`${this.#connectionsPath(tenant)}/${id}`, { method: 'PUT', body: JSON.stringify(credentials) })
+    return this.#json(res, 'Reconnect failed')
+  }
+
+  /** Disconnect the tenant's connection `id`; its card stays. */
+  async disconnect(tenant: string, id: string): Promise<Connection> {
+    return this.#json(await this.fetch(`${this.#connectionsPath(tenant)}/${id}:disconnect`, { method: 'POST' }), 'Disconnect failed')
+  }
+
+  /** Disconnect and delete the tenant's connection `id`, card and all. */
+  async remove(tenant: string, id: string): Promise<void> {
+    const res = await this.fetch(`${this.#connectionsPath(tenant)}/${id}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error(await this.#reason(res, 'Remove failed'))
+  }
+
+  #connectionsPath(tenant: string): string {
+    return `/tenants/${encodeURIComponent(tenant)}/connections`
+  }
+
+  async #json<T>(res: Response, fallback: string): Promise<T> {
+    if (!res.ok) throw new Error(await this.#reason(res, fallback))
+    return res.json() as Promise<T>
+  }
+
+  async #reason(res: Response, fallback: string): Promise<string> {
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    return body.error ?? fallback
+  }
+
+  /** Opens `url` in a popup (or redirects) and resolves with what the backend posts on `oauth_connect_success`. */
+  #connectInPopup(url: string, name: string, mode: SignInMode): Promise<Record<string, unknown>> {
     if (mode === 'redirect') {
-      this.#redirectToOAuth(connectUrl)
+      this.#redirectToOAuth(url)
       return Promise.reject(new Error('Redirecting'))
     }
-
-    const popup = window.open(connectUrl, `megh-${provider}-connect`, 'width=520,height=620,left=200,top=100')
+    const popup = window.open(url, name, 'width=520,height=620,left=200,top=100')
     const blocked = !popup || popup.closed
     if (blocked) {
-      if (mode === 'popup') throw new Error('Popup blocked — allow popups for this site, or use redirect mode')
-      this.#redirectToOAuth(connectUrl)
+      if (mode === 'popup') return Promise.reject(new Error('Popup blocked — allow popups for this site, or use redirect mode'))
+      this.#redirectToOAuth(url)
       return Promise.reject(new Error('Redirecting'))
     }
-
     return new Promise((resolve, reject) => {
       const backendOrigin = new URL(this.#base).origin
       const onMessage = (event: MessageEvent) => {
         if (event.origin !== backendOrigin) return
         if (event.data?.type !== 'oauth_connect_success') return
         cleanup()
-        event.data.account ? resolve(event.data.account as ConnectedAccount) : reject(new Error('Connect completed without account payload'))
+        resolve(event.data)
       }
       const poll = setInterval(() => { if (popup.closed) { cleanup(); reject(new Error('Connect cancelled')) } }, 500)
       const cleanup = () => { clearInterval(poll); window.removeEventListener('message', onMessage) }
@@ -254,8 +330,9 @@ export class Auth<User = Record<string, unknown>> {
   #redirectToOAuth(loginUrl: string): void {
     // Encode the current page URL so the backend (megh) can redirect back here
     // after OAuth completes. Falls back to '/' for backends that ignore return_to.
-    const returnTo = encodeURIComponent(location.href)
-    window.location.href = `${loginUrl}?return_to=${returnTo}`
+    const url = new URL(loginUrl)
+    url.searchParams.set('return_to', location.href)
+    window.location.href = url.toString()
   }
 
   #setUser(user: User | null): void {

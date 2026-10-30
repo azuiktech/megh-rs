@@ -48,7 +48,9 @@ pub use account::{ConnectedAccount, OAuth2Tokens};
 #[cfg(feature = "postgres")]
 pub use account::{ConnectedAccountRepo, EncryptError, Encryptor};
 #[cfg(all(feature = "postgres", feature = "client"))]
-pub use account::{AccountAuth, AccountError, Accounts};
+pub use account::{AccountAuth, AccountError, Accounts, Connections, Secret};
+#[cfg(all(feature = "axum", feature = "postgres", feature = "client"))]
+pub use account::connections_router;
 
 pub use tenant::{Member, Tenant};
 #[cfg(feature = "postgres")]
@@ -73,6 +75,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     sqlx::raw_sql(include_str!("../migrations/0006_products.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0007_connections.sql"))
         .execute(pool)
         .await?;
     Ok(())

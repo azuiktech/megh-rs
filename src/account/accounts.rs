@@ -90,7 +90,7 @@ impl Accounts {
 
     /// The account's access token, refreshed first when expired. No row is locked and no connection is held while the
     /// provider answers; when two callers refresh at once, the last update is the one stored.
-    async fn access_token(&self, provider: &str, account_id: &str) -> Result<String, AccountError> {
+    pub(crate) async fn access_token(&self, provider: &str, account_id: &str) -> Result<String, AccountError> {
         let account = sqlx::query_as::<_, ConnectedAccount>("SELECT * FROM connected_accounts WHERE account_id = $1 AND provider = $2")
             .bind(account_id)
             .bind(provider)

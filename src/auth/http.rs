@@ -43,6 +43,8 @@ pub struct MeghAuthState {
     pub web_origin: Option<String>,
     /// Encrypts stored OAuth tokens at rest when set (default: plaintext, as before).
     pub token_encryptor: Option<Encryptor>,
+    /// Run after each tenant, member or subscription change megh commits (default: none).
+    pub lifecycle: Option<crate::tenant::Lifecycle>,
 }
 
 impl MeghAuthState {
@@ -59,6 +61,7 @@ impl MeghAuthState {
                 .expect("static HTTP client configuration"),
             web_origin: None,
             token_encryptor: None,
+            lifecycle: None,
         }
     }
 
@@ -388,7 +391,7 @@ pub async fn oauth_callback(
 
 /// A user with no membership gets a tenant of their own, named after their email.
 async fn give_a_tenant(state: &MeghAuthState, user: &User) -> Result<(), AuthError> {
-    let tenants = Tenants::new(state.pool.clone());
+    let tenants = Tenants::new(state.pool.clone()).with_lifecycle(state.lifecycle);
     if tenants.memberships(user.id).await?.is_empty() {
         tenants.create(&user.email, user.id).await?;
     }

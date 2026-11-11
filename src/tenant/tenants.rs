@@ -3,7 +3,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::{Member, Tenant};
+use super::lifecycle::notify;
+use super::{Change, Lifecycle, LifecycleError, Member, Tenant};
 
 /// Failure of a tenant operation.
 #[derive(Debug, thiserror::Error)]
@@ -11,17 +12,25 @@ use super::{Member, Tenant};
 pub enum TenantError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    #[error("the app's lifecycle function failed: {0}")]
+    Lifecycle(LifecycleError),
 }
 
 /// The tenant aggregate: tenants with their members, grants, invitations and auto-join domains.
 #[derive(Clone)]
 pub struct Tenants {
     pool: PgPool,
+    lifecycle: Option<Lifecycle>,
 }
 
 impl Tenants {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self { pool, lifecycle: None }
+    }
+
+    /// Runs `lifecycle` after each change these tenants commit.
+    pub fn with_lifecycle(self, lifecycle: Option<Lifecycle>) -> Self {
+        Self { lifecycle, ..self }
     }
 
     /// All memberships of a user, earliest first; none for a deleted user.
@@ -48,6 +57,7 @@ impl Tenants {
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
+        notify(self.lifecycle, &self.pool, Change::TenantCreated(tenant.clone())).await.map_err(TenantError::Lifecycle)?;
         Ok(tenant)
     }
 }

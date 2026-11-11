@@ -44,6 +44,8 @@ pub enum PasswordError {
     Hash(#[from] bcrypt::BcryptError),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    #[error("the app's lifecycle function failed: {0}")]
+    Lifecycle(crate::tenant::LifecycleError),
 }
 
 /// The `provider` of a machine's user row.
@@ -66,12 +68,18 @@ static DUMMY_HASH: std::sync::LazyLock<String> =
 /// User repository for PostgreSQL operations.
 pub struct UserRepo<'a> {
     pool: &'a sqlx::PgPool,
+    lifecycle: Option<crate::tenant::Lifecycle>,
 }
 
 #[cfg(feature = "postgres")]
 impl<'a> UserRepo<'a> {
     pub fn new(pool: &'a sqlx::PgPool) -> Self {
-        Self { pool }
+        Self { pool, lifecycle: None }
+    }
+
+    /// Runs `lifecycle` after each membership these users' changes commit.
+    pub fn with_lifecycle(self, lifecycle: Option<crate::tenant::Lifecycle>) -> Self {
+        Self { lifecycle, ..self }
     }
 
     /// Fetches a user by UUID.
@@ -163,10 +171,10 @@ impl<'a> UserRepo<'a> {
     pub async fn register_machine(&self, tenant_id: Uuid, name: &str, grants: Vec<String>) -> Result<Registered, PasswordError> {
         let client_id = Uuid::now_v7().to_string();
         let secret = oauth2::CsrfToken::new_random_len(32).secret().clone();
-        sqlx::query(
+        let member: crate::tenant::Member = sqlx::query_as(
             "WITH machine AS (INSERT INTO users (provider, account_id, email, display_name, password_hash, updated_at)
                               VALUES ($1, $2, $2, $3, $4, NOW()) RETURNING id)
-             INSERT INTO tenant_members (tenant_id, user_id, role, grants) SELECT $5::uuid, id, 'machine', $6 FROM machine",
+             INSERT INTO tenant_members (tenant_id, user_id, role, grants) SELECT $5::uuid, id, 'machine', $6 FROM machine RETURNING *",
         )
         .bind(MACHINE)
         .bind(&client_id)
@@ -174,8 +182,10 @@ impl<'a> UserRepo<'a> {
         .bind(bcrypt::hash(&secret, bcrypt::DEFAULT_COST)?)
         .bind(tenant_id)
         .bind(serde_json::json!(grants).to_string())
-        .execute(self.pool)
+        .fetch_one(self.pool)
         .await?;
+        let added = crate::tenant::Change::MemberAdded(member);
+        crate::tenant::lifecycle::notify(self.lifecycle, self.pool, added).await.map_err(PasswordError::Lifecycle)?;
         Ok(Registered { client_id, secret })
     }
 

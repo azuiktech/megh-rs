@@ -6,6 +6,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{AddOn, BillingInterval, Plan, PlanPrice, Subscription, SubscriptionItem, SubscriptionStatus};
+use crate::tenant::lifecycle::notify;
+use crate::tenant::{Change, Lifecycle, LifecycleError};
 use crate::{JsonText, TableEntity};
 
 #[derive(Debug, thiserror::Error)]
@@ -17,6 +19,8 @@ pub enum BillingError {
     InvalidSeats,
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    #[error("the app's lifecycle function failed: {0}")]
+    Lifecycle(LifecycleError),
 }
 
 /// When a cancellation takes effect.
@@ -30,11 +34,17 @@ pub enum CancelWhen {
 #[derive(Clone)]
 pub struct Subscriptions {
     pool: PgPool,
+    lifecycle: Option<Lifecycle>,
 }
 
 impl Subscriptions {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self { pool, lifecycle: None }
+    }
+
+    /// Runs `lifecycle` after each subscription change these commit.
+    pub fn with_lifecycle(self, lifecycle: Option<Lifecycle>) -> Self {
+        Self { lifecycle, ..self }
     }
 
     pub async fn create_plan(&self, plan: &Plan) -> Result<Plan, BillingError> {
@@ -85,18 +95,19 @@ impl Subscriptions {
             Some(existing) => Subscription { id: existing.id, created_at: existing.created_at, ..fresh },
             None => fresh,
         };
-        Ok(subscription.upsert(&self.pool).await?)
+        self.notified(subscription.upsert(&self.pool).await?, Change::Subscribed).await
     }
 
     pub async fn change_seats(&self, tenant_id: Uuid, seats: i64) -> Result<Subscription, BillingError> {
         (seats >= 1).then_some(()).ok_or(BillingError::InvalidSeats)?;
-        found(
+        let changed = found(
             sqlx::query_as("UPDATE subscriptions SET seats = $2, updated_at = NOW() WHERE tenant_id = $1 RETURNING *")
                 .bind(tenant_id)
                 .bind(seats)
                 .fetch_optional(&self.pool)
                 .await?,
-        )
+        )?;
+        self.notified(changed, Change::SubscriptionChanged).await
     }
 
     pub async fn cancel(&self, tenant_id: Uuid, when: CancelWhen) -> Result<Subscription, BillingError> {
@@ -104,14 +115,15 @@ impl Subscriptions {
             CancelWhen::Now => (Some(SubscriptionStatus::Canceled), false),
             CancelWhen::AtPeriodEnd => (None, true),
         };
-        found(
+        let cancelled = found(
             sqlx::query_as("UPDATE subscriptions SET status = COALESCE($2, status), cancel_at_period_end = $3, updated_at = NOW() WHERE tenant_id = $1 RETURNING *")
                 .bind(tenant_id)
                 .bind(status)
                 .bind(at_period_end)
                 .fetch_optional(&self.pool)
                 .await?,
-        )
+        )?;
+        self.notified(cancelled, Change::SubscriptionCancelled).await
     }
 
     /// Attaches the add-on, or updates its quantity and metadata when already attached. A quantity below 1 is 1.
@@ -130,7 +142,7 @@ impl Subscriptions {
             let item = SubscriptionItem { id: Uuid::now_v7(), subscription_id: subscription.id, add_on_id, quantity: Some(quantity), metadata: JsonText(metadata) };
             item.insert(&self.pool).await?;
         }
-        Ok(subscription)
+        self.notified(subscription, Change::SubscriptionChanged).await
     }
 
     pub async fn detach_add_on(&self, tenant_id: Uuid, add_on_id: Uuid) -> Result<Subscription, BillingError> {
@@ -140,7 +152,14 @@ impl Subscriptions {
             .bind(add_on_id)
             .execute(&self.pool)
             .await?;
-        (deleted.rows_affected() > 0).then_some(subscription).ok_or(BillingError::NotFound)
+        let detached = (deleted.rows_affected() > 0).then_some(subscription).ok_or(BillingError::NotFound)?;
+        self.notified(detached, Change::SubscriptionChanged).await
+    }
+
+    /// `subscription`, once the app's lifecycle function has run on its change `as_change`.
+    async fn notified(&self, subscription: Subscription, as_change: fn(Subscription) -> Change) -> Result<Subscription, BillingError> {
+        notify(self.lifecycle, &self.pool, as_change(subscription.clone())).await.map_err(BillingError::Lifecycle)?;
+        Ok(subscription)
     }
 
     async fn find_subscription(&self, tenant_id: Uuid) -> Result<Option<Subscription>, sqlx::Error> {

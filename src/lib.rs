@@ -54,7 +54,7 @@ pub use account::connections_router;
 
 pub use tenant::{Member, Tenant};
 #[cfg(feature = "postgres")]
-pub use tenant::{TenantError, Tenants};
+pub use tenant::{Change, Lifecycle, LifecycleError, TenantError, Tenants};
 
 #[cfg(feature = "postgres")]
 /// Executes all embedded database migrations for Megh foundation tables.

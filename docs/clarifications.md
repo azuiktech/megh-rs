@@ -3,6 +3,10 @@
 The user's answers to design questions, in their terms, newest section first. Binding until the user changes them.
 Read before proposing or changing anything.
 
+## 2026-11-11 — lifecycle hooks (issue #238)
+
+- "add a set of lifecycle hooks to megh tenant create, remove, update, and other changes like member, subscription etc". Approved: one `Change` value per change (tenant created/updated/removed, member added/updated/removed, subscribed, subscription changed/cancelled) and the app's `Lifecycle` function, a plain `fn(PgPool, Change)`, run after the change is committed; set on `MeghAuthState.lifecycle`. A failing function's error is returned by the call; the change stays committed.
+
 ## 2026-10-30 — a connection's spec URL
 
 - A connection keeps an optional OpenAPI `spec_url`. Asked whether it must be an http(s) URL like `url`: "Yes, validate it". Anything else is refused (`400`), on `POST /connections` and on the OAuth start.

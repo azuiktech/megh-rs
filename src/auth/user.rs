@@ -189,6 +189,31 @@ impl<'a> UserRepo<'a> {
         Ok(Registered { client_id, secret })
     }
 
+    /// The tenant's machine member named `name`, registered with `grants` when the tenant has none of that name. An
+    /// app signs its own calls as it with `JwtSession::issue`; the secret of a machine made here is never used.
+    pub async fn machine(&self, tenant_id: Uuid, name: &str, grants: Vec<String>) -> Result<crate::tenant::Member, PasswordError> {
+        match self.named_machine(tenant_id, name).await? {
+            Some(member) => Ok(member),
+            None => {
+                self.register_machine(tenant_id, name, grants).await?;
+                self.named_machine(tenant_id, name).await?.ok_or(PasswordError::UserNotFound)
+            }
+        }
+    }
+
+    async fn named_machine(&self, tenant_id: Uuid, name: &str) -> Result<Option<crate::tenant::Member>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT m.* FROM tenant_members m JOIN users u ON u.id = m.user_id
+             WHERE m.tenant_id = $1 AND m.role = 'machine' AND u.provider = $2 AND u.display_name = $3 AND u.deleted_at IS NULL
+             ORDER BY m.joined_at LIMIT 1",
+        )
+        .bind(tenant_id)
+        .bind(MACHINE)
+        .bind(name)
+        .fetch_optional(self.pool)
+        .await
+    }
+
     /// Updates display name and photo URL for an existing user.
     pub async fn update_profile(
         &self,

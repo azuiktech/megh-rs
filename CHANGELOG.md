@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-11-13
+- An app's own machine member: `UserRepo::machine(tenant_id, name, grants)` answers the tenant's machine member named `name`, registering it with `grants` when the tenant has none of that name. An app signs its own calls as it with `JwtSession::issue`; the secret of a machine made this way is never used. (PR #241, issue #240)
+
 ## 2026-11-11
 - Lifecycle hooks: an app's `Lifecycle` function (a plain `fn(PgPool, Change)`) runs after each tenant, member or subscription change megh commits. `MeghAuthState.lifecycle` sets it for login; `Tenants`, `Subscriptions` and `UserRepo` take it with `with_lifecycle`. Fired: `TenantCreated` (`Tenants::create`, the tenant login gives a first user), `MemberAdded` (`register_machine`), `Subscribed`, `SubscriptionChanged` (`change_seats`, `attach_add_on`, `detach_add_on`) and `SubscriptionCancelled`; `TenantUpdated`, `TenantRemoved`, `MemberUpdated` and `MemberRemoved` fire once those operations exist. A failing function's error is the call's (`TenantError`, `BillingError`, `PasswordError::Lifecycle`); the change stays committed (PR #239, issue #238)
 

@@ -35,6 +35,7 @@ This is the living design for everything that answers "who is calling" (authenti
 | F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token | `[x]` | #39 / #36 |
 | F16 | Sessions on `tower-sessions` (Postgres store) and token CSRF (`axum-tower-sessions-csrf`) in `auth_router` | `[x]` | #43 / #42 |
 | F17 | JWT access token as a cache in front of the session (`jwt_session`, `jsonwebtoken`), renewed from the session | `[x]` | #50 / #49 |
+| F25 | An app's own machine member: `UserRepo::machine(tenant_id, name, grants)` answers the tenant's machine member of that name, registering it with `grants` when the tenant has none; the app signs its calls as it with `JwtSession::issue`, and the registered secret is never used (`tests/machine_member_test.rs`) | `[x]` | #240 |
 
 ## 2. Design vocabulary (pac4j)
 

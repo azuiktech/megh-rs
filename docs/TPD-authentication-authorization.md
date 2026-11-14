@@ -381,3 +381,12 @@ Found while auditing the shipped stack. F8 has closed the OAuth `state`, PKCE, `
 - **`events_router` CSRF:** the SDK posts `/sub` cross-origin with credentials and would have to fetch and send the token; protecting it also needs a session layer around `events_router`.
 - **Gaps in §8:** which become issues.
 - Resolved: `email_verified` `None` → reject; session cookie stays `SameSite=Lax`; axum upgraded to 0.8 with the duplicate `FromRef` removed; request CSRF uses the stateless `tower-http` layer, on by default in `auth_router`.
+
+## Decided (from the clarifications)
+
+- One token carries the grants of one tenant only, so grants of one tenant never count in another.
+- A connection's optional `spec_url` must be an http(s) URL like `url`; anything else is a 400, on `POST /connections` and on the OAuth start.
+- Token refresh: the account is read, the provider is asked outside any transaction, then the new tokens are saved. There is no lock and no mutex; the last update wins.
+- `ConnectedAccountRepo::encrypt_stored(&self) -> Result<u64, sqlx::Error>` is a one-off call after encryption is turned on: every token that does not decrypt is encrypted and saved; the result is the number of rows changed. Reads stay strict.
+- The route authorizer refuses (403) a `{tenant_id}` that is not the token's `aud`. `POST /events/sub` finds only a connection the caller opened. `POST /auth/{provider}/revoke` takes `{"account_id"}` and revokes the signed-in user's own account token (404 otherwise).
+- Machine creation stays a function for now; an admin API comes later.

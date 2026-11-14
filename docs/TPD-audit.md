@@ -54,3 +54,7 @@ The trigger records `current_setting('megh.actor_id')`, and an empty or unset va
 - Postgres only. megh-go's SQLite triggers (which record only the primary key) are not ported.
 - Only one key column is recorded (`key`), so composite keys are not supported.
 - `history` reads one audit table for one row; there is no query by actor or time range yet.
+
+## Decided (from the clarifications)
+
+- A purge whose `before` is later than now is a 400; nothing is deleted.

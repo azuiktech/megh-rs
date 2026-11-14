@@ -158,3 +158,10 @@ pub deliver_to: Option<Address>,
 - `Payment` is unchanged; it is the receipt, one per invoice in practice. When it becomes `succeeded`, a receivable invoice's product lines leave the invoice tenant's stock (409 if too little) and a payable invoice's enter it. A full refund, `failed`, `void` or a deleted payment undoes that change. The products move once per invoice: while it has a succeeded payment not refunded in full. In the transaction that already locks the invoice and refreshes its balance.
 
 **Migration `0006`:** tables `products`, `stocks`, `prices`; `clients.role` (nullable, existing clients have none); `services.unit`, `price`, `currency` (defaults `session`, 0, `USD`); `appointments.products` (default `[]`); on `billing_invoices`, `customer_id` renamed `party_id` (without its tenant foreign key; `0005` now names it `party_id`, and its index moves to `0006` as `billing_invoices_party`), new `party_kind`, `kind`, `reference`, `delivery_date`, `deliver_to`, existing rows `party_kind = 'tenant'` and `kind = 'receivable'`.
+
+## Decided (from the clarifications)
+
+- `totals::invoice` returns `Result<Amounts, TotalsError>`; `TooLarge` on overflow.
+- `subscribe` refuses fewer than 1 seat (`InvalidSeats`), as `change_seats` does.
+- A `PUT` that changes a line's `invoice_id` is a 400, as `PATCH` is; a line never changes invoice.
+- Invoice writes run in a transaction in which `ensure_draft` locks the invoice `FOR UPDATE` and line checks lock it `FOR SHARE`.

@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-11-14
+- `docs/PRD.md`, the product requirements: megh as a shared backend for app development, its twelve features with status, and in-app messaging (user to agent, not a chat room; a2ui 1.0 surfaces, Messenger-style templates, anonymous visitors, later Facebook, Twilio and WhatsApp connectors). New `docs/TPD-events.md` (built broker, durable events decided). `docs/clarifications.md` removed; its decisions moved into the TPDs for tenants, authentication, booking, billing and audit (PR #243, issue #242)
+
 ## 2026-11-13
 - An app's own machine member: `UserRepo::machine(tenant_id, name, grants)` answers the tenant's machine member named `name`, registering it with `grants` when the tenant has none of that name. An app signs its own calls as it with `JwtSession::issue`; the secret of a machine made this way is never used. (PR #241, issue #240)
 

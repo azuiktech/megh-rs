@@ -474,3 +474,11 @@ yet approved is listed in the row and asked before that PR starts.
 
 Reminders to raise later: a PATCH that sets a field with no default (e.g. `name`) to null (section 12); the
 tie between two unrelated parents at the same depth (org hierarchy).
+
+## Decided (from the clarifications)
+
+- Availability is `POST /tenants/{tenant_id}/slots:search`, returning a page `{items, next_page_token}`. The body takes `page_size` (default 50, max 1000) and `page_token`; a page searches at most 7 days and never past `to`; the cursor is on `starts_at`. The grant is `slots:search`. A standard List is GET with no body, so a search with a body is a custom verb, not a list.
+- Every list API pages (AIP-158 `page_size` / `page_token`).
+- Shared REST layer: `crud` `get`, `create` and `replace` run one query and take `PgExecutor`; `patch` and `delete` open a transaction and take `Acquire`, and `TableEntity::soft_delete` takes `Acquire`.
+- Filters: `is_array` marks a `Vec<T>` column (native array on PostgreSQL, JSON text on SQLite); the has-filter SQL exists for both databases and is tested on in-memory SQLite.
+- Every id is a UUID v7: `now_v7` in code, `uuidv7()` in SQL (PostgreSQL 18 or later).

@@ -187,3 +187,8 @@ Checked on scratch copies of three real databases: 85 organizations and 97 of 97
 ### 6.7 Delivery and tests
 
 O1 to O5 are separate PRs, each updating this document and `CHANGELOG.md`. Tests are written first, against a real Postgres (`#[sqlx::test]`), mirroring megh-go's: org lifecycle; members and grants; expired invite not redeemed; valid invite redeemed (`accepted`, `accepted_at`); concurrent redemption yields one member row; expired plus valid invite redeems only the valid one; onboarding order.
+
+## Decided (from the clarifications)
+
+- **Lifecycle hooks (#238, shipped).** One `Change` per change: tenant created, updated, removed; member added, updated, removed; subscribed; subscription changed, cancelled. The app's `Lifecycle` is a plain `fn(PgPool, Change)` set on `MeghAuthState.lifecycle` and runs after the change is committed. A failing hook's error is returned by the call; the change stays committed. Code: `src/tenant/lifecycle.rs`.
+- **Open:** where the tenant hierarchy lives. A physical Org that owns tenants is designed later.

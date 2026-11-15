@@ -53,10 +53,14 @@ fn resolved(schema: &Value, refs: &Map<String, Value>) -> Value {
 }
 
 fn plain(schema: &Value, refs: &Map<String, Value>) -> Value {
-    let kind = schema["type"].as_array().and_then(|kinds| kinds.iter().find(|kind| *kind != "null")).unwrap_or(&schema["type"]);
-    let properties = schema["properties"].as_object().map(|properties| properties.iter().map(|(name, property)| (name.clone(), resolved(property, refs))).collect::<Map<_, _>>());
-    let shaped = properties.map_or(json!({"type": kind}), |properties| json!({"type": kind, "properties": properties}));
-    merged(schema.clone(), shaped)
+    let kind = schema["type"].as_array().and_then(|kinds| kinds.iter().find(|kind| *kind != "null")).map(|kind| json!({"type": kind}));
+    let properties = schema["properties"].as_object().map(|properties| json!({"properties": properties.iter().map(|(name, property)| (name.clone(), resolved(property, refs))).collect::<Map<_, _>>()}));
+    let typed = merged(schema.clone(), kind.unwrap_or_default());
+    match (properties, typed["type"].is_null()) {
+        (Some(properties), true) => merged(merged(typed, properties), json!({"type": "object"})),
+        (Some(properties), false) => merged(typed, properties),
+        (None, _) => typed,
+    }
 }
 
 fn joined(base: Value, part: Value) -> Value {

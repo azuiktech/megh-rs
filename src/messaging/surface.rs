@@ -81,12 +81,39 @@ fn options(pairs: &[(&str, &str)]) -> Vec<Value> {
     pairs.iter().map(|(label, value)| json!({"label": label, "value": value})).collect()
 }
 
+fn picker(key: &str, choices: &[(&str, &str)]) -> Value {
+    json!({"options": options(choices), "value": bound(key), "variant": "mutuallyExclusive"})
+}
+
+fn date_input(key: &str) -> Value {
+    json!({"value": bound(key), "enableDate": true})
+}
+
 fn open_url(url: &str) -> Value {
     json!({"functionCall": {"@call": "openUrl", "args": {"url": url}}})
 }
 
 fn shown(value: &Value) -> String {
-    value.as_str().map_or_else(|| value.to_string(), str::to_string)
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// A property name as people read it: `postal_code` is "Postal code".
+fn readable(name: &str) -> String {
+    let spaced = name.replace('_', " ");
+    let mut letters = spaced.chars();
+    letters.next().map_or_else(String::new, |first| first.to_uppercase().chain(letters).collect())
+}
+
+/// The component under the id `prefix`, with every id it names renamed beneath it.
+fn beneath(mut component: Value, prefix: &str) -> Value {
+    let renamed = |name: &Value| json!(format!("{prefix}_{}", name.as_str().unwrap_or_default()));
+    ["id", "child"].iter().for_each(|key| component.get_mut(*key).into_iter().for_each(|name| *name = renamed(name)));
+    component.get_mut("children").and_then(Value::as_array_mut).into_iter().flatten().for_each(|name| *name = renamed(name));
+    component
 }
 
 /// Every button's event carries the inputs of the surface, each top-level key bound, so the action holds what was filled.
@@ -143,7 +170,6 @@ impl Frame {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Surface {
-    prefix: String,
     components: Vec<Value>,
     top: Vec<String>,
     data: Value,
@@ -183,12 +209,8 @@ impl Surface {
         (top, row.into_iter().chain(texts).collect())
     }
 
-    fn within(prefix: String) -> Self {
-        Self { prefix, ..Self::default() }
-    }
-
     fn next_id(&self) -> String {
-        format!("{}c{}", self.prefix, self.components.len())
+        format!("c{}", self.components.len())
     }
 
     fn push(self, id: String, parts: Vec<Value>) -> Self {
@@ -203,8 +225,9 @@ impl Surface {
 
     fn nest(self, build: impl FnOnce(Surface) -> Surface, shape: impl FnOnce(&str, Vec<String>) -> Vec<Value>) -> Self {
         let id = self.next_id();
-        let inner = build(Surface::within(format!("{id}_")));
-        let parts = shape(&id, inner.top).into_iter().chain(inner.components).collect();
+        let inner = build(Surface::new());
+        let kids = inner.top.iter().map(|kid| format!("{id}_{kid}")).collect();
+        let parts = shape(&id, kids).into_iter().chain(inner.components.into_iter().map(|part| beneath(part, &id))).collect();
         let data = merged(self.data.clone(), inner.data);
         Self { data, ..self.push(id, parts) }
     }
@@ -228,6 +251,11 @@ impl Surface {
         self.leaf("Text", json!({"text": text, "variant": "caption"}))
     }
 
+    /// An image; `text` describes it to those who cannot see it.
+    pub fn image(self, url: &str, text: &str) -> Self {
+        self.leaf("Image", json!({"url": url, "description": text}))
+    }
+
     /// One line: the name and its value.
     pub fn field(self, name: &str, value: &str) -> Self {
         let id = self.next_id();
@@ -241,7 +269,16 @@ impl Surface {
     pub fn fields(self, value: &impl Serialize) -> Self {
         let value = serde_json::to_value(value).unwrap_or_default();
         let present = value.as_object().into_iter().flatten().filter(|(_, value)| !value.is_null());
-        present.fold(self, |surface, (name, value)| surface.field(name, &shown(value)))
+        present.fold(self, |surface, (name, value)| surface.field(&readable(name), &shown(value)))
+    }
+
+    /// A header row of the items' property names, then one row of values per item.
+    pub fn rows<T: Serialize>(self, items: &[T]) -> Self {
+        let values = items.iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect::<Vec<_>>();
+        let names = values.first().and_then(Value::as_object).map(|first| first.keys().map(|name| readable(name)).collect::<Vec<_>>()).unwrap_or_default();
+        let cell = |row: Surface, text: String, extra: Value| row.leaf("Text", merged(json!({"text": text, "weight": 1}), extra));
+        let headed = self.row(|row| names.into_iter().fold(row, |row, name| cell(row, name, json!({"variant": "caption"}))));
+        values.iter().fold(headed, |surface, value| surface.row(|row| value.as_object().into_iter().flatten().fold(row, |row, (_, item)| cell(row, shown(item), json!({})))))
     }
 
     /// One input per property of the schema, in its order, bound to the data model under the property's name.
@@ -251,13 +288,17 @@ impl Surface {
 
     fn inputs_under(self, path: &str, schema: &Value) -> Self {
         let properties = schema["properties"].as_object().into_iter().flatten();
-        properties.fold(self, |surface, (name, property)| surface.input_for(&format!("{path}{name}"), name, property))
+        let label = |name: &str, property: &Value| property["title"].as_str().map_or_else(|| readable(name), str::to_string);
+        properties.fold(self, |surface, (name, property)| surface.input_for(&format!("{path}{name}"), &label(name, property), property))
     }
 
     fn input_for(self, key: &str, label: &str, property: &Value) -> Self {
         match (property["type"].as_str(), property["format"].as_str(), property["enum"].as_array()) {
-            (_, _, Some(choices)) => self.choice(key, &choices.iter().filter_map(Value::as_str).map(|choice| (choice, choice)).collect::<Vec<_>>()),
-            (Some("string"), Some("date" | "date-time"), _) => self.calendar(key),
+            (_, _, Some(choices)) => {
+                let pairs = choices.iter().filter_map(Value::as_str).map(|choice| (choice, choice)).collect::<Vec<_>>();
+                self.leaf("ChoicePicker", merged(picker(key, &pairs), json!({"label": label})))
+            }
+            (Some("string"), Some("date" | "date-time"), _) => self.leaf("DateTimeInput", merged(date_input(key), json!({"label": label}))),
             (Some("integer" | "number"), _, _) => self.number(label, key),
             (Some("boolean"), _, _) => self.leaf("CheckBox", json!({"label": label, "value": bound(key)})),
             (Some("object"), _, _) => self.column(|column| column.inputs_under(&format!("{key}/"), property)),
@@ -313,11 +354,11 @@ impl Surface {
     }
 
     pub fn choice(self, key: &str, choices: &[(&str, &str)]) -> Self {
-        self.leaf("ChoicePicker", json!({"options": options(choices), "value": bound(key), "variant": "mutuallyExclusive"}))
+        self.leaf("ChoicePicker", picker(key, choices))
     }
 
     pub fn calendar(self, key: &str) -> Self {
-        self.leaf("DateTimeInput", json!({"value": bound(key), "enableDate": true}))
+        self.leaf("DateTimeInput", date_input(key))
     }
 
     /// The fields, the question, and an approve and a reject button.

@@ -12,7 +12,7 @@ description = "Micro Event-driven Gateway Hub in Rust"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 json-patch = "4.2"
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -50,7 +50,7 @@ phonenumber = "0.3.10"
 aip-160 = "0.1.5"
 axum-params = { version = "0.4.1", optional = true }
 paginator-utils = "0.4"
-utoipa = { version = "6", features = ["uuid", "chrono"], optional = true }
+utoipa = { version = "6", features = ["uuid", "chrono", "preserve_order"], optional = true }
 utoipa-axum = { version = "0.3", optional = true }
 serde_with = "3.24.0"
 constcat = "0.6"

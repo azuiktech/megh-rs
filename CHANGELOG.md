@@ -10,6 +10,11 @@ Format:
 ```
 
 ## 2026-11-15
+- Surface helpers and a2ui 1.0 conformance:
+  - **Helpers:** `title`, `subtitle`, `fields(&value)`, `inputs(Schema)`, `filled(&data)` and `labels(&[..])`. `Schema::of::<T>()` comes from an entity's `ToSchema`; `Schema::from(json)` takes any schema; `without(&[..])` drops fields. `intake()` is the client's own schema.
+  - **a2ui 1.0 fixes:** `"version": "v1.0"`, bindings `{"path"}` and function calls `{"call"}`. Every button's `context` carries the form's inputs.
+  - **Field order:** `serde_json` and `utoipa` now have `preserve_order`, so JSON keys keep their declared order.
+  - **PRD:** unread counts dropped, connectors moved to future scope, 11.1 rewritten, and labels are strings on a message (PR #NNN, issue #247)
 - Messaging between a client of a tenant and a member of that tenant, in a2ui 1.0. The new `messaging` module has two parts:
   - **Builder:** `Surface`, a fluent builder with `text`, `field`, `button`, `row`, `column`, `card`, `carousel` and inputs. Canned surfaces: `approval`, `selection`, `login`, `logout`, `times`, `date`, `range`, `intake` and `feedback`.
   - **Messaging:** `Messaging::new(pool, broker, tenant_id)` provides `send(surface, from, to)`, `send_event(Signal, from, to)` (typing, read), `on` and `on_event`. Avatar, timestamp and read mark are set once at construction.

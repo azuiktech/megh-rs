@@ -23,7 +23,7 @@ Decided by the user:
   - `send(surface, from, to) -> Message`: stored, then published on `tenants/{t}/clients/{client}/members/{member}` with the message id as event id. A pair of two members or two clients is `MessagingError::NotAPair`.
   - `send_event(Signal, from, to)`: `TypingOn`, `TypingOff`, `Read(up_to)`; published, not stored. A read marks what the other side sent up to `up_to` (`read_at`, the stored mark turned to the read icon) and carries the a2ui `updateDataModel` messages that turn the mark.
   - `on(me, |Message|)`, `on_event(me, |Notice|)`: follow `me`'s topics on the broker (a member hears all its clients) and are not handed `me`'s own.
-  - `History`: the broker's `HistoryProvider` for these topics, from `messages`; `*` for either side is any.
+  - `History`: the broker's `HistoryProvider` for these topics, from `messages`; `*` for either side is any. A first look (`history_limit`) gives the latest `limit` messages, oldest first; a catch-up after an id gives the oldest after it.
   - `router()`: the browser's routes, signed in as a client (token `sub`): `POST /tenants/{tenant_id}/members/{member_id}/messages` `{body}` and `…/events` `{signal}`; takes the `Broker` from an `Extension`.
 - `ui/sdk/src/messaging.ts`: `Chat({base, events, tenant, client, member})` with `on`, `on_event`, `send`, `send_event`, `close`. It follows the pair's topic with `history_limit=50`; the browser's `EventSource` reconnects with `Last-Event-ID`; a send that cannot reach the server is queued in memory and sent in order on `online`.
 - Tests: `tests/messaging_surface_test.rs` (17), `tests/messaging_broker_test.rs` (10), `ui/sdk/test/messaging.test.ts` (5).

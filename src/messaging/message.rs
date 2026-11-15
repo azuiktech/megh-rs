@@ -328,11 +328,18 @@ fn read_update(surface_id: String, icon: Value) -> Value {
     json!({"version": "1.0", "updateDataModel": {"surfaceId": surface_id, "path": "/meta/mark", "value": icon}})
 }
 
-/// Which messages: those after an id or a time, at most `limit` (none is every one).
+/// Which end of the messages `limit` keeps: the oldest (catching up after an id) or the latest (a first look).
+enum End {
+    Oldest,
+    Latest,
+}
+
+/// Which messages: those after an id or a time, at most `limit` (none is every one) from one end.
 struct Window {
     after: Option<Uuid>,
     since: Option<DateTime<Utc>>,
     limit: Option<usize>,
+    end: End,
 }
 
 /// The broker's `HistoryProvider` for messaging topics, read from the stored messages; other topics have none.
@@ -348,10 +355,11 @@ impl History {
 
     async fn events(&self, topic: &Topic, window: Window) -> Result<Vec<Event>, HistoryError> {
         let Some((tenant_id, client, member)) = scope(topic) else { return Ok(Vec::new()) };
+        let latest = matches!(window.end, End::Latest);
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT * FROM messages WHERE tenant_id = $1 AND ($2::uuid IS NULL OR client_id = $2) AND ($3::uuid IS NULL OR member_id = $3)
+            "SELECT * FROM (SELECT * FROM messages WHERE tenant_id = $1 AND ($2::uuid IS NULL OR client_id = $2) AND ($3::uuid IS NULL OR member_id = $3)
                AND ($4::uuid IS NULL OR id > $4) AND ($5::timestamptz IS NULL OR created_at > $5)
-             ORDER BY id LIMIT $6",
+             ORDER BY CASE WHEN $7 THEN id END DESC, id LIMIT $6) kept ORDER BY id",
         )
         .bind(tenant_id)
         .bind(client)
@@ -359,6 +367,7 @@ impl History {
         .bind(window.after)
         .bind(window.since)
         .bind(window.limit.map(|limit| limit as i64))
+        .bind(latest)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|row| row.delivered().1).collect())
@@ -382,11 +391,11 @@ fn side(segment: &str) -> Option<Option<Uuid>> {
 
 impl HistoryProvider for History {
     fn fetch_history<'a>(&'a self, topic: &'a Topic, opts: &'a HistoryOptions) -> HistoryFuture<'a> {
-        Box::pin(self.events(topic, Window { after: None, since: opts.since, limit: opts.limit }))
+        Box::pin(self.events(topic, Window { after: None, since: opts.since, limit: opts.limit, end: End::Latest }))
     }
 
     fn fetch_history_since_id<'a>(&'a self, topic: &'a Topic, last_id: &'a str, limit: Option<usize>) -> HistoryFuture<'a> {
-        Box::pin(self.events(topic, Window { after: last_id.parse().ok(), since: None, limit }))
+        Box::pin(self.events(topic, Window { after: last_id.parse().ok(), since: None, limit, end: End::Oldest }))
     }
 }
 

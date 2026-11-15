@@ -14,7 +14,7 @@ Format:
   - `image(url, text)`.
   - `rows(&[T])` gives a header row, then one aligned row per item.
   - `row`, `column`, `card` and `carousel` rename what their closure returns under their own id, so canned surfaces such as `intake()` and `login()` nest.
-  - Labels are readable: the schema `title`, else `postal_code` becomes "Postal code". This covers inputs, fields and rows, choices and dates included (PR #NNN, issue #251)
+  - Labels are readable: the schema `title`, else `postal_code` becomes "Postal code". This covers inputs, fields and rows, choices and dates included (PR #252, issue #251)
 - Surfaces follow the current a2ui 1.0 spec, as `@a2ui/web_core` 0.15.0 bundles it. This reverts #248's changes to the version and keys:
   - `"version": "1.0"`, bindings `{"@path"}` and function calls `{"@call"}`.
   - Nested component ids use `_` (`c0_c1`), so every id is a valid identifier.

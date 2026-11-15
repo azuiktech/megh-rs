@@ -249,7 +249,7 @@ fn fields_show_each_property_of_a_value_in_its_order() {
     let all = components(Surface::new().fields(&booking).row(|r| r.button("Yes", "approve").button("No", "reject")));
     let rows = children(root(&all)).iter().map(|id| by_id(&all, id).clone()).filter(|c| c["component"] == "Row").collect::<Vec<_>>();
     let shown = rows.iter().filter(|r| children(r).len() == 2 && by_id(&all, &r["children"][0])["component"] == "Text");
-    assert_eq!(shown.map(|r| texts(&all, &r["children"])).collect::<Vec<_>>(), [["service", "Haircut"], ["provider", "Dr. Rao"], ["time", "10:30"]]);
+    assert_eq!(shown.map(|r| texts(&all, &r["children"])).collect::<Vec<_>>(), [["Service", "Haircut"], ["Provider", "Dr. Rao"], ["Time", "10:30"]]);
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn inputs_follow_the_schema_of_a_type_in_its_order() {
     let all = components(Surface::new().inputs(Schema::of::<Intake>()));
     assert_eq!(bound_to(&all), [json!("/name"), json!("/age"), json!("/tier"), json!("/born"), json!("/agreed"), json!("/town/city"), json!("/secret")]);
     let at = |path: &str| all.iter().find(|c| c["value"]["@path"] == path).unwrap().clone();
-    assert_eq!((at("/name")["component"].clone(), at("/name")["label"].clone()), (json!("TextField"), json!("name")));
+    assert_eq!((at("/name")["component"].clone(), at("/name")["label"].clone()), (json!("TextField"), json!("Name")));
     assert_eq!((at("/age")["component"].clone(), at("/age")["variant"].clone()), (json!("TextField"), json!("number")));
     assert_eq!(at("/tier")["component"], "ChoicePicker");
     assert_eq!(at("/tier")["options"].as_array().unwrap().iter().map(|o| o["value"].clone()).collect::<Vec<_>>(), [json!("Basic"), json!("Gold")]);
@@ -318,4 +318,56 @@ fn every_component_id_is_an_identifier() {
     let all = components(surface);
     let bad = all.iter().map(|c| c["id"].as_str().unwrap().to_string()).filter(|id| !identifier(id)).collect::<Vec<_>>();
     assert!(bad.is_empty(), "{bad:?}");
+}
+
+fn well_formed(all: &[Value]) -> bool {
+    let ids = all.iter().map(|c| c["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let known = ids.iter().cloned().collect::<HashSet<_>>();
+    let refs = all.iter().flat_map(|c| c["children"].as_array().cloned().unwrap_or_default().into_iter().chain(c.get("child").cloned()));
+    ids.len() == known.len() && refs.map(|r| r.as_str().unwrap().to_string()).all(|r| known.contains(&r))
+}
+
+#[derive(serde::Serialize)]
+struct Line {
+    item: &'static str,
+    unit_price: &'static str,
+    quantity: u32,
+}
+
+#[test]
+fn an_image_shows_its_url_with_its_text() {
+    let all = components(Surface::new().image("https://cdn.example.com/oil.png", "Argan hair oil"));
+    let image = of(&all, "Image")[0];
+    assert_eq!((image["url"].clone(), image["description"].clone()), (json!("https://cdn.example.com/oil.png"), json!("Argan hair oil")));
+    assert_eq!(root(&all)["children"], json!([image["id"]]));
+}
+
+#[test]
+fn canned_surfaces_nest_inside_a_card_or_a_column() {
+    let intake = components(Surface::new().card(|c| c.title("Before we start").column(|_| Surface::intake())));
+    assert!(well_formed(&intake));
+    assert!(bound_to(&intake).contains(&json!("/first_name")));
+    let login = components(Surface::new().text("Log in to see your bookings.").column(|_| Surface::login("https://example.com/login")));
+    assert!(well_formed(&login));
+    assert_eq!(of(&login, "Button")[0]["action"]["functionCall"]["args"]["url"], "https://example.com/login");
+    let twice = components(Surface::new().column(|_| Surface::date("Day?")).column(|_| Surface::date("Again?")));
+    assert!(well_formed(&twice));
+    assert_eq!(of(&twice, "DateTimeInput").len(), 2);
+}
+
+#[test]
+fn rows_are_a_header_then_one_row_per_item() {
+    let lines = [Line { item: "Haircut", unit_price: "$40.00", quantity: 1 }, Line { item: "Hair oil", unit_price: "$12.00", quantity: 2 }];
+    let all = components(Surface::new().rows(&lines));
+    assert!(well_formed(&all));
+    let shown = of(&all, "Row").iter().map(|r| texts(&all, &r["children"])).collect::<Vec<_>>();
+    assert_eq!(shown, [vec!["Item", "Unit price", "Quantity"], vec!["Haircut", "$40.00", "1"], vec!["Hair oil", "$12.00", "2"]]);
+}
+
+#[test]
+fn a_label_is_the_schema_title_or_the_property_name_made_readable() {
+    let schema = json!({"type": "object", "properties": {"postal_code": {"type": "string"}, "dob": {"type": "string", "title": "Date of birth"}, "agreed": {"type": "boolean"}}});
+    let all = components(Surface::new().inputs(Schema::from(schema)));
+    let labels = all.iter().filter(|c| c.get("label").is_some()).map(|c| c["label"].clone()).collect::<Vec<_>>();
+    assert_eq!(labels, [json!("Postal code"), json!("Date of birth"), json!("Agreed")]);
 }

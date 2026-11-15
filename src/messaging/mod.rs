@@ -15,7 +15,7 @@ mod label;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 mod message;
 #[cfg(all(feature = "axum", feature = "postgres"))]
-mod messaging;
+mod hub;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 mod participant;
 #[cfg(all(feature = "axum", feature = "postgres"))]
@@ -40,7 +40,7 @@ pub use label::{Label, LabelData, Labelled};
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use message::{Content, Message, MessageData, MessageKind};
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub use messaging::Messaging;
+pub use hub::Messaging;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use participant::{Participant, ParticipantData, Party};
 #[cfg(all(feature = "axum", feature = "postgres"))]

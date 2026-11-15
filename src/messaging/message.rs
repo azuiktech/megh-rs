@@ -14,7 +14,7 @@ use validator::Validate;
 
 use super::attachment::AttachmentSummary;
 use super::error::MessagingError;
-use super::messaging::{Messaging, Paged, thread_topic};
+use super::hub::{Messaging, Paged, thread_topic};
 use super::surface::{Action, Surface};
 use super::thread;
 use crate::Entity;

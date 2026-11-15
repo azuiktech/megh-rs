@@ -164,7 +164,7 @@ async fn a_guest_has_placeholder_names_made_from_the_start_of_its_id(pool: PgPoo
 
     let guest = arrive(&fixture, acme).await;
 
-    let four = guest["client"]["id"].as_str().unwrap()[..4].to_string();
+    let four = guest["client"]["id"].as_str().unwrap().replace('-', "")[28..].to_string();
     assert!(four.chars().all(|c| c.is_ascii_hexdigit()));
     assert_eq!(
         (

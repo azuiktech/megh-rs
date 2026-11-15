@@ -15,7 +15,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::error::MessagingError;
-use super::messaging::{Messaging, Paged};
+use super::hub::{Messaging, Paged};
 use super::{participant, thread};
 use crate::Entity;
 use crate::auth::AccessToken;

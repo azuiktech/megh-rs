@@ -13,7 +13,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::error::MessagingError;
-use super::messaging::{Messaging, threads_topic};
+use super::hub::{Messaging, threads_topic};
 use super::participant::{self, Participant, Party};
 use crate::auth::AccessToken;
 use crate::auth::crud;

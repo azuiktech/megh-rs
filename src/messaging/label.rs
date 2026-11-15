@@ -13,7 +13,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::error::MessagingError;
-use super::messaging::{Messaging, thread_topic};
+use super::hub::{Messaging, thread_topic};
 use super::thread;
 use crate::auth::crud;
 use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};

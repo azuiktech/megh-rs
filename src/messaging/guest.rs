@@ -9,7 +9,7 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 
 use super::error::MessagingError;
-use super::messaging::Messaging;
+use super::hub::Messaging;
 use super::participant::{Participant, Party};
 use super::thread::{Thread, start};
 use crate::auth::JwtSession;
@@ -27,10 +27,10 @@ pub struct Arrival {
 }
 
 impl Messaging {
-    /// A new guest client (placeholder names made from the start of its id), its thread and its place in it.
+    /// A new guest client (placeholder names made from the end of its id), its thread and its place in it.
     pub async fn arrive(&self, tenant_id: Uuid) -> Result<Arrival, MessagingError> {
         let id = Uuid::now_v7();
-        let four = id.simple().to_string().chars().take(4).collect::<String>();
+        let four = id.simple().to_string().chars().skip(28).take(4).collect::<String>();
         let guest = |text: String| Name::try_new(text).expect("a guest's name is not empty");
         let data = ClientData {
             tenant_id,

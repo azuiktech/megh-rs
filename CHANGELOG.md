@@ -9,6 +9,14 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-11-15
+- Messaging between a client of a tenant and a member of that tenant, in a2ui 1.0. The new `messaging` module has two parts:
+  - **Builder:** `Surface`, a fluent builder with `text`, `field`, `button`, `row`, `column`, `card`, `carousel` and inputs. Canned surfaces: `approval`, `selection`, `login`, `logout`, `times`, `date`, `range`, `intake` and `feedback`.
+  - **Messaging:** `Messaging::new(pool, broker, tenant_id)` provides `send(surface, from, to)`, `send_event(Signal, from, to)` (typing, read), `on` and `on_event`. Avatar, timestamp and read mark are set once at construction.
+  - **History and routes:** a `History` provider for the broker, and the browser's `POST …/members/{member_id}/messages` and `…/events` routes.
+  - **Storage and SDK:** a new `messages` table. The `ui/sdk` `Chat` class has `on`, `on_event`, `send`, `send_event` and an offline queue.
+  - **Docs:** new `docs/TPD-messaging.md`, and the PRD feature 11 statuses (PR #246, issue #244)
+
 ## 2026-11-14
 - `docs/PRD.md`, the product requirements: megh as a shared backend for app development, its twelve features with status, and in-app messaging (user to agent, not a chat room; a2ui 1.0 surfaces, Messenger-style templates, anonymous visitors, later Facebook, Twilio and WhatsApp connectors). New `docs/TPD-events.md` (built broker, durable events decided). `docs/clarifications.md` removed; its decisions moved into the TPDs for tenants, authentication, booking, billing and audit (PR #243, issue #242)
 

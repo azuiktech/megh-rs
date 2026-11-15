@@ -3,3 +3,6 @@ export type { AuthConfig, Connection, ConnectedAccount, Site, SiteCredentials, S
 
 export { Events, matchTopic } from './events'
 export type { EventsConfig, EventMessage, ConnectionStatus, EventListener, StatusListener } from './events'
+
+export { Chat } from './messaging'
+export type { ChatConfig, Message, Notice, Party, Signal } from './messaging'

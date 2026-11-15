@@ -10,7 +10,7 @@ Format:
 ```
 
 ## 2026-11-15
-- In-app messaging backend (user to agent): threads, participants (members, machine agents, clients, guests), text, surface and answer messages, bytea attachments with a configurable cap, labels on threads and messages, typing and read indicators, a2ui 1.0 surfaces validated against the vendored schemas with ready-made surfaces and Messenger-style templates, guest tokens, live push and catch-up over the event broker. `clients.kind` (`guest`, `client`, `prospect`, or another name). New `docs/TPD-messaging.md`; PRD and other TPDs synced with the code, "organization" corrected to "tenant" (PR #PR, issue #244)
+- In-app messaging backend (user to agent): threads, participants (members, machine agents, clients, guests), text, surface and answer messages, bytea attachments with a configurable cap, labels on threads and messages, typing and read indicators, a2ui 1.0 surfaces validated against the vendored schemas with ready-made surfaces and Messenger-style templates, guest tokens, live push and catch-up over the event broker. `clients.kind` (`guest`, `client`, `prospect`, or another name). New `docs/TPD-messaging.md`; PRD and other TPDs synced with the code, "organization" corrected to "tenant" (PR #245, issue #244)
 
 ## 2026-11-14
 - `docs/PRD.md`, the product requirements: megh as a shared backend for app development, its twelve features with status, and in-app messaging (user to agent, not a chat room; a2ui 1.0 surfaces, Messenger-style templates, anonymous visitors, later Facebook, Twilio and WhatsApp connectors). New `docs/TPD-events.md` (built broker, durable events decided). `docs/clarifications.md` removed; its decisions moved into the TPDs for tenants, authentication, booking, billing and audit (PR #243, issue #242)

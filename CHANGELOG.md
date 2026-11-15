@@ -10,6 +10,10 @@ Format:
 ```
 
 ## 2026-11-15
+- Surfaces follow the current a2ui 1.0 spec, as `@a2ui/web_core` 0.15.0 bundles it. This reverts #248's changes to the version and keys:
+  - `"version": "1.0"`, bindings `{"@path"}` and function calls `{"@call"}`.
+  - Nested component ids use `_` (`c0_c1`), so every id is a valid identifier.
+  - Checked by loading live surfaces in web_core's v1.0 processor (PR #250, issue #249)
 - Surface helpers and a2ui 1.0 conformance:
   - **Helpers:** `title`, `subtitle`, `fields(&value)`, `inputs(Schema)`, `filled(&data)` and `labels(&[..])`. `Schema::of::<T>()` comes from an entity's `ToSchema`; `Schema::from(json)` takes any schema; `without(&[..])` drops fields. `intake()` is the client's own schema.
   - **a2ui 1.0 fixes:** `"version": "v1.0"`, bindings `{"path"}` and function calls `{"call"}`. Every button's `context` carries the form's inputs.

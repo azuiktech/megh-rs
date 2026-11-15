@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 const CATALOG: &str = "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json";
-const VERSION: &str = "v1.0";
+const VERSION: &str = "1.0";
 
 /// How feedback is given: a rating from 1 to the number of stars, or one of a few words.
 pub enum Scale {
@@ -70,7 +70,7 @@ fn joined(base: Value, part: Value) -> Value {
 }
 
 fn bound(key: &str) -> Value {
-    json!({"path": format!("/{key}")})
+    json!({"@path": format!("/{key}")})
 }
 
 fn merged(base: Value, extra: Value) -> Value {
@@ -82,7 +82,7 @@ fn options(pairs: &[(&str, &str)]) -> Vec<Value> {
 }
 
 fn open_url(url: &str) -> Value {
-    json!({"functionCall": {"call": "openUrl", "args": {"url": url}}})
+    json!({"functionCall": {"@call": "openUrl", "args": {"url": url}}})
 }
 
 fn shown(value: &Value) -> String {
@@ -91,7 +91,7 @@ fn shown(value: &Value) -> String {
 
 /// Every button's event carries the inputs of the surface, each top-level key bound, so the action holds what was filled.
 fn answering(components: Vec<Value>) -> Vec<Value> {
-    let keys = components.iter().filter_map(|c| c["value"]["path"].as_str()?.split('/').nth(1).map(str::to_string)).unique();
+    let keys = components.iter().filter_map(|c| c["value"]["@path"].as_str()?.split('/').nth(1).map(str::to_string)).unique();
     let context = Value::Object(keys.map(|key| (key.clone(), bound(&key))).collect());
     components.into_iter().map(|component| with_context(component, &context)).collect()
 }
@@ -203,7 +203,7 @@ impl Surface {
 
     fn nest(self, build: impl FnOnce(Surface) -> Surface, shape: impl FnOnce(&str, Vec<String>) -> Vec<Value>) -> Self {
         let id = self.next_id();
-        let inner = build(Surface::within(format!("{id}.")));
+        let inner = build(Surface::within(format!("{id}_")));
         let parts = shape(&id, inner.top).into_iter().chain(inner.components).collect();
         let data = merged(self.data.clone(), inner.data);
         Self { data, ..self.push(id, parts) }

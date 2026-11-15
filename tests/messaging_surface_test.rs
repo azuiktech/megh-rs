@@ -33,10 +33,10 @@ fn root(all: &[Value]) -> &Value {
 fn the_messages_are_a2ui_one_point_zero_create_then_update() {
     let messages = Surface::new().text("Hello").messages("s1");
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0]["version"], "v1.0");
+    assert_eq!(messages[0]["version"], "1.0");
     assert_eq!(messages[0]["createSurface"]["surfaceId"], "s1");
     assert_eq!(messages[0]["createSurface"]["sendDataModel"], true);
-    assert_eq!(messages[1]["version"], "v1.0");
+    assert_eq!(messages[1]["version"], "1.0");
     assert_eq!(messages[1]["updateComponents"]["surfaceId"], "s1");
 }
 
@@ -122,13 +122,13 @@ fn a_carousel_is_a_horizontal_list_of_cards() {
 #[test]
 fn input_choice_and_calendar_are_bound_to_the_data_model() {
     let all = components(Surface::new().input("Your name", "name").choice("slot", &[("10:30", "a"), ("11:30", "b")]).calendar("day"));
-    assert_eq!(of(&all, "TextField")[0]["value"], json!({"path": "/name"}));
+    assert_eq!(of(&all, "TextField")[0]["value"], json!({"@path": "/name"}));
     assert_eq!(of(&all, "TextField")[0]["label"], "Your name");
     let picker = of(&all, "ChoicePicker")[0];
-    assert_eq!(picker["value"], json!({"path": "/slot"}));
+    assert_eq!(picker["value"], json!({"@path": "/slot"}));
     assert_eq!(picker["options"].as_array().unwrap().iter().map(|o| o["value"].clone()).collect::<Vec<_>>(), [json!("a"), json!("b")]);
     let date = of(&all, "DateTimeInput")[0];
-    assert_eq!(date["value"], json!({"path": "/day"}));
+    assert_eq!(date["value"], json!({"@path": "/day"}));
     assert_eq!(date["enableDate"], true);
 }
 
@@ -144,7 +144,7 @@ fn approval_shows_the_question_the_fields_and_approve_and_reject() {
 #[test]
 fn login_and_logout_open_the_given_url() {
     let all = components(Surface::login("https://app.example.com/login"));
-    assert_eq!(of(&all, "Button")[0]["action"]["functionCall"]["call"], "openUrl");
+    assert_eq!(of(&all, "Button")[0]["action"]["functionCall"]["@call"], "openUrl");
     assert_eq!(of(&all, "Button")[0]["action"]["functionCall"]["args"]["url"], "https://app.example.com/login");
     let all = components(Surface::logout("https://app.example.com/logout"));
     assert_eq!(of(&all, "Button")[0]["action"]["functionCall"]["args"]["url"], "https://app.example.com/logout");
@@ -228,7 +228,7 @@ struct Intake {
 }
 
 fn bound_to(all: &[Value]) -> Vec<Value> {
-    all.iter().filter(|c| c["value"].get("path").is_some()).map(|c| c["value"]["path"].clone()).collect()
+    all.iter().filter(|c| c["value"].get("@path").is_some()).map(|c| c["value"]["@path"].clone()).collect()
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn fields_show_each_property_of_a_value_in_its_order() {
 fn inputs_follow_the_schema_of_a_type_in_its_order() {
     let all = components(Surface::new().inputs(Schema::of::<Intake>()));
     assert_eq!(bound_to(&all), [json!("/name"), json!("/age"), json!("/tier"), json!("/born"), json!("/agreed"), json!("/town/city"), json!("/secret")]);
-    let at = |path: &str| all.iter().find(|c| c["value"]["path"] == path).unwrap().clone();
+    let at = |path: &str| all.iter().find(|c| c["value"]["@path"] == path).unwrap().clone();
     assert_eq!((at("/name")["component"].clone(), at("/name")["label"].clone()), (json!("TextField"), json!("name")));
     assert_eq!((at("/age")["component"].clone(), at("/age")["variant"].clone()), (json!("TextField"), json!("number")));
     assert_eq!(at("/tier")["component"], "ChoicePicker");
@@ -292,7 +292,7 @@ fn a_button_carries_every_input_of_its_surface_in_its_context() {
     let all = components(surface);
     let context = of(&all, "Button")[0]["action"]["event"]["context"].clone();
     let keys = ["name", "age", "tier", "born", "agreed", "town"];
-    assert_eq!(context, Value::Object(keys.iter().map(|k| (k.to_string(), json!({"path": format!("/{k}")}))).collect()));
+    assert_eq!(context, Value::Object(keys.iter().map(|k| (k.to_string(), json!({"@path": format!("/{k}")}))).collect()));
 }
 
 #[test]
@@ -309,4 +309,13 @@ fn intake_is_the_client_schema_without_server_fields() {
     let paths = bound_to(&components(Surface::intake()));
     assert!(paths.contains(&json!("/first_name")) && paths.contains(&json!("/email")));
     assert!(!paths.contains(&json!("/tenant_id")) && !paths.iter().any(|p| p.as_str().unwrap().starts_with("/attributes")));
+}
+
+#[test]
+fn every_component_id_is_an_identifier() {
+    let surface = Surface::new().row(|r| r.button("Yes", "y")).card(|c| c.column(|c| c.text("t"))).carousel(|s| s.card(|c| c.text("x")));
+    let identifier = |id: &str| id.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_') && id.chars().all(|c| c.is_alphanumeric() || c == '_');
+    let all = components(surface);
+    let bad = all.iter().map(|c| c["id"].as_str().unwrap().to_string()).filter(|id| !identifier(id)).collect::<Vec<_>>();
+    assert!(bad.is_empty(), "{bad:?}");
 }

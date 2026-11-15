@@ -28,7 +28,7 @@ Decided by the user:
   - `Schema::of::<T: ToSchema>()` resolves `$ref`, merges `allOf` (a flattened struct's fields come first) and takes a nullable `oneOf` or `type` as its type; `Schema::from(Value)` does the same for any schema; `without(&[..])` drops properties. `intake()` is the `ClientData` schema without `tenant_id` and `attributes`.
   - `labels(&[..])`: a row of caption texts first in the message.
   - Every button's `event.context` binds each top-level key of the surface's inputs, so the action carries what was filled.
-  - a2ui 1.0 as its schemas say: `"version": "v1.0"`, a binding is `{"path": …}`, a function call `{"call": …}`.
+  - a2ui 1.0 as `@a2ui/web_core` 0.15.0 bundles it: `"version": "1.0"`, a binding is `{"@path": …}`, a function call `{"@call": …}`, and a component id is an identifier (a nested id is `c0_c1`).
   - The frame of avatar, timestamp and read mark wraps a sent surface; the mark is an `Icon` bound to `/meta/mark` in the data model, which holds the sent and read icons beside the filled data.
 - `Cargo.toml`: `serde_json` and `utoipa` with `preserve_order`, so JSON keys and schema properties keep their declared order.
 - `src/messaging/message.rs`:
@@ -39,8 +39,8 @@ Decided by the user:
   - `History`: the broker's `HistoryProvider` for these topics, from `messages`; `*` for either side is any. A first look (`history_limit`) gives the latest `limit` messages, oldest first; a catch-up after an id gives the oldest after it.
   - `router()`: the browser's routes, signed in as a client (token `sub`): `POST /tenants/{tenant_id}/members/{member_id}/messages` `{body}` and `…/events` `{signal}`; takes the `Broker` from an `Extension`.
 - `ui/sdk/src/messaging.ts`: `Chat({base, events, tenant, client, member})` with `on`, `on_event`, `send`, `send_event`, `close`. It follows the pair's topic with `history_limit=50`; the browser's `EventSource` reconnects with `Last-Event-ID`; a send that cannot reach the server is queued in memory and sent in order on `online`.
-- Tests: `tests/messaging_surface_test.rs` (26), `tests/messaging_broker_test.rs` (11), `ui/sdk/test/messaging.test.ts` (5).
-- Checked against the a2ui 1.0 JSON schemas: every canned surface, a typed review card with labels, a `ClientData` form and a raw-schema form, each sent through `Messaging` on Postgres with avatar, timestamp and read mark; all 28 messages and their components valid. Not run in a real renderer.
+- Tests: `tests/messaging_surface_test.rs` (27), `tests/messaging_broker_test.rs` (11), `ui/sdk/test/messaging.test.ts` (5).
+- Checked against `@a2ui/web_core` 0.15.0: every canned surface, a typed review card with labels, a `ClientData` form and a raw-schema form, each sent through `Messaging` on Postgres with avatar, timestamp and read mark, then a read. All 29 messages pass its bundled 1.0 JSON schemas and load in its v1.0 `MessageProcessor` with the v1 basic catalog. The read turns the mark to `doneAll`, and pressing the form's Send, resolved by web_core, gives an action whose context holds the filled values. Not drawn by a Lit or Flutter renderer.
 - Run live (scratch server, real Postgres, HTTP and SSE): the agent's card, the agent's typing, the client's answer, typing and read all reached the other side; the stored mark turned to `doneAll`; after a server restart a reconnect with the last id received the missed message from the database. Not run in a real browser.
 
 ## Decided, not built

@@ -66,7 +66,7 @@ async fn a_member_sends_a_card_to_a_client_and_the_client_hears_it(pool: PgPool)
     let got = next(&mut heard).await;
     assert_eq!(got, sent);
     assert_eq!((got.from, got.to), (agent, ann));
-    assert_eq!(got.body[0]["version"], "v1.0");
+    assert_eq!(got.body[0]["version"], "1.0");
     assert!(components(&got).iter().any(|c| c["text"] == "Do you want to book this appointment?"));
 }
 
@@ -144,7 +144,7 @@ async fn avatar_timestamp_and_read_mark_are_set_once_and_frame_every_message(poo
     assert_eq!((image["variant"].clone(), image["url"].clone()), (json!("avatar"), json!(format!("https://img.example.com/{agent_id}.png"))));
     let time = all.iter().find(|c| c["variant"] == "caption").unwrap()["text"].as_str().unwrap().to_string();
     assert!(time.len() == 5 && time.as_bytes()[2] == b':');
-    assert_eq!(all.iter().find(|c| c["component"] == "Icon").unwrap()["name"], json!({"path": "/meta/mark"}));
+    assert_eq!(all.iter().find(|c| c["component"] == "Icon").unwrap()["name"], json!({"@path": "/meta/mark"}));
     assert_eq!(sent.body[0]["createSurface"]["dataModel"]["meta"]["mark"], "check");
 }
 
@@ -172,7 +172,7 @@ async fn reading_turns_the_mark_to_read_for_the_sender_and_in_history(pool: PgPo
     let notice = next(&mut at_agent).await;
     assert_eq!(notice.signal, Signal::Read(sent.id));
     let surface_id = sent.body[0]["createSurface"]["surfaceId"].clone();
-    assert_eq!(notice.updates, vec![json!({"version": "v1.0", "updateDataModel": {"surfaceId": surface_id, "path": "/meta/mark", "value": "doneAll"}})]);
+    assert_eq!(notice.updates, vec![json!({"version": "1.0", "updateDataModel": {"surfaceId": surface_id, "path": "/meta/mark", "value": "doneAll"}})]);
     let stored = sqlx::query_scalar::<_, Value>("SELECT body FROM messages WHERE id = $1").bind(sent.id).fetch_one(&pool).await.unwrap();
     assert_eq!(stored[0]["createSurface"]["dataModel"]["meta"]["mark"], "doneAll");
 }

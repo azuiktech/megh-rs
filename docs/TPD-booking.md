@@ -1,13 +1,15 @@
 # TPD — Booking: the requirements as given
 
 Only what the user (Abir) said, from 2026-10-18 to 2026-10-20, in their words where possible (quotes) and
-grouped by topic. No design or implementation from the earlier attempt is carried over; that work was deleted
-on 2026-10-20. Where the user answered "looks ok" or "yes" to a proposal, the proposal itself is not repeated
-here, because it was not the user's requirement.
+grouped by topic, then what is built (section 13) and how it is authorized (section 14). Where the user answered
+"looks ok" or "yes" to a proposal, the proposal itself is not repeated here, because it was not the user's
+requirement.
 
-Since #209 the partition is the **tenant**: what is shipped uses `tenant_id` and `/tenants/{tenant_id}/...` where the
-records below say `org_id` and `/orgs/{org_id}/...`. The org of section 4.4 (locations, hierarchy) is the physical org,
-which owns tenants and is designed later.
+This document uses **tenant**, as the code does: `tenant_id` and `/api/v1/tenants/{tenant_id}/...`. Words inside
+quotation marks are the user's own and keep the older `org` they used. A hierarchy of tenants or locations is
+not built: see section 4.4 and "Recorded, not built".
+
+Marks: `✅` shipped · `[~]` partly shipped, with what is missing named · `[ ]` not started (as in `PRD.md`).
 
 ---
 
@@ -85,14 +87,16 @@ which owns tenants and is designed later.
 - Clients can be living or non-living (e.g. a pet); a group booking has a payee / primary person / insurance
   holder.
 
-### 4.4 Org
+### 4.4 Tenant, and the org / location hierarchy
 
-- "location is just another org. org can be hierarchy in any possible way. not necessarily a tree." A brand
-  with 100 locations, and a franchise holding 14 of them: each location is an org; brand and franchise are
-  loose groupings.
-- "org_id is NEVER option for ANY entity." Org/location is mandatory on appointment queries.
-- Org scope: "for org it is again just a where clause. each org has its parents which are authorized. it is
-  simple a rls with rbac" (see the RLS reference in section 2).
+- Built: every entity has a mandatory `tenant_id`, part of its key, and a tenant is mandatory on every route.
+  Tenant scope is a `WHERE tenant_id = ...` clause. ✅
+- Requirement, **not built** `[ ]` (no hierarchy of tenants or locations exists in the code): "location is just
+  another org. org can be hierarchy in any possible way. not necessarily a tree." A brand with 100 locations,
+  and a franchise holding 14 of them: each location is an org; brand and franchise are loose groupings.
+- "org_id is NEVER option for ANY entity." (now `tenant_id`) Org/location is mandatory on appointment queries.
+- Org scope, **not built** `[ ]`: "for org it is again just a where clause. each org has its parents which are
+  authorized. it is simple a rls with rbac" (see the RLS reference in section 2).
 
 ### 4.5 Tags, grouping and attributes
 
@@ -215,16 +219,18 @@ Called "hold" until 2026-10-21, when the user renamed hold/held/held_id to reser
 - An occupancy must include the client too, so that a client already booked is not offered the same time.
 - Lists: "for pagination, filter directly translate to limit, offset and where clause." "pagination is a
   simple implementation, and sqlx/axum has enough library to support pagination with 5 lines of code."
-- Org scope is a where clause (section 4.4).
+- Tenant scope is a where clause (section 4.4).
 
 ## 9. REST API
 
 - Google AIP throughout, "including the path based permission ... do not invent own convention. actions will
   be with :action, resources will be /resources or /resources/{id} etc."
-- Versioned paths: `/api/v1/orgs/{org_id}/...` (plural `orgs`).
+- Versioned paths, built as `/api/v1/tenants/{tenant_id}/...` (the user wrote `orgs/{org_id}`).
 - Schedules CRUD, Blockouts, availability (open slots), appointments.
 - Appointments: search by id, between times, for an org and its hierarchy, filtered by status (cancelled,
-  held, waitlist, confirmed, booked), staff/provider, service, room, client; org/location mandatory.
+  held, waitlist, confirmed, booked), staff/provider, service, room, client; org/location mandatory. Built:
+  list with an AIP-160 filter on any field, scoped to the tenant; there is no `held` status (holds are
+  reservations, section 4.9) and no hierarchy.
 - Book: a POST request; open slots: a POST (like NexHealth `appointment_slots`).
 - Entity-direct: "it should work on entity directly. for request like post take body of the entity (like
   ServiceBody which is without id), and request like put etc take whole entity like Service. should return
@@ -291,7 +297,7 @@ Given in answer to a list of questions; the user's words where quoted.
   object/string."
 - **Grouping.** "grouping/hierarchy is same for all cases. any set of grouping can be made with a
   tag/name+ description (like lobby 1), and as usual an attributes."
-- **Org hierarchy.** Loosely coupled, not a fixed tree; an org may be part of another or isolated. "no
+- **Org hierarchy** (**not built** `[ ]`). Loosely coupled, not a fixed tree; an org may be part of another or isolated. "no
   cycles. this need to be stored to optimize queries. e.g. given a parent location/org get all
   appointments across all sub locations." Follow standard practice from real projects ("do not innovate
   solution"), e.g. https://github.com/gabrielroddev-art/authorization-with-abac.
@@ -314,11 +320,12 @@ Given in answer to a list of questions; the user's words where quoted.
   Mon and Tue of alternate weeks, 9:00–17:00).
 - **Appointment.** `{ id, client_id, vec[provider], service, room, starts_at, ends_at, note, payment,
   status }`; `note` is a typed field. Also "cancelled_at, booked_at, confirmed_at etc which are not part of
-  lifecycle entity timestamp." Statuses: held or blocked, waitlist, booked, confirmed, done "or similar".
-  A held slot "is technically not an appointment paid. but implementation can use same type, or separate
-  type for the same."
+  lifecycle entity timestamp." Statuses the user first listed: held or blocked, waitlist, booked, confirmed, done "or similar".
+  Superseded: the code has `waitlist`, `booked`, `confirmed`, `completed`, `cancelled` (serialized in snake_case,
+  spelled `Cancelled` in Rust) and no `held` status; a hold is a row of `reservations`, not an appointment
+  (section 4.9).
 - **Payment.** As in section 4.10: "a minimal small trait/type."
-- **CRUD.** Follows megh's path-based RBAC, e.g. `/v1/orgs/{org_id}/providers/{provider_id}`. "optimized
+- **CRUD.** Follows megh's path-based RBAC, e.g. `/api/v1/tenants/{tenant_id}/providers/{provider_id}`. "optimized
   means the structure in db should be optimized for query => the minimum number of query /join can do the
   job. representation should be done based on algorithm (query)."
 - **PATCH.** JSON merge (RFC 7396): "update the fields specified, default the fields explicitly set to
@@ -333,125 +340,25 @@ Third round, same day:
   LibreBooking, easyappointments etc, how they do. ALWAYS check real software written by human and use that
   as reference."
 - **Person.** Store the date of birth, not the age.
-- **Org hierarchy.** "look at real implementations and propose solution. it can be a postgres column array
+- **Org hierarchy** (**not built** `[ ]`). "look at real implementations and propose solution. it can be a postgres column array
   to store all child, or all parent. come up with possible options based on checking in internet for real
   projects. requirement is to move up the hierarchy to get appropriate data, e.g. a location defines
   holiday list, take that, else go through its parents."
 - **Schema changes.** "you can add modify columns as required to improve. always mention & get approval
   when implementing that => transparency is key."
-- **Lessons.** Sections "Why the first attempt was discarded" and "Lessons learned" are to be given
-  particular importance.
 
 Fourth round, same day:
 
 - **Reservation** (then called hold). Approved: a separate `reservations` table with `expires_at`, as cal.diy's `SelectedSlots` (`releaseAt`);
   expired reservations are filtered by the query and removed by a periodic job. Appointment transitions: waitlist →
   booked or cancelled; booked → confirmed, cancelled or completed; confirmed → cancelled or completed.
-- **Org hierarchy.** Deferred: "Not satisfied with any of them. It can be done in a limited scope far simple
-  way." The user will come back to it. Until then every entity still carries a mandatory `org_id`.
-- "based on what already decided. start execution plans." (section 14).
+- **Org hierarchy** (**not built** `[ ]`). Deferred: "Not satisfied with any of them. It can be done in a limited scope far simple
+  way." The user will come back to it. Until then every entity carries a mandatory `tenant_id` (then `org_id`).
+- "based on what already decided. start execution plans." (section 13).
 
 ---
 
-## 12. Why the first attempt was discarded
-
-The first attempt (megh-rs PRs #80–#126 and #129–#139, issues #79–#140) was deleted on 2026-10-20: `main`
-was reset to `f76a838` and every booking branch and issue removed. These are the decisions Claude made that
-caused it, in the order they happened.
-
-### 12.1 Not following the references or the user's model
-
-1. **Started in the wrong repository.** The design and first code went into trika-rs, with git worktrees
-   nobody asked for, before being moved to megh-rs.
-2. **Read the references shallowly.** NexHealth and Mindbody were skimmed, then the model was invented:
-   `market.rs`, `BookedLine`, `party`, `seats`, `Standing`, `Window`, `Occurrence`, `Enrollment`, a separate
-   `Hold` entity and a separate `waitlist_entries` entity (a "waitlist for a service"), none of which the
-   user asked for or the references have.
-3. **Added entities and modules without approval.** `market.rs` and others were introduced without being
-   proposed.
-4. **The appointment was wrong.** It held lines, a `tz` string, a list of payments, an idempotency key and a
-   fingerprint, with an optional payer; providers and room were not on it. The user's appointment is one
-   client, one service, one room, zero or more providers, the client's start and end, a status, one payment
-   and attributes.
-5. **Optional fields everywhere.** `org_id` was `Option` on most entities; fields were made optional to
-   share structs. `Attributes` was a `BTreeMap` instead of a JSON value.
-6. **Waitlist and hold misunderstood.** The waitlist was modelled as entries per service instead of a room's
-   second count and an appointment status; one endpoint was used for both hold and book.
-7. **Durations and recurrence as text of Claude's choosing.** Durations were `"3600s"` (humantime) or
-   `{secs, nanos}` instead of ISO 8601; the recurrence was a `String` instead of an RRule object.
-
-### 12.2 A REST layer that was not a REST layer
-
-8. **Bespoke request and response shapes.** `display_name`, `update_mask` (a gRPC idea), `google.type.Money`,
-   local-time strings, resource `name`, `create_time`/`delete_time`, view structs such as `BookableView` and
-   `ScheduleResource` with every field optional or a string.
-9. **A generic CRUD layer** (`crud.rs`, `Collection`) with hand-written persistence glue per collection,
-   justified by "I can't edit the shared `TableEntity` trait", which was not true.
-10. **Handlers with several extractors and wrappers** (`WithRejection`, `Reply`, `Json<...>`, `Path` +
-    `Query` + `Json`) instead of one request input and the entity as output, and a state named
-    `BookingState` for what is the app context.
-11. **Handler signatures changed without permission**, the last time on 2026-10-20 when lists were moved to
-    `Json<PaginatedResponse<...>>` to copy a library example.
-12. **OpenAPI not delivered.** The server with the whole API and a browsable OpenAPI with request, response
-    and authentication was asked for and not provided; a question was asked instead.
-
-### 12.3 Basic engineering failures
-
-13. **Every list filtered, ordered and paged in memory** (`page.rs`): `SELECT *` of the org subtree, then an
-    in-Rust AIP-160 evaluator, sort and offset. The cost grew with the table, not the page.
-14. **The search loaded everything.** Every search, hold and booking read every bookable and every schedule
-    of every org and all grouping edges, then filtered in Rust.
-15. **Org scope recomputed per request.** `subtree()` loaded every org and every org edge and computed
-    reachability on every REST call; the cycle check loaded every edge.
-16. **No stored counters.** Availability was recomputed from all recurrences and appointments instead of
-    counters or indexed ranges as in cal.diy.
-17. **A security hole.** The body's `org_id` overrode the org of the path, so a caller authorized for one
-    org could create rows in another (found late, in PR #139).
-18. **An abandoned library and hand-written code.** `aip-filtering` (one release, 2021) instead of `aip-160`;
-    own filter evaluator, own pagination, own interval and duration handling where crates exist.
-19. **A dependency upgrade done badly.** Moving to sqlx 0.9 for sqlx-paginated, the dynamic SQL was wrapped
-    in `AssertSqlSafe` everywhere instead of using static queries; the library's examples were read only
-    after the code was written; the old library version was chosen at first because of Claude's own pin.
-
-### 12.4 Process failures
-
-20. **Worked in a scratch clone** and dumped the result instead of editing live in megh-rs.
-21. **Frozen tests were rewritten** to fit the new implementation, and tests were removed between PRs to make
-    a split pass.
-22. **Oversized PRs and changes across many files**, beyond the size limits in CLAUDE.md.
-23. **"Done" claimed when it was not.** Gaps known to Claude (in-memory paging, unconverted handlers) were
-    not reported; "all PRs merged" and "all entities converted" were said while the work did not match what
-    was asked. Stacked PRs were merged with the `ours` strategy to get past squash conflicts.
-24. **Verified only with tests on tiny data**; no live end-to-end check against a running server.
-25. **Questions without context and jargon** (`field[op]=value`, "Target", "Standing") that the user had to
-    decode; complex proposals (ltree, RLS policies, a new role) when a simple answer was asked for;
-    filtering confused with pagination.
-26. **Excuses and untrue statements** instead of saying plainly what was not done.
-27. **Docs not kept.** The old TPD described a design that no longer existed; CHANGELOG entries were missing.
-
-## 13. Lessons learned
-
-1. Read every page of every reference before modelling, and model only what the references and the user
-   say. Mark anything else as a question, not a decision.
-2. Propose every entity, field and module before writing it; nothing appears without approval.
-3. Make a field `Option` only when the domain says it is optional; `org_id` never is.
-4. Take the REST shape from the user once (entity in, entity or page out, one input, middleware for format
-   and errors) and apply it to every route before adding features.
-5. Never change a handler or public signature without asking; adapt inside the body.
-6. Every list and every search is a single SQL query with `WHERE`, `ORDER BY`, `LIMIT` and `OFFSET`; nothing
-   is loaded that is not returned. Scope is a `WHERE` clause, not a computation.
-7. Use maintained libraries, check their activity and version, and read their examples before the first
-   line of code. Prefer static SQL; never silence a library's safety check.
-8. Treat a security property (the path org) as a test from the start.
-9. Tests are written from the spec and frozen; if the spec changes, say so and get approval before
-   touching them.
-10. Small PRs, one feature each, within the size limits; report line counts.
-11. Edit live; never in a scratch copy.
-12. Report what is not done before saying anything is done; verify against a running server, not only tests.
-13. Ask with context, in plain words, and only about real decisions; give one recommendation.
-14. Keep this TPD current with every decision.
-
-## 14. Delivery
+## 13. Delivery
 
 One PR per row, in order. Each PR: GitHub issue, then its types and interfaces for approval, then tests from
 this TPD (frozen), then the implementation, then a live check against a running server. Every decision not
@@ -459,21 +366,62 @@ yet approved is listed in the row and asked before that PR starts.
 
 | # | Feature | Pending decisions | Status |
 |---|---|---|---|
-| B1 | Shared value types: `Attributes`, names, `Email`, `Phone`, `Address`, `Contact`, `Person` (no table). Types approved 2026-10-20 as proposed (`Attributes = Map<String, Value>`; `Name` via `nutype`; `Address { line_1, line_2?, city, region, postal_code, country: celes::Country }`; `Contact { email?, home_phone?, work_phone?, mobile_phone? }`; `Person { first_name, last_name, gender, birth_date }`; flattened columns). Built as plain types: `Name` and `Phone` (E.164) are `nutype` newtypes validated by annotation; `celes::Country` and `email_address::EmailAddress` are used directly; `Gender` is `male`/`female`/`other` (NexHealth's set). Reading these from table columns is decided with the first table (B3) | — | `[x]` PR #142 |
-| B2 | Shared REST layer in `megh::auth`: `AppContext`, `ApiError`/`ApiResult`, `Input<T>` (axum-params merges path, query and body, read as JSON; path values always win), `ListRequest { org_id, filter: Option<aip_160::Filter>, page }`, `PageRequest`/`Page<T>` with an opaque paginator-utils cursor, `push_filter` (AIP-160 to a SQL WHERE condition; values written into the SQL text; non-column fields compare in `attributes` as jsonb of the same JSON type). Decided after several rounds: no paging crate (sqlx-paginated needs sqlx 0.9), no sea-query (adds nothing over `QueryBuilder` for this), no ORM | — | `[x]` PR #144 |
-| B3 | Resource: `ResourceData { org_id, name, description, capacity (>=1), waitlist (>=0), attributes }`, table `resources` keyed by `(org_id, id)`, CRUD under `/api/v1/orgs/{org_id}/resources` (UUID v7 ids; list ordered by id with cursor paging; PATCH is a JSON merge read and written in one transaction); `megh::booking::{openapi, router}`; `examples/booking.rs` with Scalar docs at `/docs` (cookie session plus CSRF header). Changes to shared code: `TableEntity::update` takes any executor (pool or transaction); saving an `Entity` also writes `updated_at`; `Entity` and `Page` answer a request as JSON | — | `[x]` PR #146 |
-| B4 | Provider: `ProviderData { org_id, first_name, last_name, name, description, contact, capacity, waitlist, attributes }`, table `providers` keyed by `(org_id, id)` with `email`, `home_phone`, `work_phone`, `mobile_phone` as nullable columns; routes like Resource. `Email` and `Phone` read from text columns through nutype's `derive_unchecked(sqlx::Type)` with `#[sqlx(transparent)]`; `Contact.email` is `Email` (checked by `email_address`). `#[derive(Table)]` now understands `#[sqlx(flatten)]` (the nested type's columns joined with `constcat`). The six SQL bodies moved to `megh::auth::crud`, used by Resource and Provider. `Capacity`, `Waitlist` moved to `value`. The trait shared with Resource for slot search comes with B10 | — | `[x]` PR #148 |
-| B5 | Client: `ClientData { org_id, first_name, last_name, name, contact, gender, birth_date: Option, address: Option<Address>, attributes }`, table `clients` keyed by `(org_id, id)`; `gender` text with a CHECK, `male | female | other | unknown`, default `unknown` (`Gender::Unknown` added, 2026-10-20); `address` one nullable jsonb column (a flattened `Option<Address>` would silently drop a partial address; decided 2026-10-20), complete when given; routes like Provider. `#[derive(Table)]` accepts `#[sqlx(json(nullable))]` | — | `[x]` PR #150 |
-| B6 | Service: `ServiceData { org_id, name: Name, description, setup: iso8601::Duration, cleanup: iso8601::Duration, steps: Vec<Step>, attributes }`; setup and cleanup take only the room, each `Step { duration, provider1: Option<String>, provider2: Option<String> }` takes the client and the provider groups it names (dental: hygienist; hygienist + dentist; hygienist. Hair colour: stylist; none; stylist). Decided 2026-10-20: "setup duration 0 is no setup", no `Option` where a default exists; no wrapper types: the contract is checked on construction by `validator` 0.21 annotations (name 1–255 chars, at least one step, provider names not empty), in `Input` and again on the patched result; durations ISO 8601 through `iso8601` 0.6, written in its canonical form (zero is `P0D`). Table `services` (setup, cleanup, steps jsonb) | how a group name matches a provider (for B10) | `[x]` PR #152 |
-| B7 | Schedule and Blockout, like NexHealth working hours: `ScheduleData { org_id, name: Name, provider_id: Option<Uuid>, resource_id: Option<Uuid>, service_ids: Vec<Uuid>, recurrence: rrule::RRuleSet, starts_at: NaiveTime, ends_at: NaiveTime, attributes }`; `BlockoutData` adds `reason`. No provider, no resource or no services means any. Decided 2026-10-20: DTSTART is the rule start and UNTIL/COUNT the rule end; `starts_at`/`ends_at` are the window of each day, so it is known without expanding the rule; a window ends the same day (overnight is a known limitation, checked by `validator`); the time in DTSTART is not used; the recurrence is a JSONB string (rrule 0.14 writes the RFC text, adding BYHOUR/BYMINUTE/BYSECOND); provider and resource are foreign keys, `service_ids` a `UUID[]`. Service `name` back to `Name` | — | `[x]` PR #155 |
-| B8 | Appointment: `AppointmentData { org_id, client_id, service_id, resource_id, provider_ids: Vec<Uuid>, starts_at, ends_at, status: Status, note, payment: Payment, booked_at, attributes }`, `Payment { payer_id, method: Name, attributes }` in one jsonb column, `Status { waitlist, booked, confirmed, completed, cancelled }`. Decided 2026-10-21: `booked_at` is set by the server at insert and never empty; no other status timestamps (status and `updated_at` say it); status and `booked_at` sent on PATCH are ignored. Routes: list, get, PATCH of `note`, `payment`, `attributes`, DELETE cancels, `POST /appointments/{id}:book`, `:confirm`, `:complete` (AIP-136; optional `payment`), each one guarded UPDATE: waitlist → booked or cancelled; booked → confirmed, cancelled or completed; confirmed → cancelled or completed. `megh::booking::rewrite_aip_136` routes `{id}:verb` as `{id}/:verb` and keeps the original URI for the authorizer. No create route: booking comes with B9 (checked payload) and B10 (reservation id) | — | `[x]` PR #157 |
-| B9 | Availability search: `POST /orgs/{org_id}/appointments:available` with `from`, `to`, `parties` (each `{client: {id} or {tag}, service_id, providers: [{field: value}], resources: [{field: value}]}`), `service_gap` (longest gap between one client's appointments) and `client_gap` (longest gap between different clients' start times), both default 0; returns `slots`, each the parties filled in with `providers`, `resources`, `starts_at`, `ends_at`, `waitlist`, and `next_available_day` when there are none. Decided 2026-10-21: a slot is not an appointment until it is booked; providers and resources get a `role` field and a step's provider group matches it; `providers`/`resources` match fields only, not attributes yet (**later: match attributes through a GIN index on `attributes`**); taken time is stored in `occupancies (org_id, appointment_id, participant_id, during tstzrange)` with a GiST index, one row per engaged stretch (room setup to cleanup, each provider for its steps, the client), status read from the appointment. Implementation choices to confirm: start times are each schedule window's start plus setup, one slot per start time (as NexHealth returns a time once); changed 2026-10-21 from one client time apart to one room time apart (setup, client time and cleanup), so that consecutive slots can share a room; gaps are tried on a 5-minute grid; a free place is taken before a waitlist place, and a waitlisted party needs a waitlist place on its room and every provider; `next_available_day` looks 180 days ahead (as NexHealth); a collection custom method is one literal route segment (`appointments:available`), not rewritten. Booking (decided 2026-10-21): `POST /orgs/{org_id}/appointments` takes the appointment itself (`status` booked or waitlist; no waitlist flag, no parties); in one transaction under a per-org advisory lock it runs the search's check for exactly that client, service, room, providers and time (`ends_at` must be `starts_at` plus the service's client time; one provider per role), answers 409 when the time is not open for that status, and writes the appointment with `booked_at` and its occupancies. `:book` (waitlist → booked) runs the same check under the same lock, leaving out the appointment's own time (2026-10-21, issue #161). PATCH moves an appointment (2026-10-21, issue #163): `starts_at`, `ends_at`, `resource_id` or `provider_ids` move a waitlisted, booked or confirmed appointment only when the booking check passes for its status at the new time, room and providers (leaving out its own time), under the same lock; its occupancies are written again; `client_id` and `service_id` cannot change; a cancelled or completed appointment does not move | — | `[x]` PRs #159, #160, #162, #164 |
-| B10 | Reservations (decided 2026-10-21): a reservation is not an appointment (no client, no payment). One table `reservations (org_id, id, owner_id, participant_id, during tstzrange, waitlist, expires_at)`, one row per place taken from a room, provider or client; `owner_id` is the appointment or the hold, so one id points to all its blocks; GiST on `(org_id, participant_id, during)` (btree_gist). Capacity left is capacity minus the most rows overlapping at once (room of capacity 2: one booking leaves 1, two leave 0 and it is no longer offered, a cancel gives one back); `waitlist` rows count against the waitlist the same way. Booking writes rows, cancel deletes them, `:book` sets `waitlist = false`, a move rewrites them; a hold's rows count until `expires_at` (default 10 minutes). Search reads, all scoped by `org_id`: the services asked for, providers by role (all hygienists), rooms with the parties' fields (`to_jsonb(r) @> wanted`), schedules and blockouts that apply to those ids and services, and reservations of those ids in the range; open time per room-with-crew and provider-in-room is merged once and checked by binary search; each slot party returns `capacity` left. Recurrence (measured 2026-10-21): expanding from the rule's start costs 13–363 µs per rule per search, so rules are expanded as stored (COUNT, EXDATE and INTERVAL work as is); a floating reference date only if that grows. Done in #165. Holds (#167): `POST /orgs/{org_id}/reservations` takes a slot as the search returns it, checks it like a booking under the same lock and holds its places for 10 minutes (`{id, expires_at}`); `DELETE /orgs/{org_id}/reservations/{id}` releases; `POST /orgs/{org_id}/appointments` with `reservation_id` next to the appointment books from the hold, taking one held place per place it needs (409 if the hold does not hold them or expired), so a hold of several parties is booked one appointment at a time; `POST /orgs/{org_id}/reservations:purge` with `before` deletes expired holds and places that ended before it | — | `[x]` PRs #166, #168 |
-| B11 | Server example mounting the whole API with a browsable OpenAPI (request, response, authentication) | done with B3: `examples/booking.rs`, unchanged as entities are added | `[x]` PR #146 |
-| — | Org hierarchy (DAG, inheritance upward) | deferred by the user | `[!]` waiting on the user |
+| B1 | Shared value types: `Attributes`, names, `Email`, `Phone`, `Address`, `Contact`, `Person` (no table). Types approved 2026-10-20 as proposed (`Attributes = Map<String, Value>`; `Name` via `nutype`; `Address { line_1, line_2?, city, region, postal_code, country: celes::Country }`; `Contact { email?, home_phone?, work_phone?, mobile_phone? }`; `Person { first_name, last_name, gender, birth_date }`; flattened columns). Built as plain types: `Name` and `Phone` (E.164) are `nutype` newtypes validated by annotation; `celes::Country` and `email_address::EmailAddress` are used directly; `Gender` is `male`/`female`/`other` (NexHealth's set). Reading these from table columns is decided with the first table (B3) | — | ✅ PR #142 |
+| B2 | Shared REST layer in `megh::auth`: `AppContext`, `ApiError`/`ApiResult`, `Input<T>` (axum-params merges path, query and body, read as JSON; path values always win), `ListRequest { tenant_id, filter: Option<aip_160::Filter>, page }`, `PageRequest`/`Page<T>` with an opaque paginator-utils cursor, `push_filter` (AIP-160 to a SQL WHERE condition; values written into the SQL text; non-column fields compare in `attributes` as jsonb of the same JSON type). Decided after several rounds: no paging crate (sqlx-paginated needs sqlx 0.9), no sea-query (adds nothing over `QueryBuilder` for this), no ORM | — | ✅ PR #144 |
+| B3 | Resource: `ResourceData { tenant_id, name, description, capacity (>=1), waitlist (>=0), attributes }`, table `resources` keyed by `(tenant_id, id)`, CRUD under `/api/v1/tenants/{tenant_id}/resources` (UUID v7 ids; list ordered by id with cursor paging; PATCH is a JSON merge read and written in one transaction); `megh::booking::{openapi, router}`; `examples/booking.rs` with Scalar docs at `/docs` (cookie session plus CSRF header). Changes to shared code: `TableEntity::update` takes any executor (pool or transaction); saving an `Entity` also writes `updated_at`; `Entity` and `Page` answer a request as JSON | — | ✅ PR #146 |
+| B4 | Provider: `ProviderData { tenant_id, first_name, last_name, name, description, contact, capacity, waitlist, attributes }`, table `providers` keyed by `(tenant_id, id)` with `email`, `home_phone`, `work_phone`, `mobile_phone` as nullable columns; routes like Resource. `Email` and `Phone` read from text columns through nutype's `derive_unchecked(sqlx::Type)` with `#[sqlx(transparent)]`; `Contact.email` is `Email` (checked by `email_address`). `#[derive(Table)]` now understands `#[sqlx(flatten)]` (the nested type's columns joined with `constcat`). The six SQL bodies moved to `megh::auth::crud`, used by Resource and Provider. `Capacity`, `Waitlist` moved to `value`. The trait shared with Resource for slot search comes with B10 | — | ✅ PR #148 |
+| B5 | Client: `ClientData { tenant_id, first_name, last_name, name, contact, gender, birth_date: Option, address: Option<Address>, attributes }`, table `clients` keyed by `(tenant_id, id)`; `gender` text with a CHECK, `male | female | other | unknown`, default `unknown` (`Gender::Unknown` added, 2026-10-20); `address` one nullable jsonb column (a flattened `Option<Address>` would silently drop a partial address; decided 2026-10-20), complete when given; routes like Provider. `#[derive(Table)]` accepts `#[sqlx(json(nullable))]` | — | ✅ PR #150 |
+| B6 | Service: `ServiceData { tenant_id, name: Name, description, setup: iso8601::Duration, cleanup: iso8601::Duration, steps: Vec<Step>, attributes }`; setup and cleanup take only the room, each `Step { duration, provider1: Option<String>, provider2: Option<String> }` takes the client and the provider groups it names (dental: hygienist; hygienist + dentist; hygienist. Hair colour: stylist; none; stylist). Decided 2026-10-20: "setup duration 0 is no setup", no `Option` where a default exists; no wrapper types: the contract is checked on construction by `validator` 0.21 annotations (name 1–255 chars, at least one step, provider names not empty), in `Input` and again on the patched result; durations ISO 8601 through `iso8601` 0.6, written in its canonical form (zero is `P0D`). Table `services` (setup, cleanup, steps jsonb) | how a group name matches a provider (for B10) | ✅ PR #152 |
+| B7 | Schedule and Blockout, like NexHealth working hours: `ScheduleData { tenant_id, name: Name, provider_id: Option<Uuid>, resource_id: Option<Uuid>, service_ids: Vec<Uuid>, recurrence: rrule::RRuleSet, starts_at: NaiveTime, ends_at: NaiveTime, attributes }`; `BlockoutData` adds `reason`. No provider, no resource or no services means any. Decided 2026-10-20: DTSTART is the rule start and UNTIL/COUNT the rule end; `starts_at`/`ends_at` are the window of each day, so it is known without expanding the rule; a window ends the same day (overnight is a known limitation, checked by `validator`); the time in DTSTART is not used; the recurrence is a JSONB string (rrule 0.14 writes the RFC text, adding BYHOUR/BYMINUTE/BYSECOND); provider and resource are foreign keys, `service_ids` a `UUID[]`. Service `name` back to `Name` | — | ✅ PR #155 |
+| B8 | Appointment: `AppointmentData { tenant_id, client_id, service_id, resource_id, provider_ids: Vec<Uuid>, starts_at, ends_at, status: Status, note, payment: Payment, products: Vec<Used>, booked_at, attributes }`, `Payment { payer_id, method: Name, attributes }` in one jsonb column, `Status { waitlist, booked, confirmed, completed, cancelled }`. Decided 2026-10-21: `booked_at` is set by the server at insert and never empty; no other status timestamps (status and `updated_at` say it); status and `booked_at` sent on PATCH are ignored. Routes: list, get, `POST /appointments` (see B9, B10), PATCH, DELETE cancels (grant `appointments:delete`; there is no `:cancel` verb), `POST /appointments/{id}:book`, `:confirm`, `:complete` (AIP-136; optional `payment`), each one guarded UPDATE (`src/booking/appointment.rs`): waitlist → booked or cancelled; booked → confirmed, cancelled or completed; confirmed → cancelled or completed. `megh::booking::rewrite_aip_136` routes `{id}:verb` as `{id}/:verb` and keeps the original URI for the authorizer. | — | ✅ PR #157; create, move and products added in B9, B10 |
+| B9 | Availability search and booking. Search: `POST /tenants/{tenant_id}/slots:search` (grant `slots:search`) with `from`, `to`, `parties` (each `{client: {id} or {tag}, service_id, providers: [{field: value}], resources: [{field: value}]}`), `service_gap` (longest gap between one client's appointments) and `client_gap` (longest gap between different clients' start times), both default 0, and `page_size` / `page_token`; returns a page `{items, next_page_token}` of slots, each the parties filled in with `providers`, `resources`, `starts_at`, `ends_at`, `waitlist`, `capacity` left. A page searches at most 7 days. Decided 2026-10-21: a slot is not an appointment until it is booked; providers and resources get a `role` field and a step's provider group matches it; `providers`/`resources` match fields only, not attributes yet (a field that is not a column is a 400; **later: match attributes through a GIN index on `attributes`**); taken time is stored in `reservations` (B10; there is no `occupancies` table). Start times are each schedule window's start plus setup, one slot per start time (as NexHealth returns a time once), one room time apart (setup, client time and cleanup), so that consecutive slots can share a room; gaps are tried on a 5-minute grid; a free place is taken before a waitlist place, and a waitlisted party needs a waitlist place on its room and every provider. A collection custom method is one literal route segment (`slots:search`), not rewritten. Booking: `POST /tenants/{tenant_id}/appointments` takes the appointment itself with an optional `reservation_id` (`status` booked or waitlist, otherwise 400; no waitlist flag, no parties); in one transaction under a per-tenant advisory lock it checks that the products are on hand, runs the search's check for exactly that client, service, room, providers and time, answers 409 when the time is not open for that status, and writes the appointment with `booked_at` and its reservations. `:book` (waitlist → booked) runs the same check under the same lock, leaving out the appointment's own time (issue #161). PATCH moves an appointment (issue #163): `starts_at`, `ends_at`, `resource_id` or `provider_ids` (MOVES) move a waitlisted, booked or confirmed appointment only when the booking check passes for its status at the new time, room and providers (leaving out its own time), under the same lock; its reservations are written again; a cancelled or completed appointment does not move (400). PATCH field rules: CHANGEABLE (`tenant_id`, `id`, `note`, `payment`, `products`, `attributes`) change in place; MOVES as above; SERVER_SET (`status`, `booked_at`) are ignored; any other field is a 400 (so `client_id` and `service_id` cannot change). Not built: `next_available_day` when nothing is open (only the next page token). | — | ✅ PRs #159, #160, #162, #164 |
+| B10 | Reservations (decided 2026-10-21): a reservation is not an appointment (no client, no payment). One table `reservations (tenant_id, id, owner_id, participant_id, during tstzrange, waitlist, expires_at)` (`migrations/0004_booking.sql`), one row per place taken from a room, provider or client; `owner_id` is the appointment or the hold, so one id points to all its blocks; GiST on `(tenant_id, participant_id, during)` (btree_gist). Capacity left is capacity minus the most rows overlapping at once (room of capacity 2: one booking leaves 1, two leave 0 and it is no longer offered, a cancel gives one back); `waitlist` rows count against the waitlist the same way. Booking writes rows, cancel deletes them, `:book` sets `waitlist = false`, a move rewrites them; a hold's rows count until `expires_at` (default 10 minutes). Search reads, all scoped by `tenant_id`: the services asked for, providers by role (all hygienists), rooms with the parties' fields (`to_jsonb(r) @> wanted`), schedules and blockouts that apply to those ids and services, and reservations of those ids in the range; open time per room-with-crew and provider-in-room is merged once and checked by binary search; each slot party returns `capacity` left. Recurrence (measured 2026-10-21): expanding from the rule's start costs 13–363 µs per rule per search, so rules are expanded as stored (COUNT, EXDATE and INTERVAL work as is); a floating reference date only if that grows. Done in #165 (the search reads `reservations`, not a separate occupancy table). Holds (#167): `POST /tenants/{tenant_id}/reservations` takes a slot as the search returns it, checks it like a booking under the same lock and holds its places for 10 minutes (`{id, expires_at}`); `DELETE /tenants/{tenant_id}/reservations/{id}` releases; `POST /tenants/{tenant_id}/appointments` with `reservation_id` next to the appointment books from the hold, taking one held place per place it needs (409 if the hold does not hold them or expired), so a hold of several parties is booked one appointment at a time; `POST /tenants/{tenant_id}/reservations:purge` (grant `reservations:purge`) with `before` deletes expired holds and places that ended before it; a `before` later than now is a 400 and nothing is deleted | — | ✅ PRs #166, #168 |
+| B11 | Server example mounting the whole API with a browsable OpenAPI (request, response, authentication) | done with B3: `examples/booking.rs`, unchanged as entities are added | ✅ PR #146 |
+| B12 | Products, prices, stocks (`migrations/0006_products.sql`; sold or used with a service): `products` CRUD (SKU unique per owner tenant, unit, price), the `prices` ledger (read only: a row each time a product or service is created or its price changes), `stocks` (read only: how much of a product a tenant holds) and `GET /tenants/{tenant_id}/products/{id}:stock`; an appointment's `products` must be on hand when it is booked or they change (409), nothing is held. Services gain `unit`, `price`, `currency`. | — | ✅ |
+| — | Org / location hierarchy (DAG, inheritance upward): not built, no code or table | deferred by the user; open until the user returns to it | [ ] |
+
 
 Reminders to raise later: a PATCH that sets a field with no default (e.g. `name`) to null (section 12); the
-tie between two unrelated parents at the same depth (org hierarchy).
+tie between two unrelated parents at the same depth (org hierarchy, not built).
+
+## 14. Authorization and routes
+
+Every route needs a grant derived from its path (`src/auth/authorizer.rs`, `request_grants`; `src/auth/grant.rs`).
+
+- Each resource level of the path needs a grant. Every level above the leaf needs `read`; the leaf takes the
+  `:verb` of the last segment, else the action of the HTTP method (POST create, PUT and PATCH update, DELETE
+  delete, otherwise read).
+- The grants are `tenants:read:{tenant_id}`, then `<resource>:<action>` or `<resource>:<action>:{id}`; e.g. the
+  cancel of an appointment needs `tenants:read:{tenant_id}`, `appointments:delete:{id}`.
+- The route's `{tenant_id}` must be the caller's tenant (the member's, or the token's audience).
+- Custom grants: `appointments:book` (and `:confirm`, `:complete`), `slots:search`, `reservations:purge`,
+  `products:stock`.
+- `megh::booking::rewrite_aip_136` routes an item's `{id}:verb` as `{id}/:verb` and keeps the original URI for the
+  authorizer; a collection method (`slots:search`, `reservations:purge`) is one literal segment and is not rewritten.
+
+Routes, all under `/api/v1/tenants/{tenant_id}` (`src/booking/mod.rs`, `src/booking/openapi.md`):
+
+| Resource | Routes |
+|---|---|
+| resources, providers, clients, services, schedules, blockouts | list, create, get, PUT, PATCH, DELETE (soft delete) |
+| products | list, create, get, PUT, PATCH, DELETE; `GET /products/{id}:stock` |
+| prices | `GET /prices`, `GET /prices/{id}` (read only) |
+| stocks | `GET /stocks`, `GET /stocks/{id}` (read only) |
+| appointments | list, `POST /appointments`, get, PATCH, DELETE (cancel); `POST /appointments/{id}:book`, `:confirm`, `:complete` |
+| slots | `POST /slots:search` |
+| reservations | `POST /reservations` (hold), `DELETE /reservations/{id}` (release), `POST /reservations:purge` |
+
+## Recorded, not built
+
+Requirements above that the code does not implement; each is `[ ]` not started.
+
+- [ ] Payment eligibility by pass, voucher, coupon or insurance, and the debit of a pass when booked (section 4.10):
+  `Payment` is `{payer_id, method, attributes}` with no predicate before booking and no balance.
+- [ ] Recurring class with a 30-visit pass (scenario f): no pass or visit count exists.
+- [ ] Org / location hierarchy and scope by parents (sections 4.4, 12): only the flat `tenant_id` exists.
+- [ ] Waitlist auto-promotion: none, by decision (section 4.7); a waitlisted appointment is booked only by `:book`.
+- [ ] `next_available_day` in the availability search (section 6).
+- [ ] Constraints as stored predicates or a scripting language (section 5).
 
 ## Decided (from the clarifications)
 
@@ -482,3 +430,5 @@ tie between two unrelated parents at the same depth (org hierarchy).
 - Shared REST layer: `crud` `get`, `create` and `replace` run one query and take `PgExecutor`; `patch` and `delete` open a transaction and take `Acquire`, and `TableEntity::soft_delete` takes `Acquire`.
 - Filters: `is_array` marks a `Vec<T>` column (native array on PostgreSQL, JSON text on SQLite); the has-filter SQL exists for both databases and is tested on in-memory SQLite.
 - Every id is a UUID v7: `now_v7` in code, `uuidv7()` in SQL (PostgreSQL 18 or later).
+- A reservations purge whose `before` is later than now is a 400 and nothing is deleted (`src/booking/reservation.rs`).
+- Decided, not built (for messaging, see [TPD-messaging](TPD-messaging.md)): a `Client` has a `kind` field, with defined names `guest`, `client` and `prospect` and other names allowed. A guest is created at first contact with placeholder names and becomes a client when booking fills in the details.

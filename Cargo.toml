@@ -58,6 +58,7 @@ iso8601 = { version = "0.6", features = ["serde"] }
 validator = { version = "0.21", features = ["derive"] }
 rrule = { version = "0.14", features = ["serde"] }
 itertools = "0.15.0"
+jsonschema = { version = "0.58", default-features = false, optional = true }
 
 [dev-dependencies]
 megh = { path = ".", features = ["sqlite"] }
@@ -77,4 +78,4 @@ default = ["postgres", "client", "axum"]
 postgres = ["dep:sqlx", "dep:bcrypt", "dep:aes-gcm", "dep:base64"]
 sqlite = ["dep:sqlx", "sqlx/sqlite"]
 client = ["dep:reqwest", "dep:reqwest-middleware", "dep:async-trait", "dep:scraper", "dep:rmcp"]
-axum = ["dep:axum", "dep:axum-params", "dep:utoipa", "dep:utoipa-axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:tokio", "dep:tokio-stream", "dep:futures-util"]
+axum = ["dep:axum", "dep:axum-params", "dep:utoipa", "dep:utoipa-axum", "dep:axum-extra", "dep:html-escape", "dep:tracing", "dep:tower", "dep:tower-http", "dep:jsonwebtoken", "dep:tower-sessions", "dep:tokio", "dep:tokio-stream", "dep:futures-util", "dep:jsonschema"]

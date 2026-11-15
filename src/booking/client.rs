@@ -9,10 +9,45 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::Validate;
 
-use super::value::{Address, Attributes, Contact, Gender, Name};
+use super::value::{Address, Attributes, Contact, Gender, Name, NameError};
 use crate::auth::crud;
 use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
 use crate::{Entity, Table};
+
+/// How a client stands with the business: `guest`, `client` and `prospect` are defined, any other name is allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum ClientKind {
+    Guest,
+    #[default]
+    Client,
+    Prospect,
+    Other(Name),
+}
+
+impl TryFrom<String> for ClientKind {
+    type Error = NameError;
+
+    fn try_from(text: String) -> Result<Self, NameError> {
+        match text.as_str() {
+            "guest" => Ok(Self::Guest),
+            "client" => Ok(Self::Client),
+            "prospect" => Ok(Self::Prospect),
+            _ => Name::try_new(text).map(Self::Other),
+        }
+    }
+}
+
+impl From<ClientKind> for String {
+    fn from(kind: ClientKind) -> Self {
+        match kind {
+            ClientKind::Guest => "guest".into(),
+            ClientKind::Client => "client".into(),
+            ClientKind::Prospect => "prospect".into(),
+            ClientKind::Other(name) => name.into_inner(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
 #[table(name = "clients", keys = ["tenant_id", "id"])]
@@ -29,6 +64,11 @@ pub struct ClientData {
     #[serde(default)]
     #[schema(value_type = Option<String>, example = "supplier")]
     pub role: Option<Name>,
+    /// `guest`, `client` or `prospect`, or another name.
+    #[serde(default)]
+    #[sqlx(try_from = "String")]
+    #[schema(value_type = String, example = "guest")]
+    pub kind: ClientKind,
     #[serde(flatten)]
     #[sqlx(flatten)]
     pub contact: Contact,

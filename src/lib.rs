@@ -9,6 +9,7 @@ pub mod booking;
 pub mod bytea;
 pub mod entity;
 pub mod event;
+pub mod messaging;
 pub mod money;
 pub mod tenant;
 #[cfg(feature = "postgres")]
@@ -81,6 +82,9 @@ pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
     sqlx::raw_sql(include_str!("../migrations/0008_connection_spec.sql"))
+        .execute(pool)
+        .await?;
+    sqlx::raw_sql(include_str!("../migrations/0009_messaging.sql"))
         .execute(pool)
         .await?;
     Ok(())

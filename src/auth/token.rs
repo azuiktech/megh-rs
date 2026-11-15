@@ -26,6 +26,15 @@ use crate::tenant::{Member, Tenants};
 
 pub const JWT_COOKIE: &str = "jwt_token";
 const ISSUER: &str = "megh";
+const GUEST_GRANTS: [&str; 7] = [
+    "messages:create",
+    "messages:read",
+    "messages:respond",
+    "participants:read",
+    "attachments:create",
+    "attachments:read",
+    "typing:create",
+];
 
 impl AccessToken {
     pub fn new(member: &Member, ttl: Duration) -> Self {
@@ -78,6 +87,25 @@ impl JwtSession {
         if !requested.is_empty() {
             token.scope = requested.iter().map(Grant::as_str).collect::<Vec<_>>().join(" ");
         }
+        self.sign(token)
+    }
+
+    /// A token for a guest `client_id` that reaches `thread_id` of the tenant and nothing else.
+    pub fn guest(&self, tenant_id: Uuid, client_id: Uuid, thread_id: Uuid) -> Result<IssuedToken, jsonwebtoken::errors::Error> {
+        let now = get_current_timestamp();
+        let scope = [
+            format!("tenants:read:{tenant_id}"),
+            format!("threads:read:{thread_id}"),
+            format!("threads:seen:{thread_id}"),
+        ]
+        .into_iter()
+        .chain(GUEST_GRANTS.map(String::from))
+        .collect::<Vec<_>>()
+        .join(" ");
+        self.sign(AccessToken { sub: client_id, iss: ISSUER.into(), aud: vec![tenant_id.to_string()], exp: now + self.ttl.as_secs(), iat: now, client_id: ISSUER.into(), scope })
+    }
+
+    fn sign(&self, token: AccessToken) -> Result<IssuedToken, jsonwebtoken::errors::Error> {
         let jwt = encode(&Header::default(), &token, &self.encoding)?;
         Ok(IssuedToken { jwt, expires_in: self.ttl, scope: token.grants() })
     }

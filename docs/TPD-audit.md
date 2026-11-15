@@ -1,17 +1,17 @@
 # TPD — Audit
 
-**Status:** A1 shipped. Ports megh-go's row-change audit triggers (Postgres only).
+**Status:** ✅ A1 shipped. Ports megh-go's row-change audit triggers (Postgres only).
 **Modules:** `src/audit.rs`, `migrations/0002_audit.sql`.
 
 ## 1. Delivery
 
 | # | Feature | Status | PR / issue |
 |---|---|---|---|
-| A1 | Audit triggers with default names and overrides, `history`, transaction-scoped actor | `[x]` | #52 / #51 |
+| A1 | Audit triggers with default names and overrides, `history`, transaction-scoped actor | ✅ | #52 / #51 |
 
 ## 2. How it works
 
-A trigger on a table writes every insert, update and delete to an audit table: the table name, the row's key as `record_id`, the action, the actor, the old and new row as JSON, and a timestamp. Migration 0007 creates megh-go's `audit_entries` table (same columns and indexes as its GORM AutoMigrate; checked against a real megh-go database) and three SQL functions:
+Audit is opt-in: no megh table gets a trigger by default. The application calls `Audit::install` for each table it wants audited, and the migration only creates `audit_entries` and the functions. A trigger on a table then writes every insert, update and delete to an audit table: the table name, the row's key as `record_id`, the action, the actor, the old and new row as JSON, and a timestamp. Migration 0002 creates megh-go's `audit_entries` table (same columns and indexes as its GORM AutoMigrate; checked against a real megh-go database) and three SQL functions:
 
 - `megh_audit()`: the one trigger function every audited table shares (megh-go creates one function per table; the recorded data is the same). It writes with `clock_timestamp()`, so changes inside one transaction have distinct times.
 - `megh_audit_install(table, audit_table, trigger_name, key)`: creates the audit table (`LIKE audit_entries INCLUDING ALL`) and the trigger, each only when missing. Every name goes through `format('%I')`, which closes the `Sprintf` injection risk in megh-go (review item G10).
@@ -41,7 +41,7 @@ pub enum AuditAction { Insert, Update, Delete }            // stored as "INSERT"
 pub enum AuditError { Database(sqlx::Error) }              // #[non_exhaustive]
 ```
 
-`old_data` and `new_data` are `JsonText<Value>`: null where there is no such row (no old row on insert, no new row on delete).
+`created_at` is `Option<DateTime<Utc>>` (the column is nullable, as in megh-go). `old_data` and `new_data` are `JsonText<Value>`: null where there is no such row (no old row on insert, no new row on delete).
 
 `install` leaves an existing trigger of the same name on that table alone, as megh-go does: a database that already has `trg_profiles_audit` keeps it and its function. Changing a trigger's configuration therefore needs the old trigger dropped first.
 
@@ -54,7 +54,3 @@ The trigger records `current_setting('megh.actor_id')`, and an empty or unset va
 - Postgres only. megh-go's SQLite triggers (which record only the primary key) are not ported.
 - Only one key column is recorded (`key`), so composite keys are not supported.
 - `history` reads one audit table for one row; there is no query by actor or time range yet.
-
-## Decided (from the clarifications)
-
-- A purge whose `before` is later than now is a 400; nothing is deleted.

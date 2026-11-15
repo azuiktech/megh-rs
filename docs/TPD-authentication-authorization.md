@@ -1,7 +1,7 @@
 # TPD — Authentication & Authorization
 
-**Status:** F1–F11 and F13–F24 shipped (F12 is superseded by F16). Features are not delivered in number order.
-**Modules:** `src/auth`, `src/account`, `src/tenant`, `ui/sdk/src/auth.ts`, `migrations/0001_auth.sql`.
+**Status:** F1–F25 shipped (F12 is superseded by F16); F26 not started. Features are not delivered in number order. Legend: ✅ shipped, `[~]` partly shipped (the gap is named), `[ ]` not started.
+**Modules:** `src/auth`, `src/account`, `src/tenant`, `ui/sdk/src/auth.ts`, `migrations/0001_auth.sql`, `0003_tenant.sql`, `0007_connections.sql`, `0008_connection_spec.sql`.
 **Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
 
 This is the living design for everything that answers "who is calling" (authentication) and "may they do this" (authorization). Change-level detail belongs in `CHANGELOG.md`; this document changes when the feature's shape changes.
@@ -10,32 +10,33 @@ This is the living design for everything that answers "who is calling" (authenti
 
 | # | Feature | Status | PR / issue |
 |---|---|---|---|
-| F1 | Org tenancy and Shiro-style permission grants | `[x]` | #2 / #1 |
-| F2 | User identity (`users`, `UserRepo`) | `[x]` | #4 / #3 |
-| F3 | OAuth 2.0 client and connected accounts | `[x]` | #6 / #5 |
-| F4 | Sessions; `User` as `Entity` (sessions replaced by F16) | `[x]` | #8 / #7 |
-| F5 | Axum auth router, session cookie, `AuthUser` extractor | `[x]` | #10 / #9 |
-| F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | `[x]` | #11 |
-| F7 | Route-based grant authorizer middleware | `[x]` | #20 / #19 |
-| F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | `[x]` | #53 / #22 |
-| F18 | CSRF on `events_router` (`POST /sub`), `CsrfMiddleware` re-exported for app routes, UI SDK sends the token | `[x]` | #55 / #54 |
-| F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | `[x]` | #57 / #56 |
-| F21 | Stateless CSRF on the login routes: `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) replaces the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins); `GET /auth/csrf-token`, the `csrf` OpenAPI scheme and `axum-tower-sessions-csrf` are removed | `[x]` | #198 / #197 |
-| F22 | The access token is read from `Authorization: Bearer` first, else the `jwt_token` cookie (`jwt_session`); a bearer token is only decoded (any failure is 401: no session, no renewal, no cookie set, no fallback to the cookie); a non-Bearer `Authorization` header is ignored; OpenAPI gets a `bearer` scheme next to `session` | `[x]` | #202 / #201 |
-| F23 | Client credentials for machines: `POST /auth/megh/token` (`auth::client_credentials::token_router`) takes `grant_type=client_credentials` and an optional narrowing `scope`, the client authenticated by `Authorization: Basic`, and answers with the same JWT as `oauth2`'s `BasicTokenResponse` (no refresh token, `Cache-Control: no-store`) or an RFC 6749 §5.2 error (`invalid_client` is 401 with `WWW-Authenticate: Basic`); `UserRepo::register_machine(org_id, name, grants)` makes the machine (a user with provider `megh`, client id as account id and email, the bcrypt of the secret as password, and one `machine` membership) and returns the secret once (`Registered`); `JwtSession::issue` is shared with the cookie renewal. An admin API comes after the org lifecycle (O2) | `[x]` | #204 / #203 |
-| F24 | `csrf_unless_bearer`: the CSRF check (`CsrfLayer`, whose bypass sees only method and URI) is skipped for a request with `Authorization: Bearer` and applied to any other, so a machine or a page on another site writes with its bearer token while cookie requests stay checked; the example uses it on the API routes | `[x]` | #206 / #205 |
-| F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | `[x]` | #59 / #58 |
-| F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns memberships | `[x]` | #60 / #30 |
-| F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | `[x]` | #26 / #25 |
-| F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | `[x]` | #32 / #27 |
-| F11 | Org and member tables aligned with megh-go; `OrgMember` renamed `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-tenants.md`, O1) | `[x]` | #33 / #28 |
-| F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token); superseded by F16, whose store table cannot match | `[!]` | #31 |
-| F13 | Password storage: `set_password` / `verify_password` (bcrypt) | `[x]` | #44 / #29 |
-| F14 | Basic login route (`basic_login_router`) returning user and memberships | `[ ]` | #30 |
-| F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token | `[x]` | #39 / #36 |
-| F16 | Sessions on `tower-sessions` (Postgres store) and token CSRF (`axum-tower-sessions-csrf`) in `auth_router` | `[x]` | #43 / #42 |
-| F17 | JWT access token as a cache in front of the session (`jwt_session`, `jsonwebtoken`), renewed from the session | `[x]` | #50 / #49 |
-| F25 | An app's own machine member: `UserRepo::machine(tenant_id, name, grants)` answers the tenant's machine member of that name, registering it with `grants` when the tenant has none; the app signs its calls as it with `JwtSession::issue`, and the registered secret is never used (`tests/machine_member_test.rs`) | `[x]` | #240 |
+| F1 | Tenancy and Shiro-style permission grants | ✅ | #2 / #1 |
+| F2 | User identity (`users`, `UserRepo`) | ✅ | #4 / #3 |
+| F3 | OAuth 2.0 client and connected accounts | ✅ | #6 / #5 |
+| F4 | Sessions; `User` as `Entity` (sessions replaced by F16) | ✅ | #8 / #7 |
+| F5 | Axum auth router, session cookie, `AuthUser` extractor | ✅ | #10 / #9 |
+| F6 | OAuth popup `postMessage` protocol, `ui/sdk`, configurable redirect URI | ✅ | #11 |
+| F7 | Route-based grant authorizer middleware | ✅ | #20 / #19 |
+| F8 | OAuth callback hardening: `state`, PKCE, verified email, `postMessage` origin, safe result page, sanitized errors | ✅ | #53 / #22 |
+| F18 | CSRF on `events_router` (`POST /sub`): `events_router_with_csrf` takes a configured `CsrfLayer`, `events_router` uses the default. Its first form (a session token the UI SDK sent) was replaced by F21's stateless check; the SDK sends no token | ✅ | #55 / #54 |
+| F19 | OAuth token encryption at rest (AES-256-GCM, `Encryptor`) in `ConnectedAccountRepo`, `Accounts` and `MeghAuthState` | ✅ | #57 / #56 |
+| F21 | Stateless CSRF on the login routes: `tower-http`'s `CsrfLayer` (`Sec-Fetch-Site` / `Origin`, no session or DB read) replaces the session token; `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer (trusted origins); `GET /auth/csrf-token`, the `csrf` OpenAPI scheme and `axum-tower-sessions-csrf` are removed | ✅ | #198 / #197 |
+| F22 | The access token is read from `Authorization: Bearer` first, else the `jwt_token` cookie (`jwt_session`); a bearer token is only decoded (any failure is 401: no session, no renewal, no cookie set, no fallback to the cookie); a non-Bearer `Authorization` header is ignored; OpenAPI gets a `bearer` scheme next to `session` | ✅ | #202 / #201 |
+| F23 | Client credentials for machines: `POST /auth/megh/token` (`auth::client_credentials::token_router`) takes `grant_type=client_credentials` and an optional narrowing `scope`, the client authenticated by `Authorization: Basic`, and answers with the same JWT as `oauth2`'s `BasicTokenResponse` (no refresh token, `Cache-Control: no-store`) or an RFC 6749 §5.2 error (`invalid_client` is 401 with `WWW-Authenticate: Basic`); `UserRepo::register_machine(tenant_id, name, grants)` makes the machine (a user with provider `megh`, client id as account id and email, the bcrypt of the secret as password, and one `machine` membership) and returns the secret once (`Registered`); `JwtSession::issue` is shared with the cookie renewal. An admin API is not built, and neither is the tenant lifecycle it would sit on (`TPD-tenants.md`) | ✅ | #204 / #203 |
+| F24 | `csrf_unless_bearer`: the CSRF check (`CsrfLayer`, whose bypass sees only method and URI) is skipped for a request with `Authorization: Bearer` and applied to any other, so a machine or a page on another site writes with its bearer token while cookie requests stay checked; the example uses it on the API routes | ✅ | #206 / #205 |
+| F20 | Redacted `Debug`, no `Serialize`, on secret-carrying types (`OAuthProviderConfig`, `ConnectedAccount`, `OAuth2Tokens`) | ✅ | #59 / #58 |
+| F14 | Basic login route (`basic_login_router`), CSRF-protected, uniform 401, never creates an account; returns user and memberships | ✅ | #60 / #30 |
+| F9 | CSRF protection (`tower-http` `csrf` layer; replaced by F16) | ✅ | #26 / #25 |
+| F10 | Users table aligned with megh-go (`account_id`, `provider`, `password_hash`; `subject` dropped); one user per email across providers | ✅ | #32 / #27 |
+| F11 | Tenant and member tables aligned with megh-go (named `org` and `org_members` then, `tenants` and `tenant_members` since 0003); the member type is `Member`; all remaining megh-go tables created (schema only); membership lookup (see `TPD-tenants.md`, O1) | ✅ | #33 / #28 |
+| F12 | Sessions table aligned with megh-go (`id text`, `data text`, opaque token); superseded by F16, whose store table cannot match | ✅ | #31 |
+| F13 | Password storage: `set_password` / `verify_password` (bcrypt) | ✅ | #44 / #29 |
+| F15 | Token refresh: `Accounts` and a `reqwest-middleware` layer (`AccountAuth`); a re-login keeps the stored refresh token; no lock, last update wins | ✅ | #39 / #36 |
+| F16 | Sessions on `tower-sessions` (Postgres store) and token CSRF (`axum-tower-sessions-csrf`) in `auth_router` | ✅ | #43 / #42 |
+| F17 | JWT access token as a cache in front of the session (`jwt_session`, `jsonwebtoken`), renewed from the session; `JwtSession::issue` mints a token for a member (shared by the cookie renewal and F23) and `csrf_unless_bearer` is F24 | ✅ | #50 / #49 |
+| F27 | Connections: a tenant's accounts at known providers and at sites by URL (bearer token, API key or OAuth), `Connections`, `connections_router`, site OAuth, `/auth/{provider}/connect`, `disconnect`, `revoke`; migrations 0007 and 0008 | ✅ | — |
+| F25 | An app's own machine member: `UserRepo::machine(tenant_id, name, grants)` answers the tenant's machine member of that name, registering it with `grants` when the tenant has none; the app signs its calls as it with `JwtSession::issue`, and the registered secret is never used (`tests/machine_member_test.rs`) | ✅ | #240 |
+| F26 | Set or reset the password of a signed-in user, moved from agentivity-rs: backend route `POST /auth/password` and the `@megh/auth` SDK method `setPassword` (see Decided) | `[ ]` | — |
 
 ## 2. Design vocabulary (pac4j)
 
@@ -54,17 +55,18 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 - **Stack:** axum 0.8, `tower-sessions` 0.14, sqlx 0.8 (Postgres; held back, see `AGENTS.md`), `oauth2` 5 (no bundled HTTP client; `oauth_http_client` adapts the caller's `reqwest` 0.13 client), `reqwest` 0.13 (rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
 - **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
 - **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `session.cycle_id()` and `user_id` stored in the `tower-sessions` session (cookie set by the app's `SessionManagerLayer`). Later requests: session `user_id` → `UserRepo::get_by_id` → `AuthUser`.
-- **Authorization path:** the application puts a `Member` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
+- **Authorization path:** `jwt_session` (F17, F22) puts the request's `AccessToken` and its `Vec<Grant>` into request extensions, from a bearer token or the `jwt_token` cookie renewed from the session's user and first `Member`; an application may instead put a `Member` there. The `authorizer` middleware derives the required `Grant`s from the matched route and method and checks them, and a route's `{tenant_id}` must be the member's tenant or the token's `aud` (403 otherwise; a path with no resource needs `root:{action}`). `AuthUser` (the session user) is not itself linked to a `Member`; the link is the token.
 
 ## 4. Data model
 
 | Table | Columns | Constraints |
 |---|---|---|
-| `tenants` | `id`, `name`, `description`, `timezone`, `sub_status`, `trial_ends_at`, `plan_id`, `created_by`, `created_at`, `updated_at` | PK `id` (was `org`, see `TPD-tenants.md`) |
-| `tenant_members` | `id`, `tenant_id`, `user_id`, `role`, `grants` (text, JSON array), `joined_at`, `invited_by` | unique `(tenant_id, user_id)`; keeps a foreign key to `tenants` (cascade) where the table was renamed from `org_members`; `user_id` has no FK (was `org_members`) |
-| `users` | `id`, `account_id`, `provider`, `email`, `password_hash`, `display_name`, `photo_url`, `created_at`, `updated_at` | unique `(account_id, provider)`, unique `email` (F10; before F10: `subject` instead of `account_id`/`provider`, unique) |
-| `connected_accounts` | `account_id`, `provider`, `email`, `access_token`, `refresh_token`, `token_type`, `expiry`, `created_at`, `updated_at`, `disconnected_at` | PK `(account_id, provider)`; no `user_id` |
-| `sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `ip_address`, `metadata JSONB`, `created_at`, `updated_at` | FK `user_id` → `users` (cascade); unique `token_hash`. Created by migration 0004, unused since F16 |
+| `tenants` | `id`, `name`, `description`, `email`, phones, `address`, `timezone`, `sub_status`, `trial_ends_at`, `plan_id`, `created_by`, `created_at`, `updated_at` | PK `id` (migration 0003; was `org`, see `TPD-tenants.md`) |
+| `tenant_members` | `id`, `tenant_id`, `user_id`, `role`, `grants` (text, JSON array), `joined_at`, `invited_by` | unique `(tenant_id, user_id)`; foreign key `tenant_id` to `tenants` (cascade); `user_id` has no FK |
+| `tenant_invites`, `tenant_configs` | `tenant_invites`: `id`, `tenant_id`, `email`, `token_hash`, `status`, `invited_by`, `expires_at`, `created_at`, `accepted_at`; `tenant_configs`: `tenant_id`, `auto_join_domains` | schema only; unique `token_hash` |
+| `users` | `id`, `account_id`, `provider`, `email` (`citext`), `password_hash`, `display_name`, `photo_url`, `created_at`, `updated_at`, `deleted_at` | unique `(account_id, provider)`, unique `email`, compared without case (F10; before F10: `subject` instead of `account_id`/`provider`, unique) |
+| `connected_accounts` | `account_id`, `provider`, `email` (`citext`), `access_token`, `refresh_token`, `token_type`, `expiry`, `created_at`, `updated_at`, `disconnected_at`, `deleted_at`; from 0007: `id` (unique, v7), `tenant_id` (FK `tenants`, cascade), `url`, `icon_url`, `auth` (`oauth`, `bearer` or `api_key`), `key_header`, `oauth`; from 0008: `spec_url` | PK `(account_id, provider)`; no `user_id`; index on `tenant_id` where not deleted. A site connection's `account_id` is its own `id` |
+| `sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `user_agent`, `ip_address`, `metadata JSONB`, `created_at`, `updated_at` | FK `user_id` → `users` (cascade); unique `token_hash`. Created by migration 0001, unused since F16 |
 | `tower_sessions.session` | `id text`, `data bytea`, `expiry_date timestamptz` | created by the app calling `PostgresStore::migrate()` (F16) |
 
 `megh::migrate(&pool)` runs every migration; `examples/server.rs` uses `sqlx::migrate!`. Migrations are idempotent because databases are shared with megh-go in practice (`kyrios` holds both stacks' tables).
@@ -77,19 +79,20 @@ megh-go has no SQL migrations; its schema is what GORM `AutoMigrate` creates fro
 |---|---|---|
 | `users` | `id`, `account_id`, `provider`, `email`, `password_hash`, `created_at` (all `text` but ids/timestamps) | F10 |
 | `connected_accounts` | `(account_id, provider)` key, token columns | aligned |
-| `organizations` | `org` in megh-rs, fewer columns | F11 |
-| `organization_members` | `org_members` in megh-rs; `role`, `invited_by`; `grants` is `text` holding a JSON array | F11 |
-| `organization_invites`, `org_configs`, plans, prices, add-ons, subscriptions | present | F11 (schema only) |
+| `organizations` | `tenants` in megh-rs | F11 |
+| `organization_members` | `tenant_members` in megh-rs; `role`, `invited_by`; `grants` is `text` holding a JSON array | F11 |
+| `organization_invites`, `org_configs` (`tenant_invites`, `tenant_configs` in megh-rs), plans, prices, add-ons, subscriptions | present | F11 (schema only) |
 | `sessions` | `id text`, `data text`, timestamps | not aligned: F16 uses the `tower-sessions` store table |
 
 ## 5. Implemented features and their APIs
 
-### F1 — Org tenancy and grants (`org`, `auth::grant`)
+### F1 — Tenancy and grants (`tenant`, `auth::grant`)
 
 ```rust
-pub struct Tenant { id: Uuid, name: Option<String>, description: Option<String>, timezone: String, sub_status: String,
+pub struct Tenant { id: Uuid, name: Option<String>, description: Option<String>, contact: Contact, address: Option<Address>, timezone: String, sub_status: String,
                  trial_ends_at: Option<DateTime<Utc>>, plan_id: Option<Uuid>, created_by: Option<Uuid>, created_at: DateTime<Utc>, updated_at: Option<DateTime<Utc>> }
-pub struct Member { id, tenant_id, user_id: Uuid, role: String, grants: Vec<String>, joined_at: DateTime<Utc>, invited_by: Option<Uuid> }
+pub struct Member { id, tenant_id, user_id: Uuid,   // src/tenant/member.rs
+                    role: String, grants: Vec<String>, joined_at: DateTime<Utc>, invited_by: Option<Uuid> }
 impl Member { pub fn has_grant(&self, required: &Grant) -> bool }
 
 pub struct Grant(pub String);                 // "resource:action:instance"
@@ -202,7 +205,7 @@ let api = reqwest_middleware::ClientBuilder::new(my_reqwest_client).with(account
 api.get(url).send().await?;
 ```
 
-Refresh runs under a row lock (`SELECT … FOR UPDATE`), so concurrent requests refresh once, across processes; the provider call happens while the lock is held (bounded by the client's timeout). A refresh token the provider sends is stored, otherwise the stored one is kept. `invalid_grant` marks the account `disconnected_at` and the request fails with `AccountError::InvalidGrant`, carried in `reqwest_middleware::Error::Middleware` (`downcast_ref::<AccountError>()`); later requests fail with `Disconnected` without calling the provider. `ConnectedAccountRepo::save` no longer overwrites a stored refresh token with an empty one (a re-login: providers such as Google only send it on first consent). Not included: retry on 401, a connect flow that forces re-consent. Token encryption is F19.
+Refresh takes no lock: the account is read, the provider is asked outside any transaction and the new tokens are saved, so concurrent requests may each refresh and the last update wins. A refresh token the provider sends is stored, otherwise the stored one is kept. `invalid_grant` marks the account `disconnected_at` and the request fails with `AccountError::InvalidGrant`, carried in `reqwest_middleware::Error::Middleware` (`downcast_ref::<AccountError>()`); later requests fail with `Disconnected` without calling the provider. `ConnectedAccountRepo::save` no longer overwrites a stored refresh token with an empty one (a re-login: providers such as Google only send it on first consent). Not included: retry on 401, a connect flow that forces re-consent. Token encryption is F19.
 
 ### F4 — Sessions
 
@@ -214,16 +217,22 @@ Replaced by F16: the `session` module (`SessionRepo`, `Session`, `SessionView`, 
 pub struct MeghAuthState {                              // Clone; all fields pub
     pool: PgPool, redirect_after_login: String, app_origin: String,
     providers: Arc<HashMap<String, OAuthProviderConfig>>, http_client: reqwest::Client,
+    web_origin: Option<String>,            // where the popup posts its result; default app_origin
+    token_encryptor: Option<Encryptor>,    // F19
+    lifecycle: Option<tenant::Lifecycle>,  // run after each tenant, member or subscription change megh commits
 }
 impl MeghAuthState {
     pub fn new(pool: PgPool) -> Self;                   // redirect "/", origin "http://localhost:8080"
     pub fn with_redirect_after_login(self, impl Into<String>) -> Self;
     pub fn with_app_origin(self, impl Into<String>) -> Self;
+    pub fn with_web_origin(self, impl Into<String>) -> Self;
+    pub fn with_token_encryptor(self, Encryptor) -> Self;
     pub fn add_provider(self, OAuthProviderConfig) -> Self;
 }
 pub fn auth_router(state: MeghAuthState) -> Router;    // needs a tower-sessions SessionManagerLayer around it
+pub fn auth_router_with_csrf(state: MeghAuthState, csrf: CsrfLayer) -> Router;
 pub struct AuthUser { pub user: User }                  // FromRequestParts<S> where MeghAuthState: FromRef<S>
-pub struct AuthMeResponse { pub user: User }
+pub struct AuthMeResponse { pub user: User, pub memberships: Vec<Member> }
 pub use axum::extract::FromRef;                         // replaces the former hand-written trait
 ```
 
@@ -231,7 +240,10 @@ pub use axum::extract::FromRef;                         // replaces the former h
 |---|---|
 | `GET /auth/{provider}`, `GET /auth/{provider}/login` | 303 to the provider authorization URL (`access_type=offline`, `include_granted_scopes=true`, `prompt=select_account`, provider default scopes). 404 unknown provider; 500 bad callback URL. |
 | `GET /auth/{provider}/callback`, `GET /auth/{provider}/token` | Same handler. Query: `code`, `state`, `error`, `error_description`. Exchanges the code, fetches userinfo, upserts the user, saves the `connected_accounts` row, starts the session (`cycle_id`, `user_id`). 200 HTML. 400 provider `error` or missing `code`; 404 unknown provider; 502 exchange or userinfo failure; 500 database or session failure. Callback URL defaults to `{app_origin}/auth/{provider}/token` unless `redirect_url` is set. |
-| `GET /auth/me` | 200 `AuthMeResponse`. 401 no `user_id` in the session or missing user; 500 database or session error. |
+| `GET /auth/{provider}/connect` | Signed-in user only. Starts the OAuth flow for another account of the user (`scope` repeated for extra scopes; `tenant_id` for a tenant the user is a member of, `return_to` an own page), with `prompt=consent`. The callback saves the account and leaves the session as it is; the result page posts `oauth_connect_success`. |
+| `POST /auth/{provider}/disconnect` | Body `{"account_id"}`. Revokes the signed-in user's own account token at the provider (best effort) and marks the account disconnected. 204; 404 when the account is not the user's. |
+| `POST /auth/{provider}/revoke` | Body `{"account_id"}`. Revokes that token at the provider (RFC 7009); the account stays connected. 204; 404 not the user's; 502 provider failure. |
+| `GET /auth/me` | 200 `AuthMeResponse` (`{user, memberships}`, memberships from `Tenants::memberships`, earliest first). 401 no `user_id` in the session or missing user; 500 database or session error. |
 | `POST /auth/logout` | Flushes the session, 200 `{"status":"ok"}`. Refused (403) when a browser sends it from another site (F21). |
 
 The session cookie, its name, lifetime and `Secure`/`SameSite` flags are the `SessionManagerLayer`'s settings, not megh's.
@@ -247,7 +259,7 @@ The callback returns an HTML page that runs `window.opener.postMessage({type:"oa
 - `signInWithGoogle(mode)`, `signOut()` (`POST /auth/logout`), `onChange(fn)`, `user`.
 - Configurable base URL, route paths and response `transform`.
 
-The SDK also defines `signInWithPassword`, `connectWithOAuth`/`connectWithGoogle`, `disconnectWithOAuth`/`disconnectWithGoogle` and `revokeOAuth`/`revokeGoogle`. The server has no matching routes (§8).
+The SDK also defines `signInWithPassword` (`POST` with `Authorization: Basic` to `paths.login`, default `/auth/login`; the server route is whatever path the app gives `basic_login_router`), `connectWithOAuth`/`connectWithGoogle` (`GET /auth/{provider}/connect`, popup message `oauth_connect_success`), `disconnectWithOAuth`/`disconnectWithGoogle` (`POST /auth/{provider}/disconnect`) and `revokeOAuth`/`revokeGoogle` (`POST /auth/{provider}/revoke`), all with server routes (F5), and the connections methods of F27. The SDK sends no CSRF token and fetches none (F21; `ui/sdk/test/auth.test.ts`): it sends the session cookie (`credentials: 'include'`), and the browser's `Sec-Fetch-Site` and `Origin` headers are what the server checks.
 
 ### F7 — Route-based authorizer (`auth::authorizer`, feature `axum`)
 
@@ -273,7 +285,7 @@ let app = megh::auth_router(state).layer(SessionManagerLayer::new(store));
 
 **F21 replaced the token CSRF of F16 with the stateless `tower-http` `CsrfLayer` again** (the token check read the session store on every request). `auth_router` and `basic_login_router` put `CsrfLayer::new()` on their routes: `GET`, `HEAD` and `OPTIONS` pass; a write passes when `Sec-Fetch-Site` is `same-origin` or `none`, when its `Origin` is a trusted origin or matches `Host`, or when it has neither header (servers, `curl`, LLM and MCP clients); any other gets 403. `auth_router_with_csrf` and `basic_login_router_with_csrf` take a configured layer, e.g. `CsrfLayer::new().add_trusted_origin("https://xyz.com")` for a frontend on a subdomain. The OAuth login redirect and callback are `GET`s, so they are covered by F8. Behind a proxy that rewrites `Host` or strips `Origin`, `Sec-Fetch-Site` is the only defence left.
 
-Versions are held back (`AGENTS.md`): the only Postgres store for `tower-sessions` is `tower-sessions-sqlx-store` 0.15, which needs `tower-sessions-core` 0.14 and `sqlx` 0.8; The store's `tower_sessions.session` table (`id`, `data`, `expiry_date`) cannot match megh-go's `sessions` table. `events_router` (`POST /sub`) is not covered (§9).
+Versions are held back (`AGENTS.md`): the only Postgres store for `tower-sessions` is `tower-sessions-sqlx-store` 0.15, which needs `tower-sessions-core` 0.14 and `sqlx` 0.8; The store's `tower_sessions.session` table (`id`, `data`, `expiry_date`) cannot match megh-go's `sessions` table. `events_router` (`POST /sub`) has the same stateless check (F18; `events_router_with_csrf`).
 
 ### F17 — JWT access token (`auth::token`, features `axum` + `postgres`; #50 / #49)
 
@@ -295,7 +307,7 @@ The claims are megh-go's (`sub` member id, `iss` "megh", `aud` tenant id, `scope
 
 Cookie: `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` = the lifetime (megh-go omits `Secure`).
 
-Revocation is the token lifetime, as in megh-go: there is no `jti` or denylist, ending the session stops renewal but a token already issued works until it expires, so keep the lifetime short. Not included: minting at login (the first request renews), a bearer-header transport, key rotation.
+Revocation is the token lifetime, as in megh-go: there is no `jti` or denylist, ending the session stops renewal but a token already issued works until it expires, so keep the lifetime short. Also in this module: `JwtSession::issue(&Member, &[Grant])` (a non-empty list narrows the grants; shared by the cookie renewal and F23) and `csrf_unless_bearer` (F24). The bearer-header transport is F22. Not included: minting at login (the first request renews), key rotation.
 
 `jsonwebtoken` 11 with its `aws_lc_rs` backend (already in the build through `rustls`); its `rust_crypto` backend would pull in the `rsa` crate.
 
@@ -325,16 +337,17 @@ One `Encryptor` instance (same key) must be given to whichever of `ConnectedAcco
 
 ```rust
 pub fn basic_login_router(state: MeghAuthState, path: &str) -> Router;   // POST <path>; merge with auth_router
+pub fn basic_login_router_with_csrf(state: MeghAuthState, path: &str, csrf: CsrfLayer) -> Router;
 pub struct BasicLoginResponse { pub user: User, pub memberships: Vec<Member> }
 ```
 
 `Authorization: Basic base64(email:password)` via `axum-extra`'s `TypedHeader<Authorization<Basic>>`; verifies with `UserRepo::verify_password` (F13). Success: 200 `BasicLoginResponse`, session gets `cycle_id()` and `user_id`, exactly like the OAuth callback. Failure: a missing header and every `PasswordError` variant (`UserNotFound`, `NoPassword`, `WrongPassword`) all give the same 401 `{"error":"invalid credentials"}`; login never creates an account. A database or session failure is 500 with a fixed message, logged. The route carries its own `CsrfLayer` (F21), so it is protected standalone; merge it with `auth_router` for `/auth/me` and `/auth/logout`, which it needs but does not provide itself.
 
-Memberships come from `Tenants::memberships`, earliest first (O1). `/auth/me` (the OAuth path) does not return memberships; that is O5, still open.
+Memberships come from `Tenants::memberships`, earliest first (O1). `/auth/me` returns the same `{user, memberships}` (`AuthMeResponse`).
 
 ## 6. Test coverage (shipped)
 
-`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16, F21); `jwt_session_test.rs` (F17); `user_test.rs` (F10); unit tests in `auth/grant.rs`, `auth/user.rs`, `org/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. No shipped test covers the OAuth callback against a live database or the Postgres session store.
+`tests/grant_test.rs`, `authorizer_test.rs`, `course_authorizer_test.rs` (F1, F7); `account_oauth_test.rs` (F3); `auth_router_test.rs` (F5); `csrf_test.rs` (F9, F16, F21); `jwt_session_test.rs` (F17); `user_test.rs` (F10); `basic_login_test.rs` (F14); `oauth_callback_test.rs` (F8); `oauth_connect_test.rs`, `oauth_revoke_test.rs`, `connections_test.rs`, `connections_oauth_test.rs`, `tenant_connect_test.rs` (F27); `csrf_bearer_test.rs` (F22, F24); `client_credentials_test.rs` (F23); `machine_member_test.rs` (F25); `events_csrf_test.rs` (F18); `token_encryption_test.rs` (F19); `redact_secrets_test.rs` (F20); `account_refresh_test.rs` (F15); `tenant_audience_test.rs` (`{tenant_id}` check); unit tests in `auth/grant.rs`, `auth/user.rs`, `tenant/member.rs`. Router tests use a lazy pool and never query. Tests that need Postgres use `#[sqlx::test]` (`user_test.rs`): each test gets its own throwaway database on the server named by `DATABASE_URL` (read from the environment or `.env`), so `cargo test` needs a reachable Postgres. `test_connected_account_repo_persistence` also uses `DATABASE_URL`, defaulting to the `kyrios` dev database, and skips only when the database is unreachable. Router tests mount the router under an in-memory `tower-sessions` store. `oauth_callback_test.rs` and `connections_oauth_test.rs` run the callback against a live database and a stub provider; no test was found that runs the Postgres session store (`tower-sessions-sqlx-store`) itself.
 
 ## 7. F8 — OAuth callback hardening (`auth::http`; #53 / #22)
 
@@ -357,7 +370,7 @@ The session cookie must be `SameSite=Lax`: `tower-sessions` defaults to `Strict`
 
 Responses: 400 provider `error`, missing `code`, or no login in progress; 403 `state` mismatch or unverified email; 404 unknown provider; 502 exchange or userinfo failure; 500 database or session failure.
 
-Not covered: `nonce` and `id_token` validation (identity still comes from the userinfo endpoint; `openidconnect` would add it), and encryption of stored tokens.
+Not covered: `nonce` and `id_token` validation (identity still comes from the userinfo endpoint; `openidconnect` would add it); encryption of stored tokens is F19.
 
 ## 8. Known gaps (identified 2026-09-21; not scheduled, not approved)
 
@@ -365,20 +378,18 @@ Found while auditing the shipped stack. F8 has closed the OAuth `state`, PKCE, `
 
 | Gap | Note | Candidate |
 |---|---|---|
-| `AuthUser` is not linked to `Member`/`Vec<Grant>` | F7 works only if the application populates extensions | — |
-| `events_router` `POST /sub` has no CSRF check | F16 covers `auth_router` only; `events_router` has no session layer, so protecting it changes its signature | `events_router_with_csrf` |
+| `AuthUser` is not linked to `Member`/`Vec<Grant>` | The link is the token (`jwt_session`, F17); the session user itself carries no grants, and the token uses the user's first membership | — |
 | No security headers; no `Cache-Control: no-store` on `/auth/me` or the callback page | | `tower-http` `set-header` |
 | No rate limiting on `/auth/*` | | `tower_governor` (axum compatibility unverified) |
 | `connected_accounts` has no `user_id` link | Per-user disconnect cannot be authorized | — |
 | Sessions: fixed expiry (`touch` unused), no purge of expired rows, `ip_address` always `""`, token is two UUIDv4s | | — |
 | Identity comes from the userinfo endpoint; no `nonce` or `id_token` validation | | `openidconnect` 3.5 (matches `oauth2` 4.4) |
 | `StandardUserInfo.id` is `Option<String>` | GitHub returns a numeric `id`; parsing is likely to fail | — |
-| SDK methods without server routes: `signInWithPassword`, `connect*`, `disconnect*`, `revoke*`, `return_to` | | — |
 | `examples/server.rs` uses `CorsLayer::very_permissive()` | Copy-paste hazard with credentialed cookies | `tower-http` `cors` (configured) |
 
 ## 9. Open questions
 
-- **`events_router` CSRF:** the SDK posts `/sub` cross-origin with credentials and would have to fetch and send the token; protecting it also needs a session layer around `events_router`.
+- **Reset by email:** is an emailed reset link for a forgotten password also wanted? agentivity-rs has only the signed-in set-password route (F26).
 - **Gaps in §8:** which become issues.
 - Resolved: `email_verified` `None` → reject; session cookie stays `SameSite=Lax`; axum upgraded to 0.8 with the duplicate `FromRef` removed; request CSRF uses the stateless `tower-http` layer, on by default in `auth_router`.
 
@@ -390,3 +401,5 @@ Found while auditing the shipped stack. F8 has closed the OAuth `state`, PKCE, `
 - `ConnectedAccountRepo::encrypt_stored(&self) -> Result<u64, sqlx::Error>` is a one-off call after encryption is turned on: every token that does not decrypt is encrypted and saved; the result is the number of rows changed. Reads stay strict.
 - The route authorizer refuses (403) a `{tenant_id}` that is not the token's `aud`. `POST /events/sub` finds only a connection the caller opened. `POST /auth/{provider}/revoke` takes `{"account_id"}` and revokes the signed-in user's own account token (404 otherwise).
 - Machine creation stays a function for now; an admin API comes later.
+- Sign-up is only by OAuth. Once signed up, a user can also sign in by username and password; basic login never creates an account (intended).
+- F26 (set or reset the password of a signed-in user), moved from agentivity-rs (`src/password.rs`, `web/src/lib/auth.svelte.ts`): `POST /auth/password` with `{"password"}`; the password is accepted when its zxcvbn score is at least `Three`, scored with the user's email as context, and answers 204; otherwise 400 with zxcvbn's feedback. The `@megh/auth` SDK gets `setPassword(password)` for it. Backend route and SDK method are both to be built here.

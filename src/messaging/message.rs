@@ -325,7 +325,7 @@ fn avatar_component(avatar: Avatar) -> Value {
 }
 
 fn read_update(surface_id: String, icon: Value) -> Value {
-    json!({"version": "1.0", "updateDataModel": {"surfaceId": surface_id, "path": "/meta/mark", "value": icon}})
+    json!({"version": "v1.0", "updateDataModel": {"surfaceId": surface_id, "path": "/meta/mark", "value": icon}})
 }
 
 /// Which end of the messages `limit` keeps: the oldest (catching up after an id) or the latest (a first look).

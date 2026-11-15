@@ -6,4 +6,4 @@ mod surface;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use message::{Avatar, History, Icon, Message, Messaging, MessagingError, Notice, Party, ReadMark, Signal, TimeFormat, router};
-pub use surface::{Scale, Surface};
+pub use surface::{Scale, Schema, Surface};

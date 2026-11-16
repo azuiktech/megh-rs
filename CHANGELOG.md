@@ -9,6 +9,14 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-11-17
+- Messaging attachments (PR #257, issue #256):
+  - `Messaging::attach` and `file`, `with_files_at(base)`; `FileData` is the model's `fileData` (`fileUri`, `mimeType`, `displayName`).
+  - `attachments` table (migration 0010).
+  - Routes: multipart upload with a size cap (413 over it) and download inline or as a file, for the pair's client only; `router(cap, base)`.
+  - Builder: `attachment(label, key)`, megh's `Attachment` component in catalog `azuik.com:megh`; `attached(&files)` previews images, audio and video, with each file's name and a Download button.
+  - New package `ui/a2ui` (`@megh/a2ui`): the catalog JSON and the Lit `Attachment` element (upload, chips, remove), registered with `meghCatalog(place)`.
+
 ## 2026-11-16
 - Surface builder: `text_area`, a multi-line text field; the feedback comment uses it (PR #255, issue #254)
 

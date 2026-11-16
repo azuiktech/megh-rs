@@ -18,7 +18,7 @@ Marks: `✅` shipped · `[~]` partly shipped, with what is missing named · `[ ]
 | 8 | Products and inventory: products with a price history, stock per tenant that sales and purchases change | [~] | [TPD-booking](TPD-booking.md), [TPD-billing](TPD-billing.md) |
 | 9 | Booking: services, providers, resources, clients, schedules, availability search, book, cancel, reschedule | [~] reschedule not confirmed | [TPD-booking](TPD-booking.md) |
 | 10 | Durable events: events are held in the database, not in memory; each is delivered exactly once in practice (very high probability); back pressure on slow consumers; events are held while a connection is poor, for front ends and for back-end consumers | [~] live push and catch-up from memory done; database storage, back pressure and holding for back-end consumers not started | [TPD-events](TPD-events.md) |
-| 11 | Messaging between a user and the business's agent (below) | [~] surfaces, forms from a schema, labels, sending, events and catch-up done; attachments, guests and web UI not started | [TPD-messaging](TPD-messaging.md) |
+| 11 | Messaging between a user and the business's agent (below) | [~] surfaces, forms from a schema, labels, attachments, sending, events and catch-up done; reply-to, guests and web UI not started | [TPD-messaging](TPD-messaging.md) |
 | 12 | Invoicing and payment: invoices (receivable and payable), lines, taxes, numbering, payments, refunds | [~] | [TPD-billing](TPD-billing.md) |
 
 ## Messaging (feature 11)
@@ -28,7 +28,7 @@ Messaging is for support, appointment booking, product purchase and the like: a 
 | # | Feature | Status |
 |---|---|---|
 | 11.1 | Conversation: between a client of the tenant (guest, prospect or client) and a member of the tenant (staff, provider, or a machine such as an agent) | ✅ |
-| 11.2 | Messages: free text and attachments from user and system; reply-to; attachment size cap configurable | [~] text (as a2ui) only; no attachments, reply-to or size cap |
+| 11.2 | Messages: free text and attachments from user and system; reply-to. The user browses for files and attaches one or more to a message, as in Slack. Each attachment shows a preview, as an image, audio or video where it is one, plus a download button for every file. An attachment is referenced in the form the agent's model takes as file data; serving the file to the model is the agent framework's job, not megh's. Attachment size cap configurable | [~] text (as a2ui) and attachments with previews, download and the size cap; no reply-to |
 | 11.3 | Labels: a message may carry labels, plain strings shown with it | ✅ |
 | 11.4 | Indicators: typing, sent/read | ✅ |
 | 11.5 | Structured messages: the agent sends any a2ui 1.0 surface; the user fills or answers it | ✅ |

@@ -4,8 +4,11 @@ use itertools::Itertools;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
+use super::attachment::FileData;
+
 const CATALOG: &str = "https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json";
 const VERSION: &str = "1.0";
+const MEGH: &str = "azuik.com:megh";
 
 /// How feedback is given: a rating from 1 to the number of stars, or one of a few words.
 pub enum Scale {
@@ -356,6 +359,30 @@ impl Surface {
     /// A multi-line text field whose value is kept in the data model under `key`.
     pub fn text_area(self, label: &str, key: &str) -> Self {
         self.leaf("TextField", json!({"label": label, "value": bound(key), "variant": "longText"}))
+    }
+
+    /// megh's attachment field: the user browses for files and attaches them; the data model holds them under `key`
+    /// as a list of file data.
+    pub fn attachment(self, label: &str, key: &str) -> Self {
+        self.leaf("Attachment", json!({"catalogId": MEGH, "label": label, "value": bound(key)}))
+    }
+
+    /// Each file: a preview where it is an image, audio or video, its name, and a button that downloads it.
+    pub fn attached(self, files: &[FileData]) -> Self {
+        files.iter().fold(self, |surface, file| {
+            let named = surface.preview(file).leaf("Text", json!({"text": file.display_name, "variant": "caption"}));
+            named.pressable("Download", open_url(&format!("{}?download", file.file_uri)))
+        })
+    }
+
+    fn preview(self, file: &FileData) -> Self {
+        let shown = json!({"url": file.file_uri, "description": file.display_name});
+        match file.mime_type.split('/').next() {
+            Some("image") => self.leaf("Image", shown),
+            Some("audio") => self.leaf("AudioPlayer", shown),
+            Some("video") => self.leaf("Video", json!({"url": file.file_uri})),
+            _ => self,
+        }
     }
 
     pub fn choice(self, key: &str, choices: &[(&str, &str)]) -> Self {

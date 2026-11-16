@@ -202,7 +202,7 @@ async fn a_reconnecting_browser_catches_up_from_the_database(pool: PgPool) {
 }
 
 fn app(pool: PgPool, broker: Broker, tenant: Uuid, client: Uuid) -> Router {
-    let (api, _) = megh::messaging::router().split_for_parts();
+    let (api, _) = megh::messaging::router(1 << 20, "https://app.example.com/api/v1").split_for_parts();
     let grants = [format!("tenants:read:{tenant}"), "members:*".into(), "messages:*".into(), "events:*".into()].map(Grant::new).to_vec();
     let token = AccessToken { sub: client, iss: "megh".into(), aud: vec![tenant.to_string()], exp: u64::MAX, iat: 0, client_id: "megh".into(), scope: String::new() };
     Router::new()

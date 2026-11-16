@@ -28,7 +28,7 @@ mod stored {
     use std::collections::HashMap;
 
     use axum::extract::{Path, Query, State};
-    use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+    use axum::http::header::{CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
     use axum::response::{IntoResponse, Response};
     use axum::{Extension, Json};
     use axum_params::{Params, UploadFile};
@@ -155,9 +155,20 @@ mod stored {
             .await?;
         let file = stored.ok_or(MessagingError::NotFound)?;
         let disposition = match query.contains_key("download") {
-            true => format!("attachment; filename=\"{}\"", file.name.replace('"', "")),
+            true => format!("attachment; filename=\"{}\"", header_safe(&file.name)),
             false => "inline".to_string(),
         };
-        Ok(([(CONTENT_TYPE, file.mime_type), (CONTENT_DISPOSITION, disposition)], file.bytes).into_response())
+        let headers = [(CONTENT_TYPE, file.mime_type), (CONTENT_DISPOSITION, disposition), (CONTENT_SECURITY_POLICY, "sandbox".to_string()), (X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())];
+        Ok((headers, file.bytes).into_response())
+    }
+
+    /// The name as a header carries it: printable ASCII, with anything else and quotes as `_`.
+    fn header_safe(name: &str) -> String {
+        name.chars().map(|c| match c {
+            '"' => '_',
+            ' ' => c,
+            c if c.is_ascii_graphic() => c,
+            _ => '_',
+        }).collect()
     }
 }

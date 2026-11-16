@@ -353,6 +353,11 @@ impl Surface {
         self.leaf("TextField", json!({"label": label, "value": bound(key), "variant": "number"}))
     }
 
+    /// A multi-line text field whose value is kept in the data model under `key`.
+    pub fn text_area(self, label: &str, key: &str) -> Self {
+        self.leaf("TextField", json!({"label": label, "value": bound(key), "variant": "longText"}))
+    }
+
     pub fn choice(self, key: &str, choices: &[(&str, &str)]) -> Self {
         self.leaf("ChoicePicker", picker(key, choices))
     }
@@ -407,6 +412,6 @@ impl Surface {
             Scale::Stars(stars) => Self::new().leaf("Slider", json!({"label": "Rating", "min": 1, "max": stars, "value": bound("rating")})),
             Scale::Words(words) => Self::new().choice("rating", &words.iter().map(|word| (*word, *word)).collect::<Vec<_>>()),
         };
-        rated.input("Comment", "comment").button("Send", "submit")
+        rated.text_area("Comment", "comment").button("Send", "submit")
     }
 }

@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-11-16
+- Surface builder: `text_area`, a multi-line text field; the feedback comment uses it (PR #NNN, issue #254)
+
 ## 2026-11-15
 - Surface builder gaps:
   - `image(url, text)`.

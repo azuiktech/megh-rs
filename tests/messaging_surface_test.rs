@@ -178,6 +178,22 @@ fn feedback_is_stars_or_words_with_a_comment() {
 }
 
 #[test]
+fn a_text_area_is_a_long_text_field_bound_to_its_key() {
+    let all = components(Surface::new().text_area("Notes", "notes"));
+    let area = of(&all, "TextField")[0];
+    assert_eq!((area["label"].clone(), area["value"].clone(), area["variant"].clone()), (json!("Notes"), json!({"@path": "/notes"}), json!("longText")));
+}
+
+#[test]
+fn the_feedback_comment_is_a_text_area() {
+    [Scale::Stars(5), Scale::Words(&["good", "ok", "poor"])].into_iter().for_each(|scale| {
+        let all = components(Surface::feedback(scale));
+        let comment = of(&all, "TextField")[0];
+        assert_eq!((comment["value"].clone(), comment["variant"].clone()), (json!({"@path": "/comment"}), json!("longText")));
+    });
+}
+
+#[test]
 fn ids_are_unique_and_every_reference_exists() {
     let surface = Surface::new()
         .field("a", "b")

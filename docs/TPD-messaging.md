@@ -22,7 +22,7 @@ Decided by the user:
 
 - `migrations/0009_messages.sql`: `messages (tenant_id, id, client_id, member_id, sender, body jsonb, read_at, created_at)`.
 - `src/messaging/surface.rs`:
-  - `Surface` (`new`, `text`, `title`, `subtitle`, `image`, `field`, `fields`, `rows`, `button`, `row`, `column`, `card`, `carousel`, `input`, `number`, `choice`, `calendar`, `inputs`, `filled`, `labels`, `messages`), canned `approval`, `selection`, `login`, `logout`, `times`, `date`, `range`, `intake`, `feedback(Scale)`.
+  - `Surface` (`new`, `text`, `title`, `subtitle`, `image`, `field`, `fields`, `rows`, `button`, `row`, `column`, `card`, `carousel`, `input`, `number`, `text_area` (a multi-line `TextField`, variant `longText`), `choice`, `calendar`, `inputs`, `filled`, `labels`, `messages`), canned `approval`, `selection`, `login`, `logout`, `times`, `date`, `range`, `intake`, `feedback(Scale)` (a rating, a comment `text_area` and Send).
   - `title` is a bold `Text` (a2ui 1.0 `Text` has only `body` and `caption`), `subtitle` a caption. `image(url, text)` is an `Image` with `text` as its description. `fields(&value)`: one `field` per property of a serializable value, in its order; a property with no value is left out. `rows(&[T])`: a header row of the property names, then one row of values per item, every cell of equal weight so the columns line up.
   - A label is the schema's `title`, else the property name with `_` as spaces and a capital first letter (`postal_code` is "Postal code"), in `inputs`, `fields` and `rows`.
   - `row`, `column`, `card` and `carousel` rename the components their closure returns under the nesting component's id (`c1_c0`), so any surface nests, canned ones included (`column(|_| Surface::intake())`).

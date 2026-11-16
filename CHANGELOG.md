@@ -10,7 +10,7 @@ Format:
 ```
 
 ## 2026-11-17
-- Messaging attachments (PR #NNN, issue #256):
+- Messaging attachments (PR #257, issue #256):
   - `Messaging::attach` and `file`, `with_files_at(base)`; `FileData` is the model's `fileData` (`fileUri`, `mimeType`, `displayName`).
   - `attachments` table (migration 0010).
   - Routes: multipart upload with a size cap (413 over it) and download inline or as a file, for the pair's client only; `router(cap, base)`.

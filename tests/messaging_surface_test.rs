@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use megh::messaging::{Scale, Schema, Surface};
+use megh::messaging::{FileData, Scale, Schema, Surface};
 use serde_json::{Value, json};
 
 fn components(surface: Surface) -> Vec<Value> {
@@ -386,4 +386,33 @@ fn a_label_is_the_schema_title_or_the_property_name_made_readable() {
     let all = components(Surface::new().inputs(Schema::from(schema)));
     let labels = all.iter().filter(|c| c.get("label").is_some()).map(|c| c["label"].clone()).collect::<Vec<_>>();
     assert_eq!(labels, [json!("Postal code"), json!("Date of birth"), json!("Agreed")]);
+}
+
+fn file(uri: &str, mime_type: &str, name: &str) -> FileData {
+    FileData { file_uri: uri.into(), mime_type: mime_type.into(), display_name: name.into() }
+}
+
+#[test]
+fn an_attachment_is_megh_s_component_bound_to_its_key_and_its_files_are_answered() {
+    let all = components(Surface::new().attachment("Photos", "photos").button("Send", "submit"));
+    let picker = of(&all, "Attachment")[0];
+    assert_eq!((picker["catalogId"].clone(), picker["label"].clone(), picker["value"].clone()), (json!("azuik.com:megh"), json!("Photos"), json!({"@path": "/photos"})));
+    assert_eq!(of(&all, "Button")[0]["action"]["event"]["context"], json!({"photos": {"@path": "/photos"}}));
+    assert!(well_formed(&all));
+}
+
+#[test]
+fn file_data_is_in_the_form_a_model_takes() {
+    assert_eq!(serde_json::to_value(file("https://x/a", "image/png", "a.png")).unwrap(), json!({"fileUri": "https://x/a", "mimeType": "image/png", "displayName": "a.png"}));
+}
+
+#[test]
+fn attached_files_preview_by_media_type_and_each_has_a_download_button() {
+    let files = [file("https://x/a", "image/png", "a.png"), file("https://x/b", "audio/mpeg", "b.mp3"), file("https://x/c", "video/mp4", "c.mp4"), file("https://x/d", "application/pdf", "d.pdf")];
+    let all = components(Surface::new().attached(&files));
+    let url = |component: &str| of(&all, component).iter().map(|c| c["url"].clone()).collect::<Vec<_>>();
+    assert_eq!((url("Image"), url("AudioPlayer"), url("Video")), (vec![json!("https://x/a")], vec![json!("https://x/b")], vec![json!("https://x/c")]));
+    let downloads = of(&all, "Button").iter().map(|b| b["action"]["functionCall"]["args"]["url"].clone()).collect::<Vec<_>>();
+    assert_eq!(downloads, ["https://x/a", "https://x/b", "https://x/c", "https://x/d"].map(|uri| json!(format!("{uri}?download"))));
+    assert!(well_formed(&all));
 }

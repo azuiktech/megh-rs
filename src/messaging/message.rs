@@ -129,6 +129,10 @@ impl Delivery {
 pub enum MessagingError {
     #[error("messages go between a client and a member")]
     NotAPair,
+    #[error("no such file")]
+    NotFound,
+    #[error(transparent)]
+    File(#[from] std::io::Error),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
@@ -137,6 +141,8 @@ impl IntoResponse for MessagingError {
     fn into_response(self) -> Response {
         match self {
             Self::NotAPair => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
+            Self::NotFound => (StatusCode::NOT_FOUND, self.to_string()).into_response(),
+            Self::File(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
             Self::Database(error) => ApiError::Database(error).into_response(),
         }
     }
@@ -149,7 +155,7 @@ fn topic(tenant_id: Uuid, client: Option<Uuid>, member: Option<Uuid>) -> Topic {
 }
 
 /// The client, the member, and which of them sends.
-fn pair(from: Party, to: Party) -> Result<(Uuid, Uuid, &'static str), MessagingError> {
+pub(super) fn pair(from: Party, to: Party) -> Result<(Uuid, Uuid, &'static str), MessagingError> {
     match (from, to) {
         (Party::Client(client), Party::Member(member)) => Ok((client, member, "client")),
         (Party::Member(member), Party::Client(client)) => Ok((client, member, "member")),
@@ -184,9 +190,10 @@ impl Row {
 
 #[derive(Clone)]
 pub struct Messaging {
-    pool: PgPool,
+    pub(super) pool: PgPool,
     broker: Broker,
-    tenant_id: Uuid,
+    pub(super) tenant_id: Uuid,
+    pub(super) files_at: String,
     avatar: Option<fn(Uuid) -> Avatar>,
     timestamp: Option<TimeFormat>,
     read_mark: Option<ReadMark>,
@@ -195,7 +202,7 @@ pub struct Messaging {
 impl Messaging {
     /// Messaging within one tenant: nothing it sends or hears belongs to another.
     pub fn new(pool: PgPool, broker: Broker, tenant_id: Uuid) -> Self {
-        Self { pool, broker, tenant_id, avatar: None, timestamp: None, read_mark: None }
+        Self { pool, broker, tenant_id, files_at: String::new(), avatar: None, timestamp: None, read_mark: None }
     }
 
     /// The avatar shown beside each message, from the id of its sender.
@@ -209,6 +216,11 @@ impl Messaging {
 
     pub fn with_read_mark(self, mark: ReadMark) -> Self {
         Self { read_mark: Some(mark), ..self }
+    }
+
+    /// Where the routes are mounted (`https://app.example.com/api/v1`), so a file's `fileUri` loads from anywhere.
+    pub fn with_files_at(self, base: &str) -> Self {
+        Self { files_at: base.trim_end_matches('/').to_string(), ..self }
     }
 
     /// Sends the surface, framed as configured, from one side of a client and a member to the other.
@@ -399,10 +411,11 @@ impl HistoryProvider for History {
     }
 }
 
-/// The browser's routes, signed in as a client: `POST /tenants/{tenant_id}/members/{member_id}/messages` and
-/// `…/events`. Takes the `Broker` from an `Extension`.
-pub fn router() -> OpenApiRouter<AppContext> {
-    OpenApiRouter::new().routes(routes!(send)).routes(routes!(signal))
+/// The browser's routes, signed in as a client: `POST /tenants/{tenant_id}/members/{member_id}/messages`, `…/events`
+/// and `…/attachments` (a body over `cap` bytes refused), and `GET /tenants/{tenant_id}/attachments/{id}`; `base` is
+/// where they are mounted, for the files' `fileUri`. Takes the `Broker` from an `Extension`.
+pub fn router(cap: usize, base: &str) -> OpenApiRouter<AppContext> {
+    OpenApiRouter::new().routes(routes!(send)).routes(routes!(signal)).merge(super::attachment::routes(cap, base))
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

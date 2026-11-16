@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "protocolVersion": "1.0",
+  "title": "megh",
+  "description": "megh's components beyond the a2ui basic catalog.",
+  "catalogId": "azuik.com:megh",
+  "components": {
+    "Attachment": {
+      "type": "object",
+      "description": "The user browses for files and attaches them; each is uploaded, and the bound value holds the list of their file data.",
+      "properties": {
+        "component": { "const": "Attachment" },
+        "label": { "$ref": "common_types.json#/$defs/DynamicString", "description": "The label of the field." },
+        "value": { "$ref": "common_types.json#/$defs/DynamicValue", "description": "The attached files: a list of {fileUri, mimeType, displayName}." },
+        "weight": { "type": "number" }
+      },
+      "required": ["component", "value"]
+    }
+  }
+}

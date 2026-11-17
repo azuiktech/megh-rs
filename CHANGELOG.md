@@ -10,7 +10,7 @@ Format:
 ```
 
 ## 2026-11-17
-- Messaging client identity (PR #NNN, issue #258):
+- Messaging client identity (PR #259, issue #258):
   - `JwtSession::issue_client(tenant, client)`: a token for a known client with only the client routes' grants; the cookie renews from a session's client.
   - `messaging::guests(jwt)`: public `POST /tenants/{t}/guests`, the browser's guest (a client named `Guest`) kept in its session.
   - `Messaging::identify(guest, client)`: the guest's messages and attachments move to the client, the guest is soft-deleted with `moved_to` (migration 0011), and the widget is told with `Signal::Moved`.

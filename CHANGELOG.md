@@ -10,6 +10,12 @@ Format:
 ```
 
 ## 2026-11-17
+- Messaging client identity (PR #NNN, issue #258):
+  - `JwtSession::issue_client(tenant, client)`: a token for a known client with only the client routes' grants; the cookie renews from a session's client.
+  - `messaging::guests(jwt)`: public `POST /tenants/{t}/guests`, the browser's guest (a client named `Guest`) kept in its session.
+  - `Messaging::identify(guest, client)`: the guest's messages and attachments move to the client, the guest is soft-deleted with `moved_to` (migration 0011), and the widget is told with `Signal::Moved`.
+  - `messaging::follows`: the broker authorizer; a token follows only the topics whose client or member it is. `on` subscribes as its own party.
+  - Examples `identity_guest`, `identity_upfront`, `identity_known` (use cases A, B, C) on Postgres.
 - Messaging attachments (PR #257, issue #256):
   - `Messaging::attach` and `file`, `with_files_at(base)`; `FileData` is the model's `fileData` (`fileUri`, `mimeType`, `displayName`).
   - `attachments` table (migration 0010).

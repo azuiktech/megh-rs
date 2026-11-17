@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use super::http::USER_ID;
 use super::{AccessToken, Grant};
+use crate::messaging::{CLIENT, current};
 use crate::tenant::{Member, Tenants};
 
 pub const JWT_COOKIE: &str = "jwt_token";
@@ -49,7 +50,10 @@ pub struct IssuedToken {
     pub scope: Vec<Grant>,
 }
 
-/// Signing key, token lifetime and the pool the renewal reads memberships from.
+/// What a client's token may do: only the client routes of messaging.
+const CLIENT_GRANTS: [&str; 5] = ["members:read", "messages:create", "events:create", "attachments:create", "attachments:read"];
+
+/// Signing key, token lifetime and the pool the renewal reads memberships and clients from.
 #[derive(Clone)]
 pub struct JwtSession {
     encoding: EncodingKey,
@@ -57,6 +61,7 @@ pub struct JwtSession {
     validation: Validation,
     ttl: Duration,
     tenants: Tenants,
+    pool: PgPool,
 }
 
 impl JwtSession {
@@ -65,7 +70,7 @@ impl JwtSession {
         validation.set_issuer(&[ISSUER]);
         validation.validate_aud = false;
         validation.leeway = 0;
-        Self { encoding: EncodingKey::from_secret(secret), decoding: DecodingKey::from_secret(secret), validation, ttl, tenants: Tenants::new(pool) }
+        Self { encoding: EncodingKey::from_secret(secret), decoding: DecodingKey::from_secret(secret), validation, ttl, tenants: Tenants::new(pool.clone()), pool }
     }
 
     fn decode(&self, jwt: &str) -> Result<AccessToken, jsonwebtoken::errors::Error> {
@@ -82,13 +87,42 @@ impl JwtSession {
         Ok(IssuedToken { jwt, expires_in: self.ttl, scope: token.grants() })
     }
 
-    /// A new token for the user's first membership, taken from the session.
+    /// A token for a client of the tenant, carrying only the client routes' grants.
+    pub fn issue_client(&self, tenant_id: Uuid, client_id: Uuid) -> Result<IssuedToken, jsonwebtoken::errors::Error> {
+        let now = get_current_timestamp();
+        let scope = [format!("tenants:read:{tenant_id}")].into_iter().chain(CLIENT_GRANTS.map(str::to_string)).collect::<Vec<_>>().join(" ");
+        let tenant = tenant_id.to_string();
+        let token = AccessToken { sub: client_id, iss: ISSUER.into(), aud: vec![tenant], exp: now + self.ttl.as_secs(), iat: now, client_id: ISSUER.into(), scope };
+        let jwt = encode(&Header::default(), &token, &self.encoding)?;
+        Ok(IssuedToken { jwt, expires_in: self.ttl, scope: token.grants() })
+    }
+
+    /// The jar with the client's token cookie added.
+    pub(crate) fn client_cookie(&self, jar: CookieJar, tenant_id: Uuid, client_id: Uuid) -> Result<CookieJar, jsonwebtoken::errors::Error> {
+        self.issue_client(tenant_id, client_id).map(|issued| jar.add(cookie(issued.jwt, self.ttl)))
+    }
+
+    /// A new token from the session: the user's first membership, or else the session's client (or the client it
+    /// moved to).
     async fn renew(&self, jar: CookieJar, session: &Session) -> Result<(CookieJar, AccessToken), StatusCode> {
-        let user_id: Uuid = session.get(USER_ID).await.map_err(internal)?.ok_or(StatusCode::UNAUTHORIZED)?;
-        let member = self.tenants.memberships(user_id).await.map_err(internal)?.into_iter().next().ok_or(StatusCode::UNAUTHORIZED)?;
-        let issued = self.issue(&member, &[]).map_err(internal)?;
+        let issued = match session.get::<Uuid>(USER_ID).await.map_err(internal)? {
+            Some(user_id) => self.member_token(user_id).await?,
+            None => self.client_token(session).await?,
+        };
         let token = self.decode(&issued.jwt).map_err(internal)?;
         Ok((jar.add(cookie(issued.jwt, self.ttl)), token))
+    }
+
+    async fn member_token(&self, user_id: Uuid) -> Result<IssuedToken, StatusCode> {
+        let member = self.tenants.memberships(user_id).await.map_err(internal)?.into_iter().next().ok_or(StatusCode::UNAUTHORIZED)?;
+        self.issue(&member, &[]).map_err(internal)
+    }
+
+    async fn client_token(&self, session: &Session) -> Result<IssuedToken, StatusCode> {
+        let (tenant_id, kept): (Uuid, Uuid) = session.get(CLIENT).await.map_err(internal)?.ok_or(StatusCode::UNAUTHORIZED)?;
+        let client_id = current(&self.pool, tenant_id, kept).await.map_err(internal)?.ok_or(StatusCode::UNAUTHORIZED)?;
+        session.insert(CLIENT, (tenant_id, client_id)).await.map_err(internal)?;
+        self.issue_client(tenant_id, client_id).map_err(internal)
     }
 }
 

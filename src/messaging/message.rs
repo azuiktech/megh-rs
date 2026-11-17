@@ -40,13 +40,14 @@ impl Party {
     }
 }
 
-/// What is said without a message: typing, and that messages up to one were read.
+/// What is said without a message: typing, that messages up to one were read, and that a guest is now this client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Signal {
     TypingOn,
     TypingOff,
     Read(Uuid),
+    Moved(Uuid),
 }
 
 /// What stands for a sender beside their messages.
@@ -134,6 +135,10 @@ pub enum MessagingError {
     #[error(transparent)]
     File(#[from] std::io::Error),
     #[error(transparent)]
+    Session(#[from] tower_sessions::session::Error),
+    #[error(transparent)]
+    Token(#[from] jsonwebtoken::errors::Error),
+    #[error(transparent)]
     Database(#[from] sqlx::Error),
 }
 
@@ -142,7 +147,7 @@ impl IntoResponse for MessagingError {
         match self {
             Self::NotAPair => (StatusCode::BAD_REQUEST, self.to_string()).into_response(),
             Self::NotFound => (StatusCode::NOT_FOUND, self.to_string()).into_response(),
-            Self::File(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+            Self::File(_) | Self::Session(_) | Self::Token(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()).into_response(),
             Self::Database(error) => ApiError::Database(error).into_response(),
         }
     }
@@ -234,7 +239,7 @@ impl Messaging {
         let (client, member, _) = pair(from, to)?;
         let updates = match signal {
             Signal::Read(up_to) => self.read(client, member, from, up_to).await?,
-            Signal::TypingOn | Signal::TypingOff => Vec::new(),
+            Signal::TypingOn | Signal::TypingOff | Signal::Moved(_) => Vec::new(),
         };
         let data = serde_json::to_value(Delivery::Event(Notice { from, to, signal, updates })).unwrap_or_default();
         self.broker.publish(Event::new(topic(self.tenant_id, Some(client), Some(member)), data)).await;
@@ -305,16 +310,22 @@ impl Messaging {
         Ok(marked.into_iter().filter_map(|(id, read)| Some(read_update(id?, read?.0))).collect())
     }
 
+    /// Who `me` is to the broker's authorizer: `me` in this tenant, never sent anywhere, so it is not signed.
+    fn listener(&self, me: Party) -> AccessToken {
+        let tenant = self.tenant_id.to_string();
+        AccessToken { sub: me.id(), iss: "megh".into(), aud: vec![tenant], exp: u64::MAX, iat: 0, client_id: "megh".into(), scope: String::new() }
+    }
+
     /// Follows `me`'s topics on the broker and hands each delivery from the other side to `deliver`.
     fn listen(&self, me: Party, deliver: impl Fn(Delivery) + Send + 'static) {
         let pattern = match me {
             Party::Client(client) => topic(self.tenant_id, Some(client), None),
             Party::Member(member) => topic(self.tenant_id, None, Some(member)),
         };
-        let broker = self.broker.clone();
+        let (broker, owner) = (self.broker.clone(), self.listener(me));
         tokio::spawn(async move {
             let name = Uuid::now_v7().to_string();
-            let received = broker.register(&name, None).await;
+            let received = broker.register(&name, Some(owner)).await;
             let _ = broker.subscribe(&name, &[pattern]).await;
             ReceiverStream::new(received)
                 .filter_map(|event| ready(serde_json::from_value::<Delivery>(event.data).ok()))
@@ -387,7 +398,7 @@ impl History {
 }
 
 /// The tenant, client and member of a messaging topic; `*` is any.
-fn scope(topic: &Topic) -> Option<(Uuid, Option<Uuid>, Option<Uuid>)> {
+pub(super) fn scope(topic: &Topic) -> Option<(Uuid, Option<Uuid>, Option<Uuid>)> {
     match topic.split('/').collect::<Vec<_>>()[..] {
         ["tenants", tenant, "clients", client, "members", member] => Some((tenant.parse().ok()?, side(client)?, side(member)?)),
         _ => None,

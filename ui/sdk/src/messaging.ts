@@ -1,8 +1,8 @@
 /** One side of a conversation: a member of the tenant, or a client. */
 export type Party = { member: string } | { client: string }
 
-/** What is said without a message: typing, or that messages up to one were read. */
-export type Signal = 'typing_on' | 'typing_off' | { read: string }
+/** What is said without a message: typing, that messages up to one were read, or that a guest is now this client. */
+export type Signal = 'typing_on' | 'typing_off' | { read: string } | { moved: string }
 
 export interface Message {
   kind: 'message'

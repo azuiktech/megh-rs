@@ -309,19 +309,23 @@ impl Browser {
 
     /// The next delivery from the agent on the stream: a message, or an event such as `moved`.
     pub async fn next(&mut self) -> Fallible<Value> {
-        loop {
-            let delivered = self.buffer.split_once("\n\n").map(|(event, rest)| (event.to_string(), rest.to_string()));
-            match delivered {
-                Some((event, rest)) => {
-                    self.buffer = rest;
-                    if let Some(delivery) = from_agent(&event) {
-                        println!("  browser got  {}", short(&delivery));
-                        return Ok(delivery);
-                    }
-                }
-                None => self.read().await?,
+        match self.take() {
+            Some(delivery) => {
+                println!("  browser got  {}", short(&delivery));
+                Ok(delivery)
+            }
+            None => {
+                self.read().await?;
+                Box::pin(self.next()).await
             }
         }
+    }
+
+    /// The first whole event in the buffer that the agent sent, dropping those before it.
+    fn take(&mut self) -> Option<Value> {
+        let end = self.buffer.find("\n\n")?;
+        let event = self.buffer.drain(..end + 2).collect::<String>();
+        from_agent(&event).or_else(|| self.take())
     }
 
     async fn read(&mut self) -> Fallible<()> {

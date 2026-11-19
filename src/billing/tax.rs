@@ -11,16 +11,17 @@ use validator::Validate;
 
 use super::value::Percent;
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 use crate::booking::value::{Attributes, Name};
-use crate::{Entity, Table};
 
 /// A percentage tax on a line (Odoo `account.tax`, Zoho `Tax`, HubSpot `taxes`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "billing_taxes", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "billing_taxes", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
 #[schema(example = json!({"name": "Sales tax", "rate": "7.5"}))]
-pub struct TaxData {
+pub struct Tax {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     #[schema(value_type = String, example = "Sales tax")]
     pub name: Name,
     pub rate: Percent,
@@ -31,8 +32,6 @@ pub struct TaxData {
     #[schema(value_type = Object)]
     pub attributes: Attributes,
 }
-
-pub type Tax = Entity<Uuid, TaxData>;
 
 pub fn routes() -> OpenApiRouter<AppContext> {
     OpenApiRouter::new()
@@ -50,7 +49,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, TaxData>>))),
+    responses((status = 200, body = inline(Page<Tax>))),
 )]
 async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>) -> ApiResult<Page<Tax>> {
     crud::list(&ctx.pool, &request).await
@@ -61,7 +60,7 @@ async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>)
     path = "/tenants/{tenant_id}/taxes/{id}",
     tag = "taxes",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
+    responses((status = 200, body = inline(Tax)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Tax> {
     crud::get(&ctx.pool, &key).await
@@ -72,11 +71,11 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/taxes",
     tag = "taxes",
     params(("tenant_id" = Uuid, Path)),
-    request_body = TaxData,
-    responses((status = 200, body = inline(Entity<Uuid, TaxData>))),
+    request_body = Tax,
+    responses((status = 200, body = inline(Tax))),
 )]
-async fn create(State(ctx): State<AppContext>, Input(data): Input<TaxData>) -> ApiResult<Tax> {
-    crud::create(&ctx.pool, data).await
+async fn create(State(ctx): State<AppContext>, Input(data): Input<Tax>) -> ApiResult<Tax> {
+    crud::create(&ctx.pool, data, None).await
 }
 
 #[utoipa::path(
@@ -84,11 +83,11 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<TaxData>) -> A
     path = "/tenants/{tenant_id}/taxes/{id}",
     tag = "taxes",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = TaxData,
-    responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
+    request_body = Tax,
+    responses((status = 200, body = inline(Tax)), (status = 404)),
 )]
-async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<TaxData>>) -> ApiResult<Tax> {
-    crud::replace(&ctx.pool, body).await
+async fn replace(State(ctx): State<AppContext>, Input(body): Input<Tax>) -> ApiResult<Tax> {
+    crud::replace(&ctx.pool, body, None).await
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -98,10 +97,10 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<TaxData
     tag = "taxes",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
+    responses((status = 200, body = inline(Tax)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Tax> {
-    crud::patch(&ctx.pool, body).await
+    crud::patch(&ctx.pool, body, None).await
 }
 
 #[utoipa::path(
@@ -109,8 +108,8 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/taxes/{id}",
     tag = "taxes",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, TaxData>)), (status = 404)),
+    responses((status = 200, body = inline(Tax)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Tax> {
-    crud::delete(&ctx.pool, &key).await
+    crud::delete(&ctx.pool, &key, None).await
 }

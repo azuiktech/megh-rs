@@ -57,7 +57,7 @@ pub struct Capacity(i32);
 )]
 pub struct Waitlist(i32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, crate::Column)]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type))]
 #[cfg_attr(feature = "postgres", sqlx(type_name = "text", rename_all = "snake_case"))]
 #[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
@@ -68,6 +68,8 @@ pub enum Gender {
     Other,
     Unknown,
 }
+
+crate::text_column!(Name, Phone, Email);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
@@ -82,7 +84,8 @@ pub struct Address {
 }
 
 /// Columns of a person's contact, flattened into the table of the entity that has them.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, crate::Table)]
+#[crate::entity(keys = [])]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 #[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
 pub struct Contact {
@@ -99,3 +102,5 @@ pub struct Person {
     pub gender: Gender,
     pub birth_date: NaiveDate,
 }
+
+crate::newtype_column!(Capacity: i32, Waitlist: i32);

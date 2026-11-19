@@ -1,23 +1,20 @@
-//! User identity models and persistence repository using Entity<ID, T>.
+//! User identity models and persistence repository.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::entity::Entity;
-
-/// User profile business fields.
+/// A user: who signs in, with the id and timestamps every row has.
+#[crate::entity(table = "users", keys = ["id"], timestamps, soft_delete)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-pub struct UserProfile {
+pub struct User {
+    pub id: Uuid,
     pub account_id: Option<String>,
     pub provider: Option<String>,
     pub email: String,
     pub display_name: String,
     pub photo_url: String,
 }
-
-/// Full user entity wrapping UserProfile with ID and audit timestamps.
-pub type User = Entity<Uuid, UserProfile>;
 
 /// Parameters for creating or updating a user identity upon login.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -242,32 +239,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_user_entity_deref_and_serialization() {
+    fn test_user_serialization() {
         let id = Uuid::parse_str("a0000000-0000-0000-0000-000000000001").unwrap();
-        let user: User = Entity::new(
-            id,
-            UserProfile {
-                account_id: Some("1234".to_string()),
-                provider: Some("google".to_string()),
-                email: "abirbasak@gmail.com".to_string(),
-                display_name: "Abir Basak".to_string(),
-                photo_url: "https://photo.example.com/avatar.png".to_string(),
-            },
-        );
+        let user: User = serde_json::from_value(serde_json::json!({
+            "id": id, "account_id": "1234", "provider": "google", "email": "abirbasak@gmail.com",
+            "display_name": "Abir Basak", "photo_url": "https://photo.example.com/avatar.png",
+        }))
+        .unwrap();
 
-        // Deref directly into profile fields
         assert_eq!(user.id, id);
         assert_eq!(user.provider.as_deref(), Some("google"));
         assert_eq!(user.email, "abirbasak@gmail.com");
-        assert_eq!(user.display_name, "Abir Basak");
 
-        // Flat JSON serialization without nested data key
         let json = serde_json::to_string(&user).unwrap();
         assert!(json.contains("abirbasak@gmail.com"));
         assert!(!json.contains(r#""data":{"#));
-
-        let deserialized: User = serde_json::from_str(&json).unwrap();
-        assert_eq!(user, deserialized);
+        assert_eq!(user, serde_json::from_str::<User>(&json).unwrap());
     }
 
     #[test]

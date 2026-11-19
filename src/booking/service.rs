@@ -13,9 +13,8 @@ use validator::Validate;
 use super::price::{self, ItemKind, Priced};
 use super::value::{Attributes, Name};
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 use crate::billing::value::{Currency, Micros};
-use crate::{Entity, Table};
 
 /// A stretch of the client's time and the provider groups it needs (none, one or two).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, ToSchema)]
@@ -28,11 +27,13 @@ pub struct Step {
     pub provider2: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "services", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "services", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
 #[schema(example = json!({"name": "Tooth extraction", "setup": "PT10M", "cleanup": "PT10M", "steps": [{"duration": "PT15M", "provider1": "hygienist"}, {"duration": "PT45M", "provider1": "hygienist", "provider2": "dentist"}, {"duration": "PT15M", "provider1": "hygienist"}]}))]
-pub struct ServiceData {
+pub struct Service {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     #[sqlx(try_from = "String")]
     #[schema(value_type = String, example = "Tooth extraction")]
     pub name: Name,
@@ -65,17 +66,19 @@ pub struct ServiceData {
     pub attributes: Attributes,
 }
 
-pub type Service = Entity<Uuid, ServiceData>;
-
 fn session() -> Name {
     Name::try_new("session").expect("a name")
 }
 
-impl Priced for ServiceData {
+impl Priced for Service {
     const KIND: ItemKind = ItemKind::Service;
 
     fn tenant_id(&self) -> Uuid {
         self.tenant_id
+    }
+
+    fn id(&self) -> Uuid {
+        self.id
     }
 
     fn price(&self) -> (Micros, Currency) {
@@ -99,7 +102,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, ServiceData>>))),
+    responses((status = 200, body = inline(Page<Service>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -113,7 +116,7 @@ async fn list(
     path = "/tenants/{tenant_id}/services/{id}",
     tag = "services",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
+    responses((status = 200, body = inline(Service)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Service> {
     crud::get(&ctx.pool, &key).await
@@ -124,12 +127,12 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/services",
     tag = "services",
     params(("tenant_id" = Uuid, Path)),
-    request_body = ServiceData,
-    responses((status = 200, body = inline(Entity<Uuid, ServiceData>))),
+    request_body = Service,
+    responses((status = 200, body = inline(Service))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
-    Input(data): Input<ServiceData>,
+    Input(data): Input<Service>,
 ) -> ApiResult<Service> {
     price::create(&ctx.pool, data).await
 }
@@ -139,12 +142,12 @@ async fn create(
     path = "/tenants/{tenant_id}/services/{id}",
     tag = "services",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = ServiceData,
-    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
+    request_body = Service,
+    responses((status = 200, body = inline(Service)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
-    Input(body): Input<Keyed<ServiceData>>,
+    Input(body): Input<Service>,
 ) -> ApiResult<Service> {
     price::replace(&ctx.pool, body).await
 }
@@ -155,8 +158,8 @@ async fn replace(
     path = "/tenants/{tenant_id}/services/{id}",
     tag = "services",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body(content = ServiceData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
-    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
+    request_body(content = Service, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Service)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Service> {
     price::patch(&ctx.pool, body).await
@@ -167,8 +170,8 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/services/{id}",
     tag = "services",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ServiceData>)), (status = 404)),
+    responses((status = 200, body = inline(Service)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Service> {
-    crud::delete(&ctx.pool, &key).await
+    crud::delete(&ctx.pool, &key, None).await
 }

@@ -1,15 +1,17 @@
-//! A bytea column of an entity holds the field's bytes through `insert`, `save` and reads: `megh::bytea`.
+//! A `Vec<u8>` field is a bytea column: the bytes written are the bytes stored and read.
 
-use megh::{Entity, Table};
+use megh::auth::crud;
+use megh::entity;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
+use validator::Validate;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table)]
-#[table(name = "files", keys = ["id"])]
-struct FileData {
+#[entity(table = "files", keys = ["id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+struct File {
+    id: Uuid,
     name: String,
-    #[serde(with = "megh::bytea")]
     content: Vec<u8>,
 }
 
@@ -22,24 +24,19 @@ async fn table(pool: &PgPool) {
         .unwrap();
 }
 
-#[sqlx::test(migrations = false)]
-async fn inserted_and_saved_bytes_are_the_columns_bytes(pool: PgPool) {
-    table(&pool).await;
-
-    let inserted = Entity::new(Uuid::now_v7(), FileData { name: "po.pdf".into(), content: PDF.to_vec() }).insert(&pool).await.unwrap();
-    let column: Vec<u8> = sqlx::query_scalar("SELECT content FROM files").fetch_one(&pool).await.unwrap();
-    assert_eq!((column.as_slice(), inserted.data.content.as_slice()), (PDF, PDF));
-
-    let saved = inserted.map(|data| FileData { content: b"\x01\x02".to_vec(), ..data }).save(&pool).await.unwrap();
-    let column: Vec<u8> = sqlx::query_scalar("SELECT content FROM files").fetch_one(&pool).await.unwrap();
-    assert_eq!((column.as_slice(), saved.data.content.as_slice()), (&b"\x01\x02"[..], &b"\x01\x02"[..]));
+fn file(content: &[u8]) -> File {
+    serde_json::from_value(serde_json::json!({"id": Uuid::nil(), "name": "po.pdf", "content": content})).unwrap()
 }
 
-#[test]
-fn bytes_are_postgres_hex_text_in_json_and_back() {
-    let file = FileData { name: "f".into(), content: vec![0x25, 0x00, 0xff] };
-    let json = serde_json::to_value(&file).unwrap();
+#[sqlx::test(migrations = false)]
+async fn created_and_replaced_bytes_are_the_columns_bytes(pool: PgPool) {
+    table(&pool).await;
 
-    assert_eq!(json["content"], serde_json::json!("\\x2500ff"));
-    assert_eq!(serde_json::from_value::<FileData>(json).unwrap(), file);
+    let created = crud::create(&pool, file(PDF), None).await.unwrap();
+    let column: Vec<u8> = sqlx::query_scalar("SELECT content FROM files").fetch_one(&pool).await.unwrap();
+    assert_eq!((column.as_slice(), created.content.as_slice()), (PDF, PDF));
+
+    let replaced = crud::replace(&pool, File { content: b"\x01\x02".to_vec(), ..created }, None).await.unwrap();
+    let column: Vec<u8> = sqlx::query_scalar("SELECT content FROM files").fetch_one(&pool).await.unwrap();
+    assert_eq!((column.as_slice(), replaced.content.as_slice()), (&b"\x01\x02"[..], &b"\x01\x02"[..]));
 }

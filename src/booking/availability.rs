@@ -21,15 +21,14 @@ use utoipa_axum::routes;
 use uuid::Uuid;
 use validator::{Validate, ValidationError};
 
-use super::appointment::{AppointmentData, Status};
-use super::blockout::BlockoutData;
-use super::provider::ProviderData;
-use super::resource::ResourceData;
-use super::schedule::ScheduleData;
-use super::service::ServiceData;
-use crate::auth::crud::Row;
+use super::appointment::{Appointment, Status};
+use super::blockout::Blockout;
+use super::provider::Provider;
+use super::resource::Resource;
+use super::schedule::Schedule;
+use super::service::Service;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Input, Page, PageRequest};
-use crate::{Entity, Table};
+use crate::Table;
 
 /// What to find room for: each party is one client wanting one service.
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -126,7 +125,7 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(service: &ServiceData) -> Self {
+    fn new(service: &Service) -> Self {
         let steps: Vec<_> = service
             .steps
             .iter()
@@ -177,12 +176,12 @@ struct Taken {
 /// Everything one search reads, loaded once.
 struct Calendar {
     plans: HashMap<Uuid, Plan>,
-    providers: Vec<Entity<Uuid, ProviderData>>,
-    resources: Vec<Entity<Uuid, ResourceData>>,
+    providers: Vec<Provider>,
+    resources: Vec<Resource>,
     fields: HashMap<Uuid, Value>,
     limits: HashMap<Uuid, (i32, i32)>,
-    schedules: Vec<(ScheduleData, Vec<Span>)>,
-    blockouts: Vec<(BlockoutData, Vec<Span>)>,
+    schedules: Vec<(Schedule, Vec<Span>)>,
+    blockouts: Vec<(Blockout, Vec<Span>)>,
     taken: HashMap<Uuid, Vec<Taken>>,
     /// Each party's rooms and crews.
     choices: Vec<(Vec<Uuid>, Vec<Vec<Uuid>>)>,
@@ -208,7 +207,7 @@ impl Calendar {
         let plans: HashMap<Uuid, Plan> = services_of(conn, request.tenant_id, &services)
             .await?
             .iter()
-            .map(|service| (service.id, Plan::new(&service.data)))
+            .map(|service| (service.id, Plan::new(service)))
             .collect();
         if let Some(party) = request.parties.iter().find(|party| !plans.contains_key(&party.service_id)) {
             return Err(ApiError::BadRequest(format!("no service {}", party.service_id)));
@@ -219,13 +218,13 @@ impl Calendar {
         let (fields, limits) = described(&providers, &resources);
         let (provider_ids, room_ids): (Vec<Uuid>, Vec<Uuid>) = (providers.iter().map(|p| p.id).collect(), resources.iter().map(|r| r.id).collect());
         let candidates = Candidates { tenant_id: request.tenant_id, providers: &provider_ids, rooms: &room_ids, services: &services };
-        let schedules = applying::<ScheduleData>(conn, &candidates).await?.into_iter().map(|s| {
-            let open = windows(&s.data.recurrence, s.data.starts_at, s.data.ends_at, horizon);
-            (s.data, open)
+        let schedules = applying::<Schedule>(conn, &candidates).await?.into_iter().map(|s| {
+            let open = windows(&s.recurrence, s.starts_at, s.ends_at, horizon);
+            (s, open)
         });
-        let blockouts = applying::<BlockoutData>(conn, &candidates).await?.into_iter().map(|b| {
-            let closed = windows(&b.data.recurrence, b.data.starts_at, b.data.ends_at, horizon);
-            (b.data, closed)
+        let blockouts = applying::<Blockout>(conn, &candidates).await?.into_iter().map(|b| {
+            let closed = windows(&b.recurrence, b.starts_at, b.ends_at, horizon);
+            (b, closed)
         });
         let clients = request.parties.iter().filter_map(|party| match party.client {
             Client::Known { id } => Some(id),
@@ -316,7 +315,7 @@ impl Calendar {
         self.plans[&party.service_id]
             .roles
             .iter()
-            .map(|(role, _)| self.providers.iter().filter(|p| p.data.role.as_ref().is_some_and(|r| r.as_ref() == role)).map(|p| p.id).collect::<Vec<_>>())
+            .map(|(role, _)| self.providers.iter().filter(|p| p.role.as_ref().is_some_and(|r| r.as_ref() == role)).map(|p| p.id).collect::<Vec<_>>())
             .multi_cartesian_product()
             .filter(|crew| crew.iter().all_unique())
             .filter(|crew| party.providers.iter().all(|wanted| crew.iter().any(|id| matches(&self.fields[id], wanted))))
@@ -339,7 +338,7 @@ impl Calendar {
     /// `provider_ids` as a crew, one per role of the service in the service's order.
     fn crew(&self, service: Uuid, provider_ids: &[Uuid]) -> Option<Vec<Uuid>> {
         let roles = &self.plans[&service].roles;
-        let role_of = |id: &Uuid| self.providers.iter().find(|p| p.id == *id).and_then(|p| p.data.role.as_ref());
+        let role_of = |id: &Uuid| self.providers.iter().find(|p| p.id == *id).and_then(|p| p.role.as_ref());
         let crew = roles
             .iter()
             .map(|(role, _)| provider_ids.iter().copied().find(|id| role_of(id).is_some_and(|r| r.as_ref() == role)))
@@ -400,11 +399,11 @@ impl Calendar {
 
 /// Each provider's and room's fields as JSON, for matching, and its capacity and waitlist.
 fn described(
-    providers: &[Entity<Uuid, ProviderData>],
-    resources: &[Entity<Uuid, ResourceData>],
+    providers: &[Provider],
+    resources: &[Resource],
 ) -> (HashMap<Uuid, Value>, HashMap<Uuid, (i32, i32)>) {
-    let providers = providers.iter().map(|p| (p.id, to_json(p), (p.data.capacity.into(), p.data.waitlist.into())));
-    let resources = resources.iter().map(|r| (r.id, to_json(r), (r.data.capacity.into(), r.data.waitlist.into())));
+    let providers = providers.iter().map(|p| (p.id, to_json(p), (p.capacity.into(), p.waitlist.into())));
+    let resources = resources.iter().map(|r| (r.id, to_json(r), (r.capacity.into(), r.waitlist.into())));
     providers.chain(resources).map(|(id, fields, limits)| ((id, fields), (id, limits))).unzip()
 }
 
@@ -498,7 +497,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
 )]
 async fn search(State(ctx): State<AppContext>, Input(request): Input<Availability>) -> ApiResult<Page<Slot>> {
     let unknown = request.parties.iter().find_map(|party| {
-        unknown_field::<ProviderData>(&party.providers).or_else(|| unknown_field::<ResourceData>(&party.resources))
+        unknown_field::<Provider>(&party.providers).or_else(|| unknown_field::<Resource>(&party.resources))
     });
     if let Some(field) = unknown {
         return Err(ApiError::BadRequest(format!("{field} is not a field; attributes cannot be matched yet")));
@@ -546,7 +545,7 @@ pub(super) type Place = (Uuid, Span, bool);
 /// The places `appointment` takes, read in the caller's transaction, if it fits as its status asks: `booked`
 /// needs a free place, `waitlist` a waitlist place. `except` leaves out the places of the appointment being
 /// booked again, or of the hold it is booked from.
-pub(super) async fn fit(conn: &mut PgConnection, appointment: &AppointmentData, except: Option<Uuid>) -> ApiResult<Vec<Place>> {
+pub(super) async fn fit(conn: &mut PgConnection, appointment: &Appointment, except: Option<Uuid>) -> ApiResult<Vec<Place>> {
     let party = Placed {
         client: Client::Known { id: appointment.client_id },
         service_id: appointment.service_id,
@@ -610,7 +609,7 @@ struct Candidates<'a> {
     services: &'a [Uuid],
 }
 
-async fn services_of(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Entity<Uuid, ServiceData>>> {
+async fn services_of(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Service>> {
     Ok(sqlx::query_as("SELECT * FROM services WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
         .bind(tenant_id)
         .bind(ids)
@@ -619,7 +618,7 @@ async fn services_of(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uuid]) -> 
 }
 
 /// Providers whose role a step of the services needs, e.g. every hygienist.
-async fn providers_in(conn: &mut PgConnection, tenant_id: Uuid, roles: &[String]) -> ApiResult<Vec<Entity<Uuid, ProviderData>>> {
+async fn providers_in(conn: &mut PgConnection, tenant_id: Uuid, roles: &[String]) -> ApiResult<Vec<Provider>> {
     Ok(sqlx::query_as("SELECT * FROM providers WHERE tenant_id = $1 AND role = ANY($2) AND deleted_at IS NULL ORDER BY id")
         .bind(tenant_id)
         .bind(roles)
@@ -628,7 +627,7 @@ async fn providers_in(conn: &mut PgConnection, tenant_id: Uuid, roles: &[String]
 }
 
 /// Rooms with every field some party asks of its room.
-async fn rooms_for(conn: &mut PgConnection, request: &Availability) -> ApiResult<Vec<Entity<Uuid, ResourceData>>> {
+async fn rooms_for(conn: &mut PgConnection, request: &Availability) -> ApiResult<Vec<Resource>> {
     let wanted: Vec<Value> = request.parties.iter().map(|party| Value::Object(party.resources.iter().flatten().map(|(k, v)| (k.clone(), v.clone())).collect())).collect();
     Ok(sqlx::query_as(
         "SELECT * FROM resources r WHERE tenant_id = $1 AND deleted_at IS NULL \
@@ -641,7 +640,7 @@ async fn rooms_for(conn: &mut PgConnection, request: &Availability) -> ApiResult
 }
 
 /// Schedules or blockouts that apply to the candidates and services: naming none of them means any.
-async fn applying<T: Row>(conn: &mut PgConnection, candidates: &Candidates<'_>) -> ApiResult<Vec<Entity<Uuid, T>>> {
+async fn applying<T: Table + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin>(conn: &mut PgConnection, candidates: &Candidates<'_>) -> ApiResult<Vec<T>> {
     let query = format!(
         "SELECT * FROM {} WHERE tenant_id = $1 AND deleted_at IS NULL \
          AND (provider_id IS NULL OR provider_id = ANY($2)) AND (resource_id IS NULL OR resource_id = ANY($3)) \
@@ -729,7 +728,7 @@ fn serves(service_ids: &[Uuid], service: Uuid) -> bool {
 
 /// A blockout with neither provider nor room closes everything; with a room, that room and the providers in
 /// it; with a provider, that provider.
-fn blocks(blockout: &BlockoutData, room: Uuid, provider: Option<Uuid>) -> bool {
+fn blocks(blockout: &Blockout, room: Uuid, provider: Option<Uuid>) -> bool {
     let in_room = blockout.resource_id.is_none_or(|r| r == room);
     match provider {
         None => blockout.provider_id.is_none() && in_room,

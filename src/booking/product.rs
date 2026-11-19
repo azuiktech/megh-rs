@@ -12,18 +12,19 @@ use validator::Validate;
 use super::price::{self, ItemKind, Priced};
 use super::value::{Attributes, Name};
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 use crate::billing::value::{Currency, Micros};
-use crate::{Entity, Table};
 
+#[crate::entity(table = "products", keys = ["tenant_id", "id"], timestamps, soft_delete)]
 #[derive(
-    Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema,
+    Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema,
 )]
-#[table(name = "products", keys = ["tenant_id", "id"])]
 #[schema(example = json!({"sku": "WEL-60", "name": "Hair colour", "unit": "tube", "price": 12000000, "currency": "USD"}))]
-pub struct ProductData {
+pub struct Product {
     /// The owner.
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     /// Unique per owner.
     #[sqlx(try_from = "String")]
     #[schema(value_type = String, example = "WEL-60")]
@@ -48,13 +49,15 @@ pub struct ProductData {
     pub attributes: Attributes,
 }
 
-pub type Product = Entity<Uuid, ProductData>;
-
-impl Priced for ProductData {
+impl Priced for Product {
     const KIND: ItemKind = ItemKind::Product;
 
     fn tenant_id(&self) -> Uuid {
         self.tenant_id
+    }
+
+    fn id(&self) -> Uuid {
+        self.id
     }
 
     fn price(&self) -> (Micros, Currency) {
@@ -78,7 +81,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, ProductData>>))),
+    responses((status = 200, body = inline(Page<Product>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -92,7 +95,7 @@ async fn list(
     path = "/tenants/{tenant_id}/products/{id}",
     tag = "products",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ProductData>)), (status = 404)),
+    responses((status = 200, body = inline(Product)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Product> {
     crud::get(&ctx.pool, &key).await
@@ -103,12 +106,12 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/products",
     tag = "products",
     params(("tenant_id" = Uuid, Path)),
-    request_body = ProductData,
-    responses((status = 200, body = inline(Entity<Uuid, ProductData>)), (status = 409, description = "The owner has a product with this SKU.")),
+    request_body = Product,
+    responses((status = 200, body = inline(Product)), (status = 409, description = "The owner has a product with this SKU.")),
 )]
 async fn create(
     State(ctx): State<AppContext>,
-    Input(data): Input<ProductData>,
+    Input(data): Input<Product>,
 ) -> ApiResult<Product> {
     price::create(&ctx.pool, data).await
 }
@@ -118,12 +121,12 @@ async fn create(
     path = "/tenants/{tenant_id}/products/{id}",
     tag = "products",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = ProductData,
-    responses((status = 200, body = inline(Entity<Uuid, ProductData>)), (status = 404)),
+    request_body = Product,
+    responses((status = 200, body = inline(Product)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
-    Input(body): Input<Keyed<ProductData>>,
+    Input(body): Input<Product>,
 ) -> ApiResult<Product> {
     price::replace(&ctx.pool, body).await
 }
@@ -134,8 +137,8 @@ async fn replace(
     path = "/tenants/{tenant_id}/products/{id}",
     tag = "products",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body(content = ProductData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
-    responses((status = 200, body = inline(Entity<Uuid, ProductData>)), (status = 404)),
+    request_body(content = Product, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Product)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Product> {
     price::patch(&ctx.pool, body).await
@@ -146,8 +149,8 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/products/{id}",
     tag = "products",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ProductData>)), (status = 404)),
+    responses((status = 200, body = inline(Product)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Product> {
-    crud::delete(&ctx.pool, &key).await
+    crud::delete(&ctx.pool, &key, None).await
 }

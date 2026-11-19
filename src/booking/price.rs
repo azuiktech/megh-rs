@@ -13,11 +13,11 @@ use validator::Validate;
 
 use crate::auth::crud::{self, Row};
 use crate::auth::rest::{
-    ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page,
+    ApiError, ApiResult, AppContext, Changes, Input, Key, ListRequest, Page,
 };
 use crate::billing::value::{Currency, Micros};
-use crate::{Entity, Table, TableEntity};
 
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -26,12 +26,14 @@ pub enum ItemKind {
     Service,
 }
 
+#[crate::entity(table = "prices", keys = ["tenant_id", "id"], timestamps, soft_delete)]
 #[derive(
-    Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema,
+    Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema,
 )]
-#[table(name = "prices", keys = ["tenant_id", "id"])]
-pub struct PriceData {
+pub struct Price {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     pub item_id: Uuid,
     pub item_kind: ItemKind,
     pub price: Micros,
@@ -39,43 +41,39 @@ pub struct PriceData {
     pub effective_at: DateTime<Utc>,
 }
 
-pub type Price = Entity<Uuid, PriceData>;
-
 /// An item with a current price that the ledger follows.
-pub trait Priced: Row {
+pub trait Priced: Row + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Unpin {
     const KIND: ItemKind;
     fn tenant_id(&self) -> Uuid;
+    fn id(&self) -> Uuid;
     fn price(&self) -> (Micros, Currency);
 }
 
-pub(super) async fn create<T: Priced>(pool: &PgPool, data: T) -> ApiResult<Entity<Uuid, T>> {
+pub(super) async fn create<T: Priced>(pool: &PgPool, data: T) -> ApiResult<T> {
     let mut transaction = pool.begin().await?;
-    let saved = crud::create(&mut *transaction, data).await?;
+    let saved = crud::create(&mut *transaction, data, None).await?;
     record(&mut transaction, None, &saved).await?;
     transaction.commit().await?;
     Ok(saved)
 }
 
-pub(super) async fn replace<T: Priced>(
-    pool: &PgPool,
-    body: Keyed<T>,
-) -> ApiResult<Entity<Uuid, T>> {
+pub(super) async fn replace<T: Priced>(pool: &PgPool, data: T) -> ApiResult<T> {
     let mut transaction = pool.begin().await?;
     let key = Key {
-        tenant_id: body.data.tenant_id(),
-        id: body.id,
+        tenant_id: data.tenant_id(),
+        id: data.id(),
     };
     let before = locked_price::<T>(&mut transaction, &key).await?;
-    let saved = crud::replace(&mut *transaction, body).await?;
+    let saved = crud::replace(&mut *transaction, data, None).await?;
     record(&mut transaction, Some(before), &saved).await?;
     transaction.commit().await?;
     Ok(saved)
 }
 
-pub(super) async fn patch<T: Priced>(pool: &PgPool, body: Changes) -> ApiResult<Entity<Uuid, T>> {
+pub(super) async fn patch<T: Priced>(pool: &PgPool, body: Changes) -> ApiResult<T> {
     let mut transaction = pool.begin().await?;
     let before = locked_price::<T>(&mut transaction, &body.key).await?;
-    let saved = crud::patch::<T>(&mut *transaction, body).await?;
+    let saved = crud::patch::<T, _>(&mut *transaction, body, None).await?;
     record(&mut transaction, Some(before), &saved).await?;
     transaction.commit().await?;
     Ok(saved)
@@ -90,12 +88,12 @@ async fn locked_price<T: Priced>(
         "SELECT * FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
         T::TABLE_NAME
     );
-    sqlx::query_as::<_, Entity<Uuid, T>>(&sql)
+    sqlx::query_as::<_, T>(&sql)
         .bind(key.tenant_id)
         .bind(key.id)
         .fetch_optional(&mut **transaction)
         .await?
-        .map(|item| item.data.price())
+        .map(|item| item.price())
         .ok_or(ApiError::NotFound)
 }
 
@@ -103,24 +101,25 @@ async fn locked_price<T: Priced>(
 async fn record<T: Priced>(
     transaction: &mut PgTransaction<'_>,
     before: Option<(Micros, Currency)>,
-    item: &Entity<Uuid, T>,
+    item: &T,
 ) -> ApiResult<()> {
-    let (price, currency) = item.data.price();
+    let (price, currency) = item.price();
     let unchanged = before == Some((price, currency.clone()));
-    let row = PriceData {
-        tenant_id: item.data.tenant_id(),
-        item_id: item.id,
+    let row = Price {
+        tenant_id: item.tenant_id(),
+        item_id: item.id(),
         item_kind: T::KIND,
         price,
         currency,
         effective_at: Utc::now(),
+        created_at: Utc::now(),
+        updated_at: None,
+        deleted_at: None,
+        id: Uuid::now_v7(),
     };
     match unchanged {
         true => Ok(()),
-        false => TableEntity::insert(&Entity::new(Uuid::now_v7(), row), &mut **transaction)
-            .await
-            .map(drop)
-            .map_err(Into::into),
+        false => crud::create(&mut **transaction, row, None).await.map(drop),
     }
 }
 
@@ -140,7 +139,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, PriceData>>))),
+    responses((status = 200, body = inline(Page<Price>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -154,7 +153,7 @@ async fn list(
     path = "/tenants/{tenant_id}/prices/{id}",
     tag = "prices",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, PriceData>)), (status = 404)),
+    responses((status = 200, body = inline(Price)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Price> {
     crud::get(&ctx.pool, &key).await

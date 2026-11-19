@@ -122,32 +122,19 @@ async fn client_with_gender_birth_date_and_address(pool: PgPool) {
         &app,
         "PATCH",
         &item,
-        json!({"address": {"city": "Oakland", "postal_code": "94607"}}),
+        json!({"address": {"line_1": "1 Main", "line_2": null, "city": "Oakland", "region": "CA", "postal_code": "94607", "country": "US"}}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{moved}");
     assert_eq!(
-        (
-            moved["address"]["city"].clone(),
-            moved["address"]["line_1"].clone()
-        ),
-        (json!("Oakland"), json!("333 Bush Street")),
-        "merge inside the address"
+        (moved["address"]["city"].clone(), moved["address"]["line_1"].clone()),
+        (json!("Oakland"), json!("1 Main")),
+        "the address column is replaced"
     );
-    let (status, cleared) = call(
-        &app,
-        "PATCH",
-        &item,
-        json!({"address": null, "birth_date": null, "gender": null}),
-    )
-    .await;
+    let (status, cleared) = call(&app, "PATCH", &item, json!({"address": null, "birth_date": null, "gender": null})).await;
     assert_eq!(status, StatusCode::OK, "{cleared}");
     assert_eq!(
-        (
-            cleared["address"].clone(),
-            cleared["birth_date"].clone(),
-            cleared["gender"].clone()
-        ),
+        (cleared["address"].clone(), cleared["birth_date"].clone(), cleared["gender"].clone()),
         (Value::Null, Value::Null, json!("unknown"))
     );
     assert_eq!(
@@ -160,7 +147,7 @@ async fn client_with_gender_birth_date_and_address(pool: PgPool) {
         .await
         .0,
         StatusCode::BAD_REQUEST,
-        "an address must be complete"
+        "a column is replaced, so an address must be complete"
     );
 
     let (status, got) = call(&app, "GET", &item, Value::Null).await;

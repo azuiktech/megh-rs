@@ -12,16 +12,17 @@ use validator::{Validate, ValidationError};
 
 use super::value::{Attributes, Name};
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
-use crate::{Entity, Table};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 
 /// Blocked time: every day the recurrence gives, from `starts_at` to `ends_at`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "blockouts", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "blockouts", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
 #[validate(schema(function = "ends_after_start"))]
 #[schema(example = json!({"name": "Lunch", "recurrence": "DTSTART;TZID=Asia/Kolkata:20261023T000000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE", "starts_at": "13:00:00", "ends_at": "14:00:00", "reason": "lunch break"}))]
-pub struct BlockoutData {
+pub struct Blockout {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     #[sqlx(try_from = "String")]
     #[schema(value_type = String, example = "Clinic hours")]
     pub name: Name,
@@ -49,9 +50,7 @@ pub struct BlockoutData {
     pub attributes: Attributes,
 }
 
-pub type Blockout = Entity<Uuid, BlockoutData>;
-
-fn ends_after_start(blockout: &BlockoutData) -> Result<(), ValidationError> {
+fn ends_after_start(blockout: &Blockout) -> Result<(), ValidationError> {
     (blockout.starts_at < blockout.ends_at)
         .then_some(())
         .ok_or_else(|| ValidationError::new("ends_at must be after starts_at"))
@@ -73,7 +72,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, BlockoutData>>))),
+    responses((status = 200, body = inline(Page<Blockout>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -87,7 +86,7 @@ async fn list(
     path = "/tenants/{tenant_id}/blockouts/{id}",
     tag = "blockouts",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
+    responses((status = 200, body = inline(Blockout)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Blockout> {
     crud::get(&ctx.pool, &key).await
@@ -98,14 +97,14 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/blockouts",
     tag = "blockouts",
     params(("tenant_id" = Uuid, Path)),
-    request_body = BlockoutData,
-    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>))),
+    request_body = Blockout,
+    responses((status = 200, body = inline(Blockout))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
-    Input(data): Input<BlockoutData>,
+    Input(data): Input<Blockout>,
 ) -> ApiResult<Blockout> {
-    crud::create(&ctx.pool, data).await
+    crud::create(&ctx.pool, data, None).await
 }
 
 #[utoipa::path(
@@ -113,14 +112,14 @@ async fn create(
     path = "/tenants/{tenant_id}/blockouts/{id}",
     tag = "blockouts",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = BlockoutData,
-    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
+    request_body = Blockout,
+    responses((status = 200, body = inline(Blockout)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
-    Input(body): Input<Keyed<BlockoutData>>,
+    Input(body): Input<Blockout>,
 ) -> ApiResult<Blockout> {
-    crud::replace(&ctx.pool, body).await
+    crud::replace(&ctx.pool, body, None).await
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -129,11 +128,11 @@ async fn replace(
     path = "/tenants/{tenant_id}/blockouts/{id}",
     tag = "blockouts",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body(content = BlockoutData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
-    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
+    request_body(content = Blockout, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Blockout)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Blockout> {
-    crud::patch(&ctx.pool, body).await
+    crud::patch(&ctx.pool, body, None).await
 }
 
 #[utoipa::path(
@@ -141,8 +140,8 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/blockouts/{id}",
     tag = "blockouts",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, BlockoutData>)), (status = 404)),
+    responses((status = 200, body = inline(Blockout)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Blockout> {
-    crud::delete(&ctx.pool, &key).await
+    crud::delete(&ctx.pool, &key, None).await
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::money::{from_micros, iso, Money, MoneyError};
-use crate::{JsonText, Table};
+use crate::JsonText;
 
 pub mod value;
 #[cfg(all(feature = "axum", feature = "postgres"))]
@@ -70,11 +70,12 @@ mod api {
     }
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(all(feature = "postgres", feature = "axum"))]
 mod subscriptions;
-#[cfg(feature = "postgres")]
+#[cfg(all(feature = "postgres", feature = "axum"))]
 pub use subscriptions::{BillingError, CancelWhen, Subscriptions};
 
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
@@ -86,6 +87,7 @@ pub enum SubscriptionStatus {
     Expired,
 }
 
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
@@ -94,6 +96,7 @@ pub enum BillingInterval {
     Yearly,
 }
 
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
@@ -102,9 +105,9 @@ pub enum AddOnType {
     OneTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Table)]
+#[crate::entity(table = "plans")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "plans")]
 pub struct Plan {
     pub id: Uuid,
     pub sku: String,
@@ -120,9 +123,9 @@ pub struct Plan {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Table)]
+#[crate::entity(table = "plan_prices")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "plan_prices")]
 pub struct PlanPrice {
     pub id: Uuid,
     pub plan_id: Uuid,
@@ -154,9 +157,9 @@ impl PlanPrice {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Table)]
+#[crate::entity(table = "add_ons")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "add_ons")]
 pub struct AddOn {
     pub id: Uuid,
     pub sku: String,
@@ -180,17 +183,17 @@ impl AddOn {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Table)]
+#[crate::entity(table = "plan_add_ons", keys = ["plan_id", "add_on_id"])]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "plan_add_ons", keys = ["plan_id", "add_on_id"])]
 pub struct PlanAddOn {
     pub plan_id: Uuid,
     pub add_on_id: Uuid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Table)]
+#[crate::entity(table = "subscriptions")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "subscriptions")]
 pub struct Subscription {
     pub id: Uuid,
     pub tenant_id: Uuid,
@@ -209,9 +212,9 @@ pub struct Subscription {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Table)]
+#[crate::entity(table = "subscription_items")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, validator::Validate)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "subscription_items")]
 pub struct SubscriptionItem {
     pub id: Uuid,
     pub subscription_id: Uuid,

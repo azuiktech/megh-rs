@@ -19,3 +19,5 @@ Instructions for AI coding assistants contributing to `megh-rs`.
 | `matchit` (transitive) | 0.8.4 | 0.8.6 | `axum` 0.8.9 pins `=0.8.4` | the next `axum` release |
 | `sqlx` | 0.8 | 0.9 | the only Postgres store for `tower-sessions`, `tower-sessions-sqlx-store` 0.15, needs `sqlx ^0.8` | a Postgres store for `tower-sessions-core` 0.15 on `sqlx` 0.9 |
 | `tower-sessions` | 0.14 | 0.15 | that store needs `tower-sessions-core` 0.14 | the same store |
+| `sea-query` | 0.32 | 1.0 | the matching `sea-query-binder` for sqlx is only a release candidate (0.8.0-rc) | a stable `sea-query-binder` for `sea-query` 1.0 |
+| `sea-query-binder` | 0.7 | 0.8.0-rc | pre-release | a stable 0.8 |

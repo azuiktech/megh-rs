@@ -14,21 +14,20 @@ use validator::Validate;
 use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Input, Key, ListRequest, Page};
 use crate::billing::value::Quantity;
-use crate::{Entity, Table};
 
+#[crate::entity(table = "stocks", keys = ["tenant_id", "id"], timestamps, soft_delete)]
 #[derive(
-    Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema,
+    Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema,
 )]
-#[table(name = "stocks", keys = ["tenant_id", "id"])]
-pub struct StockData {
+pub struct Stock {
     /// The tenant holding it; the product may be another tenant's.
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     pub product_id: Uuid,
     #[schema(value_type = String, example = "4")]
     pub on_hand: Quantity,
 }
-
-pub type Stock = Entity<Uuid, StockData>;
 
 /// How much of a product an appointment uses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, ToSchema)]
@@ -99,7 +98,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, StockData>>))),
+    responses((status = 200, body = inline(Page<Stock>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -113,7 +112,7 @@ async fn list(
     path = "/tenants/{tenant_id}/stocks/{id}",
     tag = "stocks",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, StockData>)), (status = 404)),
+    responses((status = 200, body = inline(Stock)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Stock> {
     crud::get(&ctx.pool, &key).await
@@ -125,7 +124,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/products/{id}:stock",
     tag = "products",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path, description = "The product")),
-    responses((status = 200, body = inline(Entity<Uuid, StockData>)), (status = 404, description = "The tenant holds none of it.")),
+    responses((status = 200, body = inline(Stock)), (status = 404, description = "The tenant holds none of it.")),
 )]
 async fn of_product(
     State(ctx): State<AppContext>,

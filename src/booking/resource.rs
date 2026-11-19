@@ -10,14 +10,15 @@ use validator::Validate;
 
 use super::value::{Attributes, Capacity, Name, Waitlist};
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
-use crate::{Entity, Table};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "resources", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "resources", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
 #[schema(example = json!({"name": "Room 1", "role": "operatory", "capacity": 1, "waitlist": 0, "attributes": {"sea_facing": true}}))]
-pub struct ResourceData {
+pub struct Resource {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     #[sqlx(try_from = "String")]
     #[schema(value_type = String, example = "Room 1")]
     pub name: Name,
@@ -40,8 +41,6 @@ pub struct ResourceData {
     pub attributes: Attributes,
 }
 
-pub type Resource = Entity<Uuid, ResourceData>;
-
 pub fn routes() -> OpenApiRouter<AppContext> {
     OpenApiRouter::new()
         .routes(routes!(list, create))
@@ -58,7 +57,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, ResourceData>>))),
+    responses((status = 200, body = inline(Page<Resource>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -72,7 +71,7 @@ async fn list(
     path = "/tenants/{tenant_id}/resources/{id}",
     tag = "resources",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
+    responses((status = 200, body = inline(Resource)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Resource> {
     crud::get(&ctx.pool, &key).await
@@ -83,14 +82,14 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/resources",
     tag = "resources",
     params(("tenant_id" = Uuid, Path)),
-    request_body = ResourceData,
-    responses((status = 200, body = inline(Entity<Uuid, ResourceData>))),
+    request_body = Resource,
+    responses((status = 200, body = inline(Resource))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
-    Input(data): Input<ResourceData>,
+    Input(data): Input<Resource>,
 ) -> ApiResult<Resource> {
-    crud::create(&ctx.pool, data).await
+    crud::create(&ctx.pool, data, None).await
 }
 
 #[utoipa::path(
@@ -98,14 +97,14 @@ async fn create(
     path = "/tenants/{tenant_id}/resources/{id}",
     tag = "resources",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = ResourceData,
-    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
+    request_body = Resource,
+    responses((status = 200, body = inline(Resource)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
-    Input(body): Input<Keyed<ResourceData>>,
+    Input(body): Input<Resource>,
 ) -> ApiResult<Resource> {
-    crud::replace(&ctx.pool, body).await
+    crud::replace(&ctx.pool, body, None).await
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -114,11 +113,11 @@ async fn replace(
     path = "/tenants/{tenant_id}/resources/{id}",
     tag = "resources",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body(content = ResourceData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
-    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
+    request_body(content = Resource, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Resource)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Resource> {
-    crud::patch(&ctx.pool, body).await
+    crud::patch(&ctx.pool, body, None).await
 }
 
 #[utoipa::path(
@@ -126,8 +125,8 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/resources/{id}",
     tag = "resources",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ResourceData>)), (status = 404)),
+    responses((status = 200, body = inline(Resource)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Resource> {
-    crud::delete(&ctx.pool, &key).await
+    crud::delete(&ctx.pool, &key, None).await
 }

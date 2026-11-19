@@ -1,15 +1,15 @@
 //! B4 (docs/TPD-billing.md): the billing tables store and return every entity, and refuse what the types say cannot be.
 
-use chrono::NaiveDate;
-use megh::billing::invoice::{InvoiceData, InvoiceKind, InvoiceStatus, PartyKind};
-use megh::billing::invoice_line::InvoiceLineData;
-use megh::billing::payment::{PaymentData, PaymentStatus};
-use megh::billing::tax::TaxData;
+use chrono::{NaiveDate, Utc};
+use megh::billing::invoice::{Invoice, InvoiceKind, InvoiceStatus, PartyKind};
+use megh::billing::invoice_line::InvoiceLine;
+use megh::billing::payment::{Payment, PaymentStatus};
+use megh::billing::tax::Tax;
 use megh::billing::value::{Currency, Micros, PaymentMethod, Percent, Quantity};
 use megh::booking::value::{Address, Attributes, Name};
-use megh::{Entity, Table, TableEntity};
+use megh::auth::rest::{ApiResult, Key};
+use megh::auth::crud::{self, Row};
 use rust_decimal::Decimal;
-use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -34,16 +34,17 @@ fn day() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 10, 22).unwrap()
 }
 
-async fn store<T>(pool: &PgPool, data: T) -> Result<Entity<Uuid, T>, sqlx::Error>
-where
-    T: Table + Serialize + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
-{
-    TableEntity::insert(&Entity::new(Uuid::now_v7(), data), pool).await
+async fn store<T: Row>(pool: &PgPool, data: T) -> ApiResult<T> {
+    crud::create(pool, data, None).await
 }
 
-fn invoice(tenant: Uuid, customer: Uuid) -> InvoiceData {
-    InvoiceData {
+fn invoice(tenant: Uuid, customer: Uuid) -> Invoice {
+    Invoice {
         tenant_id: tenant,
+        id: Uuid::nil(),
+        created_at: Utc::now(),
+        updated_at: None,
+        deleted_at: None,
         kind: InvoiceKind::Receivable,
         party_id: customer,
         party_kind: PartyKind::Tenant,
@@ -66,9 +67,13 @@ fn invoice(tenant: Uuid, customer: Uuid) -> InvoiceData {
     }
 }
 
-fn line(tenant: Uuid, invoice_id: Uuid) -> InvoiceLineData {
-    InvoiceLineData {
+fn line(tenant: Uuid, invoice_id: Uuid) -> InvoiceLine {
+    InvoiceLine {
         tenant_id: tenant,
+        id: Uuid::nil(),
+        created_at: Utc::now(),
+        updated_at: None,
+        deleted_at: None,
         invoice_id,
         position: 1,
         product_id: None,
@@ -84,9 +89,13 @@ fn line(tenant: Uuid, invoice_id: Uuid) -> InvoiceLineData {
     }
 }
 
-fn payment(tenant: Uuid, invoice_id: Uuid) -> PaymentData {
-    PaymentData {
+fn payment(tenant: Uuid, invoice_id: Uuid) -> Payment {
+    Payment {
         tenant_id: tenant,
+        id: Uuid::nil(),
+        created_at: Utc::now(),
+        updated_at: None,
+        deleted_at: None,
         invoice_id,
         number: None,
         date: day(),
@@ -103,11 +112,12 @@ async fn every_entity_is_stored_and_read_back(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
 
-    let tax = TaxData { tenant_id: mine, name: name("Sales tax"), rate: Percent::try_new(Decimal::new(75, 1)).unwrap(), description: String::new(), attributes: Attributes::new() };
-    assert_eq!(store(&pool, tax.clone()).await.unwrap().data, tax);
+    let tax = Tax { id: Uuid::nil(), created_at: Utc::now(), updated_at: None, deleted_at: None, tenant_id: mine, name: name("Sales tax"), rate: Percent::try_new(Decimal::new(75, 1)).unwrap(), description: String::new(), attributes: Attributes::new() };
+    let stored = store(&pool, tax.clone()).await.unwrap();
+    assert_eq!(stored, Tax { id: stored.id, created_at: stored.created_at, updated_at: stored.updated_at, ..tax });
 
     let address = Address { line_1: name("1 Main St"), line_2: None, city: name("Austin"), region: name("TX"), postal_code: name("78701"), country: celes::Country::from_alpha2("US").unwrap() };
-    let sent = InvoiceData {
+    let sent = Invoice {
         number: Some(name("INV-0001")),
         status: InvoiceStatus::Open,
         bill_to: Some(address),
@@ -118,13 +128,15 @@ async fn every_entity_is_stored_and_read_back(pool: PgPool) {
         ..invoice(mine, customer)
     };
     let stored = store(&pool, sent.clone()).await.unwrap();
-    assert_eq!(stored.data, sent);
+    assert_eq!(stored, Invoice { id: stored.id, created_at: stored.created_at, updated_at: stored.updated_at, ..sent });
 
-    let billed = InvoiceLineData { service_id: Some(service(&pool, mine).await), tax_ids: vec![Uuid::now_v7()], discount: Percent::try_new(Decimal::new(10, 0)).unwrap(), ..line(mine, stored.id) };
-    assert_eq!(store(&pool, billed.clone()).await.unwrap().data, billed);
+    let billed = InvoiceLine { service_id: Some(service(&pool, mine).await), tax_ids: vec![Uuid::now_v7()], discount: Percent::try_new(Decimal::new(10, 0)).unwrap(), ..line(mine, stored.id) };
+    let line = store(&pool, billed.clone()).await.unwrap();
+    assert_eq!(line, InvoiceLine { id: line.id, created_at: line.created_at, updated_at: line.updated_at, ..billed });
 
-    let paid = PaymentData { number: Some(name("PAY-0001")), refunded: Micros::new(5_000_000), ..payment(mine, stored.id) };
-    assert_eq!(store(&pool, paid.clone()).await.unwrap().data, paid);
+    let paid = Payment { number: Some(name("PAY-0001")), refunded: Micros::new(5_000_000), ..payment(mine, stored.id) };
+    let receipt = store(&pool, paid.clone()).await.unwrap();
+    assert_eq!(receipt, Payment { id: receipt.id, created_at: receipt.created_at, updated_at: receipt.updated_at, ..paid });
 }
 
 #[sqlx::test(migrations = false)]
@@ -133,25 +145,25 @@ async fn the_database_refuses_what_the_types_cannot_be(pool: PgPool) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let owed = store(&pool, invoice(mine, customer)).await.unwrap();
 
-    let both = InvoiceLineData { product_id: Some(Uuid::now_v7()), service_id: Some(service(&pool, mine).await), ..line(mine, owed.id) };
+    let both = InvoiceLine { product_id: Some(Uuid::now_v7()), service_id: Some(service(&pool, mine).await), ..line(mine, owed.id) };
     assert!(store(&pool, both).await.is_err(), "a line names a product or a service, not both");
     assert!(store(&pool, line(mine, Uuid::now_v7())).await.is_err(), "a line belongs to an invoice of the tenant");
     assert!(store(&pool, payment(mine, Uuid::now_v7())).await.is_err(), "a payment is for an invoice of the tenant");
-    assert!(store(&pool, PaymentData { amount: Micros::new(0), ..payment(mine, owed.id) }).await.is_err(), "a payment is of something");
-    assert!(store(&pool, PaymentData { refunded: Micros::new(120_000_001), ..payment(mine, owed.id) }).await.is_err(), "no more is refunded than was paid");
-    assert!(store(&pool, PaymentData { refunded: Micros::new(-1), ..payment(mine, owed.id) }).await.is_err());
+    assert!(store(&pool, Payment { amount: Micros::new(0), ..payment(mine, owed.id) }).await.is_err(), "a payment is of something");
+    assert!(store(&pool, Payment { refunded: Micros::new(120_000_001), ..payment(mine, owed.id) }).await.is_err(), "no more is refunded than was paid");
+    assert!(store(&pool, Payment { refunded: Micros::new(-1), ..payment(mine, owed.id) }).await.is_err());
 }
 
 #[sqlx::test(migrations = false)]
 async fn a_number_is_used_once_per_tenant(pool: PgPool) {
     megh::migrate(&pool).await.unwrap();
     let (mine, other, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
-    let numbered = |tenant: Uuid| InvoiceData { number: Some(name("INV-0001")), ..invoice(tenant, customer) };
+    let numbered = |tenant: Uuid| Invoice { number: Some(name("INV-0001")), ..invoice(tenant, customer) };
     let first = store(&pool, numbered(mine)).await.unwrap();
     assert!(store(&pool, numbered(mine)).await.is_err());
     assert!(store(&pool, numbered(other)).await.is_ok(), "another tenant has its own numbers");
     assert!(store(&pool, invoice(mine, customer)).await.is_ok() && store(&pool, invoice(mine, customer)).await.is_ok(), "drafts have no number");
-    let receipt = |number: &str| PaymentData { number: Some(name(number)), ..payment(mine, first.id) };
+    let receipt = |number: &str| Payment { number: Some(name(number)), ..payment(mine, first.id) };
     assert!(store(&pool, receipt("PAY-1")).await.is_ok());
     assert!(store(&pool, receipt("PAY-1")).await.is_err());
 }
@@ -163,7 +175,7 @@ async fn deleting_an_invoice_deletes_its_lines_and_payments(pool: PgPool) {
     let owed = store(&pool, invoice(mine, customer)).await.unwrap();
     let billed = store(&pool, line(mine, owed.id)).await.unwrap();
     let paid = store(&pool, payment(mine, owed.id)).await.unwrap();
-    TableEntity::soft_delete(&owed, &pool).await.unwrap().unwrap();
+    crud::delete::<Invoice, _>(&pool, &Key { tenant_id: mine, id: owed.id }, None).await.unwrap();
     for (table, id) in [("billing_invoice_lines", billed.id), ("billing_payments", paid.id)] {
         let deleted: bool = sqlx::query_scalar(&format!("SELECT deleted_at IS NOT NULL FROM {table} WHERE id = $1")).bind(id).fetch_one(&pool).await.unwrap();
         assert!(deleted, "{table}");

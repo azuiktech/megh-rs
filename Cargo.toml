@@ -13,12 +13,9 @@ description = "Micro Event-driven Gateway Hub in Rust"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-json-patch = "4.2"
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
-sha2 = "0.11"
-hex = "0.4"
 megh-derive = { path = "./megh-derive" }
 oauth2 = { version = "5", default-features = false, features = ["timing-resistant-secret-traits"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"], optional = true }
@@ -31,6 +28,8 @@ base64 = { version = "0.22", optional = true }
 bcrypt = { version = "0.19", optional = true }
 rusty-money = { version = "0.5", features = ["iso"] }
 rust_decimal = { version = "1", features = ["serde"] }
+sea-query = { version = "0.32", features = ["postgres-array", "with-uuid", "with-chrono", "with-rust_decimal", "with-json"] }
+sea-query-binder = { version = "0.7", features = ["postgres-array", "sqlx-postgres", "sqlx-sqlite", "with-uuid", "with-chrono", "with-rust_decimal", "with-json"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "rust_decimal"], optional = true }
 axum = { version = "0.8", optional = true }
 html-escape = { version = "0.2", optional = true }

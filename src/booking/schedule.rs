@@ -12,16 +12,17 @@ use validator::{Validate, ValidationError};
 
 use super::value::{Attributes, Name};
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
-use crate::{Entity, Table};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 
 /// Open time: every day the recurrence gives, from `starts_at` to `ends_at`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "schedules", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "schedules", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
 #[validate(schema(function = "ends_after_start"))]
 #[schema(example = json!({"name": "Clinic hours", "recurrence": "DTSTART;TZID=Asia/Kolkata:20261023T000000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261230T235959Z", "starts_at": "09:00:00", "ends_at": "16:00:00"}))]
-pub struct ScheduleData {
+pub struct Schedule {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     #[sqlx(try_from = "String")]
     #[schema(value_type = String, example = "Clinic hours")]
     pub name: Name,
@@ -47,9 +48,7 @@ pub struct ScheduleData {
     pub attributes: Attributes,
 }
 
-pub type Schedule = Entity<Uuid, ScheduleData>;
-
-fn ends_after_start(schedule: &ScheduleData) -> Result<(), ValidationError> {
+fn ends_after_start(schedule: &Schedule) -> Result<(), ValidationError> {
     (schedule.starts_at < schedule.ends_at)
         .then_some(())
         .ok_or_else(|| ValidationError::new("ends_at must be after starts_at"))
@@ -71,7 +70,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, ScheduleData>>))),
+    responses((status = 200, body = inline(Page<Schedule>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -85,7 +84,7 @@ async fn list(
     path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
+    responses((status = 200, body = inline(Schedule)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Schedule> {
     crud::get(&ctx.pool, &key).await
@@ -96,14 +95,14 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/schedules",
     tag = "schedules",
     params(("tenant_id" = Uuid, Path)),
-    request_body = ScheduleData,
-    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>))),
+    request_body = Schedule,
+    responses((status = 200, body = inline(Schedule))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
-    Input(data): Input<ScheduleData>,
+    Input(data): Input<Schedule>,
 ) -> ApiResult<Schedule> {
-    crud::create(&ctx.pool, data).await
+    crud::create(&ctx.pool, data, None).await
 }
 
 #[utoipa::path(
@@ -111,14 +110,14 @@ async fn create(
     path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = ScheduleData,
-    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
+    request_body = Schedule,
+    responses((status = 200, body = inline(Schedule)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
-    Input(body): Input<Keyed<ScheduleData>>,
+    Input(body): Input<Schedule>,
 ) -> ApiResult<Schedule> {
-    crud::replace(&ctx.pool, body).await
+    crud::replace(&ctx.pool, body, None).await
 }
 
 /// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
@@ -127,11 +126,11 @@ async fn replace(
     path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body(content = ScheduleData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
-    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
+    request_body(content = Schedule, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Schedule)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Schedule> {
-    crud::patch(&ctx.pool, body).await
+    crud::patch(&ctx.pool, body, None).await
 }
 
 #[utoipa::path(
@@ -139,8 +138,8 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/schedules/{id}",
     tag = "schedules",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ScheduleData>)), (status = 404)),
+    responses((status = 200, body = inline(Schedule)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Schedule> {
-    crud::delete(&ctx.pool, &key).await
+    crud::delete(&ctx.pool, &key, None).await
 }

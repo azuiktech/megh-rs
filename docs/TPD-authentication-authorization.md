@@ -2,7 +2,7 @@
 
 **Status:** F1–F11 and F13–F24 shipped (F12 is superseded by F16). Features are not delivered in number order.
 **Modules:** `src/auth`, `src/account`, `src/tenant`, `ui/sdk/src/auth.ts`, `migrations/0001_auth.sql`.
-**Depends on:** `Entity<ID, T>` (`src/entity.rs`) for `User`.
+**Depends on:** `#[entity]` (`src/auth/entity.rs`) for `User` (2026-11-19: `User` is one struct with the profile fields, `id` and the timestamps; `UserProfile` and `Entity<ID, T>` are gone).
 
 This is the living design for everything that answers "who is calling" (authentication) and "may they do this" (authorization). Change-level detail belongs in `CHANGELOG.md`; this document changes when the feature's shape changes.
 

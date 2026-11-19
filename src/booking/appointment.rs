@@ -21,7 +21,6 @@ use super::stock::{ensure_on_hand, Used};
 use super::value::{Attributes, Name};
 use crate::auth::crud;
 use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
-use crate::{Entity, Table, TableEntity};
 
 /// Who pays and how: card, cash, a pass, a voucher, insurance; the details go in `attributes`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, ToSchema)]
@@ -35,6 +34,7 @@ pub struct Payment {
     pub attributes: Attributes,
 }
 
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -46,11 +46,13 @@ pub enum Status {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "appointments", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "appointments", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
 #[validate(schema(function = "ends_after_start"))]
-pub struct AppointmentData {
+pub struct Appointment {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     pub client_id: Uuid,
     pub service_id: Uuid,
     pub resource_id: Uuid,
@@ -80,9 +82,7 @@ pub struct AppointmentData {
     pub attributes: Attributes,
 }
 
-pub type Appointment = Entity<Uuid, AppointmentData>;
-
-fn ends_after_start(appointment: &AppointmentData) -> Result<(), ValidationError> {
+fn ends_after_start(appointment: &Appointment) -> Result<(), ValidationError> {
     (appointment.starts_at < appointment.ends_at)
         .then_some(())
         .ok_or_else(|| ValidationError::new("ends_at must be after starts_at"))
@@ -94,7 +94,7 @@ fn ends_after_start(appointment: &AppointmentData) -> Result<(), ValidationError
 pub struct Booking {
     #[serde(flatten)]
     #[validate(nested)]
-    pub appointment: AppointmentData,
+    pub appointment: Appointment,
     pub reservation_id: Option<Uuid>,
 }
 
@@ -162,7 +162,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, AppointmentData>>))),
+    responses((status = 200, body = inline(Page<Appointment>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
@@ -180,7 +180,7 @@ async fn list(
     tag = "appointments",
     params(("tenant_id" = Uuid, Path)),
     request_body = Booking,
-    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 409)),
+    responses((status = 200, body = inline(Appointment)), (status = 400), (status = 409)),
 )]
 async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -> ApiResult<Appointment> {
     let data = booking.appointment;
@@ -195,9 +195,8 @@ async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -
     if let Some(hold) = booking.reservation_id {
         claim(&mut transaction, data.tenant_id, hold, &places).await?;
     }
-    let appointment = Entity::new(Uuid::now_v7(), AppointmentData { booked_at: Utc::now(), ..data });
-    let saved = TableEntity::insert(&appointment, &mut *transaction).await?;
-    take(&mut transaction, saved.data.tenant_id, saved.id, &places, None).await?;
+    let saved = crud::create(&mut *transaction, Appointment { booked_at: Utc::now(), ..data }, None).await?;
+    take(&mut transaction, saved.tenant_id, saved.id, &places, None).await?;
     transaction.commit().await?;
     Ok(saved)
 }
@@ -207,7 +206,7 @@ async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -
     path = "/tenants/{tenant_id}/appointments/{id}",
     tag = "appointments",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 404)),
+    responses((status = 200, body = inline(Appointment)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
     crud::get(&ctx.pool, &key).await
@@ -220,8 +219,8 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/appointments/{id}",
     tag = "appointments",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body(content = AppointmentData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
-    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404), (status = 409)),
+    request_body(content = Appointment, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
+    responses((status = 200, body = inline(Appointment)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(
     State(ctx): State<AppContext>,
@@ -235,7 +234,7 @@ async fn patch(
     ensure_products(&ctx.pool, &body).await?;
     match body.changes.keys().any(|field| is(&MOVES, field)) {
         true => move_to(&ctx.pool, body).await,
-        false => crud::patch(&ctx.pool, body).await,
+        false => crud::patch(&ctx.pool, body, None).await,
     }
 }
 
@@ -255,27 +254,19 @@ async fn ensure_products(pool: &PgPool, body: &Changes) -> ApiResult<()> {
 /// A move: under the booking lock, the changed appointment must pass the booking check for its status,
 /// leaving out its own time; its reservations are written again.
 async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
+    let (tenant_id, id) = (body.key.tenant_id, body.key.id);
     let mut transaction = pool.begin().await?;
-    lock(&mut transaction, body.key.tenant_id).await?;
-    let current: Appointment = sqlx::query_as("SELECT * FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE")
-        .bind(body.key.tenant_id)
-        .bind(body.key.id)
-        .fetch_optional(&mut *transaction)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    let bad = |reason: String| ApiError::BadRequest(reason);
+    lock(&mut transaction, tenant_id).await?;
+    let moved: Appointment = crud::patch(&mut *transaction, body, None).await?;
     [Status::Waitlist, Status::Booked, Status::Confirmed]
-        .contains(&current.data.status)
+        .contains(&moved.status)
         .then_some(())
-        .ok_or_else(|| bad(format!("a {:?} appointment cannot move", current.data.status)))?;
-    let moved = current.patch(&body.changes.into()).map_err(|error| bad(error.to_string()))?;
-    moved.data.validate().map_err(|error| bad(error.to_string()))?;
-    let places = fit(&mut transaction, &moved.data, Some(moved.id)).await?;
-    let saved = TableEntity::update(&moved, &mut *transaction).await?;
-    give_back(&mut transaction, body.key.tenant_id, body.key.id).await?;
-    take(&mut transaction, saved.data.tenant_id, saved.id, &places, None).await?;
+        .ok_or_else(|| ApiError::BadRequest(format!("a {:?} appointment cannot move", moved.status)))?;
+    let places = fit(&mut transaction, &moved, Some(moved.id)).await?;
+    give_back(&mut transaction, tenant_id, id).await?;
+    take(&mut transaction, tenant_id, id, &places, None).await?;
     transaction.commit().await?;
-    Ok(saved)
+    Ok(moved)
 }
 
 /// Cancel: a waitlisted, booked or confirmed appointment becomes cancelled.
@@ -284,7 +275,7 @@ async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
     path = "/tenants/{tenant_id}/appointments/{id}",
     tag = "appointments",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404)),
+    responses((status = 200, body = inline(Appointment)), (status = 400), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Appointment> {
     let mut transaction = ctx.pool.begin().await?;
@@ -306,7 +297,7 @@ async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiRes
         ("verb" = String, Path, description = "book, confirm or complete"),
     ),
     request_body(content = Object, description = "`{\"payment\": Payment}` to replace the payment, or `{}`"),
-    responses((status = 200, body = inline(Entity<Uuid, AppointmentData>)), (status = 400), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Appointment)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn act(State(ctx): State<AppContext>, Input(action): Input<Action>) -> ApiResult<Appointment> {
     match action.verb {
@@ -328,7 +319,7 @@ async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
     .fetch_optional(&mut *transaction)
     .await?;
     if let Some(waiting) = waiting {
-        let booked = AppointmentData { status: Status::Booked, ..waiting.data };
+        let booked = Appointment { status: Status::Booked, ..waiting };
         fit(&mut transaction, &booked, Some(waiting.id)).await?;
     }
     let booked = change_status(&mut transaction, &action.key, action.verb.transition(), action.payment.as_ref()).await?;

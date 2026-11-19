@@ -1,6 +1,8 @@
 # TPD — Soft delete
 
-Status: `[~]` in progress (issue #70). Applies to every `Entity` and every table an application reads through megh.
+Status: `[~]` in progress (issue #70). Applies to every `#[entity]` with `soft_delete` and every table an application reads through megh.
+
+> 2026-11-19: `Entity<ID, T>` and `TableEntity::soft_delete` are gone. `crud::delete` does the soft delete (and, on PostgreSQL, the cascade of `src/soft_delete.rs`); see TPD-persistence.md. The rules below hold.
 
 ## Rules
 - Every entity has `created_at`, `updated_at` and `deleted_at` (nullable).

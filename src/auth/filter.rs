@@ -1,117 +1,106 @@
-//! AIP-160 filter to a SQL WHERE condition, values written into the SQL text.
+//! AIP-160 filter to a `sea_query::Condition`, the same on every database.
 //!
-//! `capacity > 5`              → `capacity > 5`
-//! `id = "9d4d…"`              → `id = '9d4d…'`
-//! `staff_ids:42`              → `42 = ANY(staff_ids)` (an array column; `:` on a column that is not a list is a 400)
-//! `sea_facing = true` (no such column) → `attributes -> 'sea_facing' = 'true'::jsonb`
+//! `capacity > 5`          → `capacity > $1`, the value converted by the column's own type
+//! `sea_facing = true`     → `attributes -> 'sea_facing' = 'true'` (no such column: the JSON value of `attributes`)
 
-use aip_160::{Comparator, Expression, Filter, Restriction, Value};
-use sqlx::{Database, Postgres, QueryBuilder};
+use aip_160::{Comparator, Expression, Filter, Restriction, Value as Literal};
+use sea_query::{Alias, BinOper, Condition, Expr, ExprTrait, SimpleExpr, Value};
 
-use super::rest::ApiError;
-use crate::entity::ColumnMeta;
+use crate::auth::rest::{ApiError, ApiResult};
+use crate::auth::column::{Elem, Kind};
+use crate::auth::db::Backend;
+use crate::auth::entity::{ColumnMeta, Table};
 
-/// Appends ` AND (<condition>)`.
-pub fn push_filter(query: &mut QueryBuilder<'_, Postgres>, columns: &[ColumnMeta], filter: &Filter) -> Result<(), ApiError> {
-    query.push(format!(" AND ({})", condition(columns, &filter.expression)?));
-    Ok(())
+pub fn condition<T: Table, DB: Backend>(filter: &Filter) -> ApiResult<Condition> {
+    expression::<T, DB>(&filter.expression)
 }
 
-fn condition(columns: &[ColumnMeta], expression: &Expression) -> Result<String, ApiError> {
-    Ok(match expression {
-        Expression::And(left, right) => format!("({} AND {})", condition(columns, left)?, condition(columns, right)?),
-        Expression::Or(left, right) => format!("({} OR {})", condition(columns, left)?, condition(columns, right)?),
-        Expression::Not(inner) => format!("NOT ({})", condition(columns, inner)?),
-        Expression::Restriction(restriction) => restriction_sql(columns, restriction)?,
-        Expression::Sequence(_) => return Err(ApiError::BadRequest("each filter term needs a field and a value".into())),
-    })
+fn expression<T: Table, DB: Backend>(expression: &Expression) -> ApiResult<Condition> {
+    match expression {
+        Expression::And(left, right) => Ok(Condition::all().add(self::expression::<T, DB>(left)?).add(self::expression::<T, DB>(right)?)),
+        Expression::Or(left, right) => Ok(Condition::any().add(self::expression::<T, DB>(left)?).add(self::expression::<T, DB>(right)?)),
+        Expression::Not(inner) => Ok(Condition::all().not().add(self::expression::<T, DB>(inner)?)),
+        Expression::Restriction(restriction) => restriction_of::<T, DB>(restriction),
+        Expression::Sequence(_) => Err(ApiError::BadRequest("each filter term needs a field and a value".into())),
+    }
 }
 
-fn restriction_sql(columns: &[ColumnMeta], restriction: &Restriction) -> Result<String, ApiError> {
+fn restriction_of<T: Table, DB: Backend>(restriction: &Restriction) -> ApiResult<Condition> {
     let Restriction { field, comparator, value } = restriction;
-    let column = columns.iter().find(|column| column.name == field);
-    let is_column = column.is_some();
-    let operator = match comparator {
-        Comparator::Equal => "=",
-        Comparator::NotEqual => "<>",
-        Comparator::GreaterThan => ">",
-        Comparator::GreaterThanOrEqual => ">=",
-        Comparator::LessThan => "<",
-        Comparator::LessThanOrEqual => "<=",
-        Comparator::Has if let Some(column) = column => return Postgres::has(column, value),
-        Comparator::Has => return Ok(format!("attributes -> {} @> {}::jsonb", quote(field), quote(&format!("[{}]", json(value))))),
+    let json = json(value);
+    match comparator {
+        Comparator::Has => Ok(Condition::all().add(has::<T, DB>(field, &json)?)),
+        _ => compare::<T>(restriction, &json),
+    }
+}
+
+fn compare<T: Table>(Restriction { field, comparator, value }: &Restriction, json: &serde_json::Value) -> ApiResult<Condition> {
+    let (left, right) = match T::COLUMNS.iter().find(|column| column.name == field.as_str()) {
+        Some(column) => (Expr::col(Alias::new(column.name)).into(), T::from_json(column.name, json).map(|value| column.expr(value))),
+        None => (attribute(field), Ok(Expr::val(Value::Json(Some(Box::new(json.clone())))).into())),
     };
-    Ok(match (is_column, value) {
-        (true, Value::Null) if operator == "=" => format!("{field} IS NULL"),
-        (true, Value::Null) if operator == "<>" => format!("{field} IS NOT NULL"),
-        (true, Value::Null) => return Err(ApiError::BadRequest(format!("{field} {operator} null is not a comparison"))),
-        (true, _) => format!("{field} {operator} {}", literal(value)),
-        (false, _) => format!(
-            "(jsonb_typeof(attributes -> {key}) = {kind} AND attributes -> {key} {operator} {}::jsonb)",
-            quote(&json(value)),
-            key = quote(field),
-            kind = quote(json_kind(value)),
-        ),
-    })
+    let right: SimpleExpr = right.map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    let condition = match (comparator, value) {
+        (Comparator::Equal, Literal::Null) => left.is_null(),
+        (Comparator::NotEqual, Literal::Null) => left.is_not_null(),
+        (comparator, _) => left.binary(operator(comparator, field)?, right),
+    };
+    Ok(Condition::all().add(condition))
 }
 
-/// A database's SQL for `column:value`, membership of a list column. A column that is neither an array nor JSON has no
-/// members.
-pub trait Has: Database {
-    fn has(column: &ColumnMeta, value: &Value) -> Result<String, ApiError>;
-}
-
-/// An array is a native array; JSON is `jsonb`.
-impl Has for Postgres {
-    fn has(column: &ColumnMeta, value: &Value) -> Result<String, ApiError> {
-        match (column.is_array, column.is_json) {
-            (true, _) => Ok(format!("{} = ANY({})", literal(value), column.name)),
-            (false, true) => Ok(format!("{} @> {}::jsonb", column.name, quote(&format!("[{}]", json(value))))),
-            (false, false) => Err(not_a_list(column)),
+/// `field:value`: the value is an element of a list column, or of a JSON array under `attributes`.
+fn has<T: Table, DB: Backend>(field: &str, json: &serde_json::Value) -> ApiResult<SimpleExpr> {
+    let bad = |message: String| ApiError::BadRequest(message);
+    match T::COLUMNS.iter().find(|column| column.name == field) {
+        Some(ColumnMeta { kind: Kind::Array(elem), name, .. }) => {
+            let value = element(*elem, json).ok_or_else(|| bad(format!("{json} is not an element of {field}")))?;
+            Ok(DB::has(Expr::col(Alias::new(*name)).into(), value))
         }
+        Some(_) => Err(bad(format!("{field} is not a list"))),
+        None => Ok(DB::has_json(attribute(field), element_of(json).ok_or_else(|| bad(format!("{json} cannot be searched for")))?)),
     }
 }
 
-/// An array and JSON are both JSON text.
-#[cfg(feature = "sqlite")]
-impl Has for sqlx::Sqlite {
-    fn has(column: &ColumnMeta, value: &Value) -> Result<String, ApiError> {
-        (column.is_array || column.is_json)
-            .then(|| format!("EXISTS (SELECT 1 FROM json_each({}) WHERE value = {})", column.name, literal(value)))
-            .ok_or_else(|| not_a_list(column))
+fn element(elem: Elem, json: &serde_json::Value) -> Option<Value> {
+    match (elem, json) {
+        (Elem::Uuid, serde_json::Value::String(text)) => text.parse::<uuid::Uuid>().ok().map(Value::from),
+        (Elem::Text, serde_json::Value::String(text)) => Some(Value::from(text.clone())),
+        (Elem::Int, serde_json::Value::Number(number)) => number.as_i64().map(Value::from),
+        _ => None,
     }
 }
 
-fn not_a_list(column: &ColumnMeta) -> ApiError {
-    ApiError::BadRequest(format!("{} is not a list", column.name))
+fn element_of(json: &serde_json::Value) -> Option<Value> {
+    match json {
+        serde_json::Value::String(text) => Some(Value::from(text.clone())),
+        serde_json::Value::Number(number) => number.as_i64().map(Value::from).or_else(|| number.as_f64().map(Value::from)),
+        serde_json::Value::Bool(flag) => Some(Value::from(*flag)),
+        _ => None,
+    }
 }
 
-/// A value as SQL: text and ids in single quotes, a `'` inside written as `''`.
-fn literal(value: &Value) -> String {
+/// The JSON value under `key` in `attributes`; the key is a bound parameter, never part of the SQL text.
+fn attribute(key: &str) -> SimpleExpr {
+    Expr::col(Alias::new("attributes")).binary(BinOper::Custom("->"), Expr::val(key.to_string()))
+}
+
+fn operator(comparator: &Comparator, field: &str) -> ApiResult<BinOper> {
+    match comparator {
+        Comparator::Equal => Ok(BinOper::Equal),
+        Comparator::NotEqual => Ok(BinOper::NotEqual),
+        Comparator::GreaterThan => Ok(BinOper::GreaterThan),
+        Comparator::GreaterThanOrEqual => Ok(BinOper::GreaterThanOrEqual),
+        Comparator::LessThan => Ok(BinOper::SmallerThan),
+        Comparator::LessThanOrEqual => Ok(BinOper::SmallerThanOrEqual),
+        Comparator::Has => Err(ApiError::BadRequest(format!("{field}: `:` is not supported"))),
+    }
+}
+
+fn json(value: &Literal) -> serde_json::Value {
     match value {
-        Value::String(text) => quote(text),
-        Value::Number(number) => number.to_string(),
-        Value::Boolean(flag) => flag.to_string(),
-        Value::Null => "NULL".into(),
-    }
-}
-
-fn quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "''"))
-}
-
-fn json(value: &Value) -> String {
-    match value {
-        Value::String(text) => serde_json::Value::from(text.as_str()).to_string(),
-        other => literal(other).to_lowercase(),
-    }
-}
-
-fn json_kind(value: &Value) -> &'static str {
-    match value {
-        Value::String(_) => "string",
-        Value::Number(_) => "number",
-        Value::Boolean(_) => "boolean",
-        Value::Null => "null",
+        Literal::String(text) => text.clone().into(),
+        Literal::Number(number) => number.to_string().parse().unwrap_or(serde_json::Value::Null),
+        Literal::Boolean(flag) => (*flag).into(),
+        Literal::Null => serde_json::Value::Null,
     }
 }

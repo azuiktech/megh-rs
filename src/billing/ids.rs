@@ -14,6 +14,7 @@ use crate::booking::value::Name;
 const NAME_LENGTH: usize = 255;
 
 /// The documents that have an id.
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 pub enum Numbered {

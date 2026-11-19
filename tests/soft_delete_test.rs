@@ -1,27 +1,28 @@
-//! Soft delete: `Entity.deleted_at`, `TableEntity::soft_delete` and its cascade along `ON DELETE CASCADE` foreign keys.
+//! Soft delete: `crud::delete` marks `deleted_at` and follows `ON DELETE CASCADE` foreign keys (PostgreSQL).
 
 use chrono::{DateTime, Utc};
-use megh::{ColumnMeta, Entity, Table, TableEntity, NOT_DELETED};
+use megh::auth::rest::{ApiError, Key};
+use megh::auth::crud;
+use megh::entity;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
+use validator::Validate;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table)]
-#[table(name = "parents", keys = ["id"])]
-struct ParentData {
+#[entity(table = "parents", keys = ["id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+struct Parent {
+    id: Uuid,
     name: String,
 }
 
-type Parent = Entity<Uuid, ParentData>;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow, Table)]
-#[table(name = "nodes", keys = ["id"])]
-struct NodeData {
+#[entity(table = "nodes", keys = ["id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate)]
+struct Node {
+    id: Uuid,
     parent_id: Option<Uuid>,
     name: String,
 }
-
-type Node = Entity<Uuid, NodeData>;
 
 const STAMPS: &str = "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), deleted_at TIMESTAMPTZ";
 
@@ -38,8 +39,18 @@ async fn schema(pool: &PgPool) {
     }
 }
 
+fn key(id: Uuid) -> Key {
+    Key { tenant_id: Uuid::nil(), id }
+}
+
 async fn parent(pool: &PgPool, name: &str) -> Parent {
-    Parent::new(Uuid::now_v7(), ParentData { name: name.into() }).insert(pool).await.unwrap()
+    let data = serde_json::from_value(serde_json::json!({"id": Uuid::nil(), "name": name})).unwrap();
+    crud::create(pool, data, None).await.unwrap()
+}
+
+async fn node(pool: &PgPool, parent_id: Option<Uuid>, name: &str) -> Node {
+    let data = serde_json::from_value(serde_json::json!({"id": Uuid::nil(), "parent_id": parent_id, "name": name})).unwrap();
+    crud::create(pool, data, None).await.unwrap()
 }
 
 async fn row(pool: &PgPool, table: &str, parent_column: &str, parent: Uuid) -> Uuid {
@@ -52,23 +63,19 @@ async fn deleted_at(pool: &PgPool, table: &str, id: Uuid) -> Option<DateTime<Utc
     sqlx::query_scalar(&format!("SELECT deleted_at FROM {table} WHERE id = $1")).bind(id).fetch_one(pool).await.unwrap()
 }
 
-#[test]
-fn a_new_entity_is_not_deleted_and_shows_deleted_at_as_null() {
-    let entity = Parent::new(Uuid::now_v7(), ParentData { name: "p".into() });
-    assert_eq!(entity.deleted_at, None);
-    assert!(serde_json::to_value(&entity).unwrap()["deleted_at"].is_null());
-}
-
-#[test]
-fn reads_add_one_fixed_condition() {
-    assert_eq!(NOT_DELETED, "deleted_at IS NULL");
+#[sqlx::test(migrations = false)]
+async fn a_new_row_is_not_deleted(pool: PgPool) {
+    schema(&pool).await;
+    let p = parent(&pool, "p").await;
+    assert_eq!(p.deleted_at, None);
+    assert!(serde_json::to_value(&p).unwrap()["deleted_at"].is_null());
 }
 
 #[sqlx::test(migrations = false)]
 async fn soft_delete_marks_the_row_and_keeps_it(pool: PgPool) {
     schema(&pool).await;
     let p = parent(&pool, "p").await;
-    let deleted = p.soft_delete(&pool).await.unwrap().expect("the row is deleted");
+    let deleted = crud::delete::<Parent, _>(&pool, &key(p.id), None).await.unwrap();
     assert!(deleted.deleted_at.is_some());
     assert!(deleted.updated_at >= p.updated_at);
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM parents WHERE id = $1").bind(p.id).fetch_one(&pool).await.unwrap();
@@ -77,24 +84,22 @@ async fn soft_delete_marks_the_row_and_keeps_it(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn deleting_twice_or_deleting_a_missing_row_returns_nothing_and_keeps_the_first_timestamp(pool: PgPool) {
+async fn deleting_twice_or_deleting_a_missing_row_is_not_found_and_keeps_the_first_timestamp(pool: PgPool) {
     schema(&pool).await;
     let p = parent(&pool, "p").await;
-    let first = p.soft_delete(&pool).await.unwrap().expect("first delete").deleted_at;
-    assert!(p.soft_delete(&pool).await.unwrap().is_none());
+    let first = crud::delete::<Parent, _>(&pool, &key(p.id), None).await.unwrap().deleted_at;
+    assert!(matches!(crud::delete::<Parent, _>(&pool, &key(p.id), None).await, Err(ApiError::NotFound)));
     assert_eq!(deleted_at(&pool, "parents", p.id).await, first);
-    let missing = Parent::new(Uuid::now_v7(), ParentData { name: "ghost".into() });
-    assert!(missing.soft_delete(&pool).await.unwrap().is_none());
+    assert!(matches!(crud::delete::<Parent, _>(&pool, &key(Uuid::now_v7()), None).await, Err(ApiError::NotFound)));
 }
 
 #[sqlx::test(migrations = false)]
 async fn an_update_of_a_deleted_row_is_refused(pool: PgPool) {
     schema(&pool).await;
     let p = parent(&pool, "p").await;
-    p.soft_delete(&pool).await.unwrap();
-    let mut renamed = p.clone();
-    renamed.name = "renamed".into();
-    assert!(matches!(renamed.update(&pool).await, Err(sqlx::Error::RowNotFound)));
+    crud::delete::<Parent, _>(&pool, &key(p.id), None).await.unwrap();
+    let renamed = Parent { name: "renamed".into(), ..p.clone() };
+    assert!(matches!(crud::replace(&pool, renamed, None).await, Err(ApiError::NotFound)));
     let name: String = sqlx::query_scalar("SELECT name FROM parents WHERE id = $1").bind(p.id).fetch_one(&pool).await.unwrap();
     assert_eq!(name, "p");
 }
@@ -103,8 +108,8 @@ async fn an_update_of_a_deleted_row_is_refused(pool: PgPool) {
 async fn an_upsert_does_not_revive_a_deleted_row(pool: PgPool) {
     schema(&pool).await;
     let p = parent(&pool, "p").await;
-    p.soft_delete(&pool).await.unwrap();
-    let _ = p.upsert(&pool).await;
+    crud::delete::<Parent, _>(&pool, &key(p.id), None).await.unwrap();
+    let _ = crud::upsert(&pool, p.clone()).await;
     assert!(deleted_at(&pool, "parents", p.id).await.is_some());
 }
 
@@ -116,7 +121,7 @@ async fn a_delete_reaches_every_level_below_through_cascading_foreign_keys_with_
     let grandchild = row(&pool, "grandchildren", "child_id", child).await;
     let other_child = row(&pool, "children", "parent_id", safe.id).await;
 
-    let stamp = doomed.soft_delete(&pool).await.unwrap().expect("deleted").deleted_at;
+    let stamp = crud::delete::<Parent, _>(&pool, &key(doomed.id), None).await.unwrap().deleted_at;
     assert!(stamp.is_some());
     assert_eq!(deleted_at(&pool, "children", child).await, stamp);
     assert_eq!(deleted_at(&pool, "grandchildren", grandchild).await, stamp);
@@ -130,7 +135,7 @@ async fn a_dependant_that_was_already_deleted_keeps_its_own_timestamp(pool: PgPo
     let p = parent(&pool, "p").await;
     let earlier = row(&pool, "children", "parent_id", p.id).await;
     sqlx::query("UPDATE children SET deleted_at = '2020-01-01T00:00:00Z' WHERE id = $1").bind(earlier).execute(&pool).await.unwrap();
-    p.soft_delete(&pool).await.unwrap();
+    crud::delete::<Parent, _>(&pool, &key(p.id), None).await.unwrap();
     assert_eq!(deleted_at(&pool, "children", earlier).await.unwrap().to_rfc3339(), "2020-01-01T00:00:00+00:00");
 }
 
@@ -139,21 +144,20 @@ async fn a_foreign_key_without_on_delete_cascade_is_not_followed(pool: PgPool) {
     schema(&pool).await;
     let p = parent(&pool, "p").await;
     let note = row(&pool, "notes", "parent_id", p.id).await;
-    p.soft_delete(&pool).await.unwrap();
+    crud::delete::<Parent, _>(&pool, &key(p.id), None).await.unwrap();
     assert_eq!(deleted_at(&pool, "notes", note).await, None);
 }
 
 #[sqlx::test(migrations = false)]
 async fn a_tree_that_references_itself_is_deleted_down_to_the_leaves(pool: PgPool) {
     schema(&pool).await;
-    let node = |parent_id: Option<Uuid>, name: &str| Node::new(Uuid::now_v7(), NodeData { parent_id, name: name.into() });
-    let root = node(None, "root").insert(&pool).await.unwrap();
-    let branch = node(Some(root.id), "branch").insert(&pool).await.unwrap();
-    let leaf = node(Some(branch.id), "leaf").insert(&pool).await.unwrap();
-    let sibling = node(None, "sibling").insert(&pool).await.unwrap();
-    let sibling_child = node(Some(sibling.id), "sibling child").insert(&pool).await.unwrap();
+    let root = node(&pool, None, "root").await;
+    let branch = node(&pool, Some(root.id), "branch").await;
+    let leaf = node(&pool, Some(branch.id), "leaf").await;
+    let sibling = node(&pool, None, "sibling").await;
+    let sibling_child = node(&pool, Some(sibling.id), "sibling child").await;
 
-    let stamp = root.soft_delete(&pool).await.unwrap().expect("deleted").deleted_at;
+    let stamp = crud::delete::<Node, _>(&pool, &key(root.id), None).await.unwrap().deleted_at;
     assert_eq!(deleted_at(&pool, "nodes", branch.id).await, stamp);
     assert_eq!(deleted_at(&pool, "nodes", leaf.id).await, stamp);
     assert_eq!(deleted_at(&pool, "nodes", sibling.id).await, None);
@@ -169,7 +173,7 @@ async fn a_dependant_table_without_deleted_at_fails_the_delete_and_changes_nothi
     let child = row(&pool, "children", "parent_id", p.id).await;
     row(&pool, "bare_children", "parent_id", p.id).await;
 
-    assert!(p.soft_delete(&pool).await.is_err());
+    assert!(crud::delete::<Parent, _>(&pool, &key(p.id), None).await.is_err());
     assert_eq!(deleted_at(&pool, "parents", p.id).await, None, "the parent is not marked");
     assert_eq!(deleted_at(&pool, "children", child).await, None, "nothing else is marked");
 }

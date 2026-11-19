@@ -10,7 +10,7 @@ Format:
 ```
 
 ## 2026-11-19
-- Persistence on sea-query and sqlx for PostgreSQL and SQLite, one code path (`Backend` trait, `Column` trait, `#[entity]` and `#[derive(Column)]` macros, generic CRUD with AIP-158 / AIP-160, patch as a single `UPDATE`, audit per table or shared); every entity is one struct (no `*Data`, `Entity<ID, T>`, `Keyed`); `convert.rs`, `bytea.rs`, trigger audit and the `Table` derive removed (PR #TBD, issue #261)
+- Persistence on sea-query and sqlx for PostgreSQL and SQLite, one code path (`Backend` trait, `Column` trait, `#[entity]` and `#[derive(Column)]` macros, generic CRUD with AIP-158 / AIP-160, patch as a single `UPDATE`, audit per table or shared); every entity is one struct (no `*Data`, `Entity<ID, T>`, `Keyed`); `convert.rs`, `bytea.rs`, trigger audit and the `Table` derive removed (PR #262, issue #261)
 
 ## 2026-11-17
 - Messaging client identity (PR #259, issue #258):

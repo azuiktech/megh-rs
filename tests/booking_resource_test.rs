@@ -83,7 +83,7 @@ async fn get_put_patch_delete_one_resource(pool: PgPool) {
     assert_eq!(patched["name"], "Room A", "fields not given are kept");
     assert_eq!(patched["capacity"], 4);
     assert_eq!(patched["description"], "", "null resets to the default");
-    assert_eq!(patched["attributes"], json!({"quiet": true}), "merge goes inside attributes; null removes the key");
+    assert_eq!(patched["attributes"], json!({"floor": null}), "the attributes column is replaced, never merged");
     assert_eq!(call(&app, "PATCH", &item, json!({"name": null})).await.0, StatusCode::BAD_REQUEST, "name has no default");
     assert_eq!(call(&app, "PATCH", &item, json!({"capacity": 0})).await.0, StatusCode::BAD_REQUEST);
 

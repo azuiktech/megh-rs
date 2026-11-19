@@ -10,15 +10,16 @@ use uuid::Uuid;
 use validator::Validate;
 
 use super::value::{Address, Attributes, Contact, Gender, Name};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
-use crate::{Entity, Table};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "clients", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "clients", keys = ["tenant_id", "id"], timestamps, soft_delete, audit = shared)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, ToSchema)]
 #[schema(example = json!({"first_name": "Ada", "last_name": "Lovelace", "name": "Ada", "gender": "female", "birth_date": "1990-12-10", "email": "ada@example.com"}))]
-pub struct ClientData {
+pub struct Client {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     #[sqlx(try_from = "String")]
     pub first_name: Name,
     #[sqlx(try_from = "String")]
@@ -45,8 +46,6 @@ pub struct ClientData {
     pub attributes: Attributes,
 }
 
-pub type Client = Entity<Uuid, ClientData>;
-
 fn unknown() -> Gender {
     Gender::Unknown
 }
@@ -67,13 +66,13 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, ClientData>>))),
+    responses((status = 200, body = inline(Page<Client>))),
 )]
 async fn list(
     State(ctx): State<AppContext>,
     Input(request): Input<ListRequest>,
 ) -> ApiResult<Page<Client>> {
-    crud::list(&ctx.pool, &request).await
+    crud::list::<Client, _>(&ctx.pool, &request).await
 }
 
 #[utoipa::path(
@@ -81,10 +80,10 @@ async fn list(
     path = "/tenants/{tenant_id}/clients/{id}",
     tag = "clients",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
+    responses((status = 200, body = inline(Client)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Client> {
-    crud::get(&ctx.pool, &key).await
+    crud::get::<Client, _>(&ctx.pool, &key).await
 }
 
 #[utoipa::path(
@@ -92,14 +91,14 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/clients",
     tag = "clients",
     params(("tenant_id" = Uuid, Path)),
-    request_body = ClientData,
-    responses((status = 200, body = inline(Entity<Uuid, ClientData>))),
+    request_body = Client,
+    responses((status = 200, body = inline(Client))),
 )]
 async fn create(
     State(ctx): State<AppContext>,
-    Input(data): Input<ClientData>,
+    Input(client): Input<Client>,
 ) -> ApiResult<Client> {
-    crud::create(&ctx.pool, data).await
+    crud::create(&ctx.pool, client, None).await
 }
 
 #[utoipa::path(
@@ -107,27 +106,27 @@ async fn create(
     path = "/tenants/{tenant_id}/clients/{id}",
     tag = "clients",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = ClientData,
-    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
+    request_body = Client,
+    responses((status = 200, body = inline(Client)), (status = 404)),
 )]
 async fn replace(
     State(ctx): State<AppContext>,
-    Input(body): Input<Keyed<ClientData>>,
+    Input(client): Input<Client>,
 ) -> ApiResult<Client> {
-    crud::replace(&ctx.pool, body).await
+    crud::replace(&ctx.pool, client, None).await
 }
 
-/// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are reset.
+/// Change some fields (JSON merge patch, RFC 7396): fields given are changed, fields set to null are cleared.
 #[utoipa::path(
     patch,
     path = "/tenants/{tenant_id}/clients/{id}",
     tag = "clients",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body(content = ClientData, description = "Only the fields to change; null resets a field to its default (JSON merge patch, RFC 7396)."),
-    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
+    request_body(content = Client, description = "Only the fields to change; null clears a field; a column is replaced, never merged into."),
+    responses((status = 200, body = inline(Client)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Client> {
-    crud::patch(&ctx.pool, body).await
+    crud::patch::<Client, _>(&ctx.pool, body, None).await
 }
 
 #[utoipa::path(
@@ -135,8 +134,8 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/clients/{id}",
     tag = "clients",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, ClientData>)), (status = 404)),
+    responses((status = 200, body = inline(Client)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Client> {
-    crud::delete(&ctx.pool, &key).await
+    crud::delete::<Client, _>(&ctx.pool, &key, None).await
 }

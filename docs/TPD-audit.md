@@ -1,7 +1,9 @@
 # TPD — Audit
 
 **Status:** A1 shipped. Ports megh-go's row-change audit triggers (Postgres only).
-**Modules:** `src/audit.rs`, `migrations/0002_audit.sql`.
+**Modules:** `src/auth/audit.rs`, `migrations/0002_audit.sql`.
+
+> 2026-11-19: the trigger API (`Audit`, `AuditTrigger`, `AuditEntry`) is removed. `crud` writes the audit row in the transaction of the change, per entity (`#[entity(audit = shared | per_table | "table")]`), on PostgreSQL and SQLite, into the same tables and row shape as migration 0002 (see TPD-persistence.md). The migration and its trigger functions stay in the database, unused.
 
 ## 1. Delivery
 
@@ -17,7 +19,7 @@ A trigger on a table writes every insert, update and delete to an audit table: t
 - `megh_audit_install(table, audit_table, trigger_name, key)`: creates the audit table (`LIKE audit_entries INCLUDING ALL`) and the trigger, each only when missing. Every name goes through `format('%I')`, which closes the `Sprintf` injection risk in megh-go (review item G10).
 - `megh_audit_history(audit_table, table, record)`: one row's changes, oldest first.
 
-## 3. API (`megh::audit`, feature `postgres`)
+## 3. API (`megh::auth::audit`, feature `postgres`)
 
 ```rust
 // Every name has a default and can be overridden.

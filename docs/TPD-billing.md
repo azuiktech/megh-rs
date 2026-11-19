@@ -33,7 +33,7 @@ Kept as `BIGINT` rather than `NUMERIC` so rows are portable with megh-go and exa
 
 ## 3. Entities (`megh::billing`)
 
-Plain row types, one per table, with `#[derive(Table)]` (generic insert, upsert, update) and no relations. Nullable columns are `Option`; JSON kept in text columns is `JsonText<T>` (`megh::JsonText`), where NULL and `null` read as the default. Verified against a real megh-go database (1 plan, 1 price, 81 subscriptions).
+Plain row types, one per table, with `#[entity]` (`crud::create`, `crud::upsert`, `crud::replace`; 2026-11-19, replacing `#[derive(Table)]` and `TableEntity`) and no relations. Nullable columns are `Option`; JSON kept in text columns is `JsonText<T>` (`megh::JsonText`), where NULL and `null` read as the default. Verified against a real megh-go database (1 plan, 1 price, 81 subscriptions).
 
 ```rust
 pub enum SubscriptionStatus { Trialing, Active, PastDue, Canceled, Expired }   // text column

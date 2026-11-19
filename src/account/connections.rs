@@ -21,6 +21,7 @@ use super::encryption::Encryptor;
 use crate::auth::OAuthProviderConfig;
 
 /// How a connection signs its requests.
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "text", rename_all = "snake_case")]

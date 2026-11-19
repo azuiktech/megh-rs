@@ -1,16 +1,28 @@
-//! Procedural macro crate providing #[derive(Table)] for megh.
+//! Procedural macros of megh: `#[entity]` maps a struct to a table, `#[derive(Column)]` maps an enum to a text column.
 
-mod codegen;
+mod column_derive;
+mod entity_attr;
 mod parse;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{parse_macro_input, DeriveInput, ItemStruct};
 
-#[proc_macro_derive(Table, attributes(table, sqlx, key))]
-pub fn derive_table(input: TokenStream) -> TokenStream {
+/// Maps a struct to a table: `#[entity(table = "clients", keys = ["tenant_id", "id"], timestamps, soft_delete, audit = shared)]`.
+#[proc_macro_attribute]
+pub fn entity(args: TokenStream, input: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(input as ItemStruct);
+    match entity_attr::expand(args.into(), item) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Maps an enum to a text column, named as sqlx names it.
+#[proc_macro_derive(Column, attributes(sqlx))]
+pub fn derive_column(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    match parse::TableConfig::from_input(&input) {
-        Ok(config) => codegen::generate_table_impl(&input.ident, &config).into(),
+    match column_derive::expand(input) {
+        Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }

@@ -6,9 +6,6 @@ use axum::extract::{FromRequest, FromRequestParts, Path, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum_params::Params;
-use paginator_utils::{Cursor, CursorDirection, CursorValue};
-use sqlx::postgres::PgRow;
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -121,15 +118,6 @@ pub struct Key {
     pub id: Uuid,
 }
 
-/// A body for the row named by the path: the entity's data for PUT, the changes for PATCH.
-#[derive(Debug, Deserialize, Validate)]
-pub struct Keyed<T: Validate> {
-    pub id: Uuid,
-    #[serde(flatten)]
-    #[validate(nested)]
-    pub data: T,
-}
-
 /// A PATCH body for the row named by the path: the JSON merge patch (RFC 7396) to apply.
 #[derive(Debug, Deserialize, Validate)]
 pub struct Changes {
@@ -141,27 +129,3 @@ pub struct Changes {
 
 const PAGE_SIZE: u16 = 50;
 const MAX_PAGE_SIZE: u16 = 1000;
-
-/// Runs `query` (a SELECT whose rows have an `id`) one page at a time, ordered by `id`.
-pub async fn fetch_page<T>(pool: &PgPool, mut query: QueryBuilder<'_, Postgres>, page: &PageRequest) -> ApiResult<Page<T>>
-where
-    T: for<'r> FromRow<'r, PgRow> + Serialize + Send + Unpin,
-{
-    let size = page.size();
-    if let Some(token) = &page.page_token {
-        let bad_token = || ApiError::BadRequest("invalid page_token".into());
-        let cursor = Cursor::decode(token).map_err(|_| bad_token())?;
-        let CursorValue::Uuid(after) = cursor.value else { return Err(bad_token()) };
-        let after: Uuid = after.parse().map_err(|_| bad_token())?;
-        query.push(" AND id > ").push_bind(after);
-    }
-    query.push(" ORDER BY id LIMIT ").push_bind(i64::from(size) + 1);
-    let mut items: Vec<T> = query.build_query_as().fetch_all(pool).await?;
-    let has_more = items.len() > usize::from(size);
-    items.truncate(usize::from(size));
-    let next_page_token = match (has_more, items.last()) {
-        (true, Some(last)) => Some(Cursor::from_row("id", last, CursorDirection::After).and_then(|cursor| cursor.encode()).map_err(ApiError::BadRequest)?),
-        _ => None,
-    };
-    Ok(Page { items, next_page_token })
-}

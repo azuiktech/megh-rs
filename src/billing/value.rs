@@ -51,6 +51,7 @@ pub struct Quantity(Decimal);
 pub struct Percent(Decimal);
 
 /// How money moved: HubSpot's `hs_payment_method_type`, with its bank rails grouped.
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "postgres", derive(sqlx::Type), sqlx(type_name = "text", rename_all = "snake_case"))]
 #[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
@@ -62,3 +63,6 @@ pub enum PaymentMethod {
     BankTransfer,
     Other,
 }
+
+crate::newtype_column!(Micros: i64, Quantity: Decimal, Percent: Decimal);
+crate::text_column!(Currency);

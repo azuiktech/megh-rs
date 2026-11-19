@@ -5,12 +5,10 @@ use oauth2::basic::BasicTokenResponse;
 use oauth2::TokenResponse;
 use serde::Deserialize;
 
-use crate::Table;
-
 /// Third-party OAuth connected account stored in `connected_accounts`.
-#[derive(Clone, Deserialize, PartialEq, Eq, Table)]
+#[crate::entity(table = "connected_accounts", keys = ["account_id", "provider"])]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[table(name = "connected_accounts", keys = ["account_id", "provider"])]
 pub struct ConnectedAccount {
     pub account_id: String,
     pub provider: String,

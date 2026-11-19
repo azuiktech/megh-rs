@@ -20,11 +20,11 @@ use super::ids::Formats;
 use super::lifecycle;
 use super::value::{Currency, Micros};
 use crate::auth::crud;
-use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 use crate::booking::value::{Address, Attributes, Name};
-use crate::{Entity, Table};
 
 /// HubSpot's `hs_invoice_status` without `paid`, which follows from the amounts.
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +35,7 @@ pub enum InvoiceStatus {
 }
 
 /// Which way the money goes: to the tenant (receivable) or from it (payable, Xero's `ACCPAY`).
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +46,7 @@ pub enum InvoiceKind {
 }
 
 /// What `party_id` names.
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -53,10 +55,12 @@ pub enum PartyKind {
     Tenant,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "billing_invoices", keys = ["tenant_id", "id"])]
-pub struct InvoiceData {
+#[crate::entity(table = "billing_invoices", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
+pub struct Invoice {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     #[serde(default)]
     pub kind: InvoiceKind,
     /// The other party: the customer of a receivable invoice, the supplier of a payable one.
@@ -100,10 +104,8 @@ pub struct InvoiceData {
     pub attributes: Attributes,
 }
 
-pub type Invoice = Entity<Uuid, InvoiceData>;
-
 /// What a new or replaced invoice must be: a draft, and without a number, which `:open` gives it.
-fn check(invoice: &InvoiceData) -> ApiResult<()> {
+fn check(invoice: &Invoice) -> ApiResult<()> {
     (invoice.status == InvoiceStatus::Draft)
         .then_some(())
         .ok_or_else(|| ApiError::BadRequest("an invoice is a draft until it is opened".into()))?;
@@ -111,7 +113,7 @@ fn check(invoice: &InvoiceData) -> ApiResult<()> {
 }
 
 /// The party must be a client of the tenant or a tenant (400 otherwise).
-async fn ensure_party<'e>(db: impl PgExecutor<'e>, invoice: &InvoiceData) -> ApiResult<()> {
+async fn ensure_party<'e>(db: impl PgExecutor<'e>, invoice: &Invoice) -> ApiResult<()> {
     let query = "SELECT CASE WHEN $3 = 'client' \
                  THEN EXISTS (SELECT 1 FROM clients WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL) \
                  ELSE EXISTS (SELECT 1 FROM tenants WHERE id = $2) END";
@@ -163,7 +165,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("id" = Uuid, Path),
         ("verb" = String, Path, description = "open or void"),
     ),
-    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Invoice)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn act(State(ctx): State<AppContext>, Extension(formats): Extension<Formats>, Input(action): Input<Action>) -> ApiResult<Invoice> {
     match action.verb {
@@ -182,7 +184,7 @@ async fn act(State(ctx): State<AppContext>, Extension(formats): Extension<Format
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, InvoiceData>>))),
+    responses((status = 200, body = inline(Page<Invoice>))),
 )]
 async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>) -> ApiResult<Page<Invoice>> {
     crud::list(&ctx.pool, &request).await
@@ -193,7 +195,7 @@ async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>)
     path = "/tenants/{tenant_id}/invoices/{id}",
     tag = "invoices",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 404)),
+    responses((status = 200, body = inline(Invoice)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
     crud::get(&ctx.pool, &key).await
@@ -204,13 +206,13 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/invoices",
     tag = "invoices",
     params(("tenant_id" = Uuid, Path)),
-    request_body = InvoiceData,
-    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 409)),
+    request_body = Invoice,
+    responses((status = 200, body = inline(Invoice)), (status = 400), (status = 409)),
 )]
-async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) -> ApiResult<Invoice> {
+async fn create(State(ctx): State<AppContext>, Input(data): Input<Invoice>) -> ApiResult<Invoice> {
     check(&data)?;
     ensure_party(&ctx.pool, &data).await?;
-    crud::create(&ctx.pool, data).await
+    crud::create(&ctx.pool, data, None).await
 }
 
 #[utoipa::path(
@@ -218,15 +220,15 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceData>) 
     path = "/tenants/{tenant_id}/invoices/{id}",
     tag = "invoices",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = InvoiceData,
-    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
+    request_body = Invoice,
+    responses((status = 200, body = inline(Invoice)), (status = 400), (status = 404), (status = 409)),
 )]
-async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<InvoiceData>>) -> ApiResult<Invoice> {
+async fn replace(State(ctx): State<AppContext>, Input(body): Input<Invoice>) -> ApiResult<Invoice> {
     let mut transaction = ctx.pool.begin().await?;
-    ensure_draft::<InvoiceData>(&mut transaction, body.data.tenant_id, body.id, Lock::Update).await?;
-    check(&body.data)?;
-    ensure_party(&mut *transaction, &body.data).await?;
-    let replaced = crud::replace(&mut *transaction, body).await?;
+    ensure_draft::<Invoice>(&mut transaction, body.tenant_id, body.id, Lock::Update).await?;
+    check(&body)?;
+    ensure_party(&mut *transaction, &body).await?;
+    let replaced = crud::replace(&mut *transaction, body, None).await?;
     transaction.commit().await?;
     Ok(replaced)
 }
@@ -238,13 +240,13 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Invoice
     tag = "invoices",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 400), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Invoice)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Invoice> {
     let mut transaction = ctx.pool.begin().await?;
-    ensure_draft::<InvoiceData>(&mut transaction, body.key.tenant_id, body.key.id, Lock::Update).await?;
+    ensure_draft::<Invoice>(&mut transaction, body.key.tenant_id, body.key.id, Lock::Update).await?;
     refuse_changes(&body, &["status", "kind", "party_id", "party_kind", "number"])?;
-    let patched = crud::patch(&mut *transaction, body).await?;
+    let patched = crud::patch(&mut *transaction, body, None).await?;
     transaction.commit().await?;
     Ok(patched)
 }
@@ -254,12 +256,12 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/invoices/{id}",
     tag = "invoices",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, InvoiceData>)), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Invoice)), (status = 404), (status = 409)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
     let mut transaction = ctx.pool.begin().await?;
-    ensure_draft::<InvoiceData>(&mut transaction, key.tenant_id, key.id, Lock::Update).await?;
-    let deleted = crud::delete(&mut *transaction, &key).await?;
+    ensure_draft::<Invoice>(&mut transaction, key.tenant_id, key.id, Lock::Update).await?;
+    let deleted = crud::delete(&mut *transaction, &key, None).await?;
     transaction.commit().await?;
     Ok(deleted)
 }

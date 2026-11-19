@@ -7,9 +7,9 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::ids::{issue, Formats, Numbered};
-use super::invoice::{Invoice, InvoiceData, InvoiceStatus};
-use super::invoice_line::{InvoiceLine, InvoiceLineData};
-use super::tax::TaxData;
+use super::invoice::{Invoice, InvoiceStatus};
+use super::invoice_line::{InvoiceLine};
+use super::tax::Tax;
 use super::totals::{self, Amounts, TotalsError};
 use super::value::Percent;
 use crate::auth::rest::{ApiError, ApiResult, Key};
@@ -34,7 +34,7 @@ pub async fn open(pool: &PgPool, formats: &Formats, key: &Key) -> ApiResult<Invo
 pub async fn void(pool: &PgPool, key: &Key) -> ApiResult<Invoice> {
     let query = format!(
         "UPDATE {} SET status = 'void', updated_at = now() WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'open' AND amount_paid = 0 RETURNING *",
-        InvoiceData::TABLE_NAME
+        Invoice::TABLE_NAME
     );
     match sqlx::query_as(&query).bind(key.tenant_id).bind(key.id).fetch_optional(pool).await? {
         Some(voided) => Ok(voided),
@@ -43,7 +43,7 @@ pub async fn void(pool: &PgPool, key: &Key) -> ApiResult<Invoice> {
 }
 
 async fn why_not_voided(pool: &PgPool, key: &Key) -> ApiResult<ApiError> {
-    let query = format!("SELECT EXISTS (SELECT 1 FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL)", InvoiceData::TABLE_NAME);
+    let query = format!("SELECT EXISTS (SELECT 1 FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL)", Invoice::TABLE_NAME);
     let found: bool = sqlx::query_scalar(&query).bind(key.tenant_id).bind(key.id).fetch_one(pool).await?;
     Ok(if found { conflict("only an open invoice nothing was paid on is voided") } else { ApiError::NotFound })
 }
@@ -53,19 +53,19 @@ fn conflict(message: &str) -> ApiError {
 }
 
 async fn locked(connection: &mut PgConnection, key: &Key) -> ApiResult<Invoice> {
-    let query = format!("SELECT * FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE", InvoiceData::TABLE_NAME);
+    let query = format!("SELECT * FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE", Invoice::TABLE_NAME);
     sqlx::query_as(&query).bind(key.tenant_id).bind(key.id).fetch_optional(connection).await?.ok_or(ApiError::NotFound)
 }
 
 async fn lines_of(connection: &mut PgConnection, key: &Key) -> ApiResult<Vec<InvoiceLine>> {
-    let query = format!("SELECT * FROM {} WHERE tenant_id = $1 AND invoice_id = $2 AND deleted_at IS NULL ORDER BY position, id", InvoiceLineData::TABLE_NAME);
+    let query = format!("SELECT * FROM {} WHERE tenant_id = $1 AND invoice_id = $2 AND deleted_at IS NULL ORDER BY position, id", InvoiceLine::TABLE_NAME);
     Ok(sqlx::query_as(&query).bind(key.tenant_id).bind(key.id).fetch_all(connection).await?)
 }
 
 /// What each line comes to, with the percents of its taxes, which must be live taxes of the tenant.
 async fn line_amounts(connection: &mut PgConnection, invoice: &Invoice, lines: &[InvoiceLine]) -> ApiResult<Vec<Amounts>> {
     let ids: Vec<Uuid> = lines.iter().flat_map(|line| line.tax_ids.iter().copied()).collect();
-    let query = format!("SELECT id, rate FROM {} WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL", TaxData::TABLE_NAME);
+    let query = format!("SELECT id, rate FROM {} WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL", Tax::TABLE_NAME);
     let rates: HashMap<Uuid, Percent> = sqlx::query_as(&query).bind(invoice.tenant_id).bind(&ids).fetch_all(connection).await?.into_iter().collect();
     lines.iter().map(|line| amounts_of(invoice, line, &rates)).collect()
 }
@@ -84,7 +84,7 @@ async fn store_lines(connection: &mut PgConnection, tenant_id: Uuid, lines: &[In
     let query = format!(
         "UPDATE {} AS l SET sub_total = v.sub_total, total = v.total, updated_at = now() \
          FROM UNNEST($2::uuid[], $3::bigint[], $4::bigint[]) AS v(id, sub_total, total) WHERE l.tenant_id = $1 AND l.id = v.id",
-        InvoiceLineData::TABLE_NAME
+        InvoiceLine::TABLE_NAME
     );
     let ids: Vec<Uuid> = lines.iter().map(|line| line.id).collect();
     let subs: Vec<i64> = amounts.iter().map(|amount| i64::from(amount.sub_total)).collect();
@@ -97,7 +97,7 @@ async fn store_invoice(connection: &mut PgConnection, key: &Key, number: &str, s
     let query = format!(
         "UPDATE {} SET status = 'open', number = $3, sub_total = $4, tax_total = $5, total = $6, amount_paid = 0, balance_due = $6, updated_at = now() \
          WHERE tenant_id = $1 AND id = $2 RETURNING *",
-        InvoiceData::TABLE_NAME
+        Invoice::TABLE_NAME
     );
     let stored = sqlx::query_as(&query)
         .bind(key.tenant_id)

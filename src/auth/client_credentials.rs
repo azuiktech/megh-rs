@@ -56,7 +56,7 @@ async fn authenticate(pool: &PgPool, client_id: &str, secret: &str) -> Result<Me
         PasswordError::UserNotFound | PasswordError::NoPassword | PasswordError::WrongPassword => TokenError::CLIENT,
         other => internal(other),
     })?;
-    (user.data.provider.as_deref() == Some(MACHINE)).then_some(()).ok_or(TokenError::CLIENT)?;
+    (user.provider.as_deref() == Some(MACHINE)).then_some(()).ok_or(TokenError::CLIENT)?;
     let memberships = Tenants::new(pool.clone()).memberships(user.id).await.map_err(internal)?;
     memberships.into_iter().next().ok_or(TokenError::CLIENT)
 }

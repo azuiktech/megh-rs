@@ -1,7 +1,8 @@
 use chrono::{Duration, Utc};
 use megh::billing::{AddOn, AddOnType, BillingInterval, Plan, PlanPrice, Subscription, SubscriptionStatus};
 use megh::money::{from_micros, iso, to_micros, Money, MoneyError};
-use megh::{JsonText, TableEntity};
+use megh::auth::crud;
+use megh::JsonText;
 use rust_decimal::Decimal;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -56,7 +57,7 @@ async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
         active: Some(true),
         created_at: Some(Utc::now()),
     };
-    plan.insert(&pool).await.unwrap();
+    crud::create(&pool, plan, None).await.unwrap();
     let add_on = AddOn {
         id: Uuid::now_v7(),
         sku: "storage".into(),
@@ -70,7 +71,7 @@ async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
         metadata: JsonText(serde_json::Value::Null),
         active: Some(true),
     };
-    add_on.insert(&pool).await.unwrap();
+    let add_on = crud::create(&pool, add_on, None).await.unwrap();
 
     let (features, limits): (String, String) = sqlx::query_as("SELECT features, limits FROM plans").fetch_one(&pool).await.unwrap();
     let (kind, price): (String, i64) = sqlx::query_as("SELECT type, price FROM add_ons").fetch_one(&pool).await.unwrap();
@@ -78,7 +79,7 @@ async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
     assert_eq!(serde_json::from_str::<serde_json::Value>(&limits).unwrap(), serde_json::json!({"seats": 5}));
     assert_eq!((kind.as_str(), price), ("recurring", 1_500_000));
     assert_eq!(add_on.price().unwrap(), from_micros(1_500_000, "EUR").unwrap());
-    assert_eq!(add_on.update(&pool).await.unwrap().kind, AddOnType::Recurring);
+    assert_eq!(crud::replace(&pool, add_on, None).await.unwrap().kind, AddOnType::Recurring);
 }
 
 #[sqlx::test]

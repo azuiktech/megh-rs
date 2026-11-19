@@ -430,7 +430,7 @@ impl Surface {
     /// The client's own schema as a form, without what the server sets.
     #[cfg(feature = "axum")]
     pub fn intake() -> Self {
-        let client = Schema::of::<crate::booking::client::ClientData>().without(&["tenant_id", "attributes"]);
+        let client = Schema::of::<crate::booking::client::Client>().without(&["tenant_id", "id", "attributes", "created_at", "updated_at", "deleted_at"]);
         Self::new().inputs(client).button("Send", "submit")
     }
 

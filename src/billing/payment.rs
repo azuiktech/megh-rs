@@ -14,11 +14,11 @@ use super::balance;
 use super::ids::Formats;
 use super::value::{Micros, PaymentMethod};
 use crate::auth::crud;
-use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, Keyed, ListRequest, Page};
+use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest, Page};
 use crate::booking::value::{Attributes, Name};
-use crate::{Entity, Table};
 
 /// HubSpot's `hs_latest_status` without the refund and dispute states: the refund is the `refunded` amount.
+#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -29,11 +29,13 @@ pub enum PaymentStatus {
     Void,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, Table, ToSchema)]
-#[table(name = "billing_payments", keys = ["tenant_id", "id"])]
+#[crate::entity(table = "billing_payments", keys = ["tenant_id", "id"], timestamps, soft_delete)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, sqlx::FromRow, ToSchema)]
 #[validate(schema(function = "amounts"))]
-pub struct PaymentData {
+pub struct Payment {
     pub tenant_id: Uuid,
+    #[serde(default = "Uuid::now_v7")]
+    pub id: Uuid,
     pub invoice_id: Uuid,
     /// Made by the app's `Ids` when the payment is recorded.
     #[schema(value_type = Option<String>)]
@@ -51,9 +53,7 @@ pub struct PaymentData {
     pub attributes: Attributes,
 }
 
-pub type Payment = Entity<Uuid, PaymentData>;
-
-fn amounts(payment: &PaymentData) -> Result<(), ValidationError> {
+fn amounts(payment: &Payment) -> Result<(), ValidationError> {
     let (amount, refunded) = (i64::from(payment.amount), i64::from(payment.refunded));
     (amount > 0 && (0..=amount).contains(&refunded))
         .then_some(())
@@ -76,7 +76,7 @@ pub fn routes() -> OpenApiRouter<AppContext> {
         ("page_size" = Option<u16>, Query),
         ("page_token" = Option<String>, Query),
     ),
-    responses((status = 200, body = inline(Page<Entity<Uuid, PaymentData>>))),
+    responses((status = 200, body = inline(Page<Payment>))),
 )]
 async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>) -> ApiResult<Page<Payment>> {
     crud::list(&ctx.pool, &request).await
@@ -87,7 +87,7 @@ async fn list(State(ctx): State<AppContext>, Input(request): Input<ListRequest>)
     path = "/tenants/{tenant_id}/payments/{id}",
     tag = "payments",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 404)),
+    responses((status = 200, body = inline(Payment)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Payment> {
     crud::get(&ctx.pool, &key).await
@@ -98,10 +98,10 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
     path = "/tenants/{tenant_id}/payments",
     tag = "payments",
     params(("tenant_id" = Uuid, Path)),
-    request_body = PaymentData,
-    responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 400), (status = 409)),
+    request_body = Payment,
+    responses((status = 200, body = inline(Payment)), (status = 400), (status = 409)),
 )]
-async fn create(State(ctx): State<AppContext>, Extension(formats): Extension<Formats>, Input(data): Input<PaymentData>) -> ApiResult<Payment> {
+async fn create(State(ctx): State<AppContext>, Extension(formats): Extension<Formats>, Input(data): Input<Payment>) -> ApiResult<Payment> {
     balance::record(&ctx.pool, &formats, data).await
 }
 
@@ -110,10 +110,10 @@ async fn create(State(ctx): State<AppContext>, Extension(formats): Extension<For
     path = "/tenants/{tenant_id}/payments/{id}",
     tag = "payments",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    request_body = PaymentData,
-    responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 400), (status = 404), (status = 409)),
+    request_body = Payment,
+    responses((status = 200, body = inline(Payment)), (status = 400), (status = 404), (status = 409)),
 )]
-async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<PaymentData>>) -> ApiResult<Payment> {
+async fn replace(State(ctx): State<AppContext>, Input(body): Input<Payment>) -> ApiResult<Payment> {
     balance::replace(&ctx.pool, body).await
 }
 
@@ -124,7 +124,7 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Keyed<Payment
     tag = "payments",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
     request_body = Object,
-    responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 400), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Payment)), (status = 400), (status = 404), (status = 409)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Payment> {
     balance::patch(&ctx.pool, body).await
@@ -135,7 +135,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     path = "/tenants/{tenant_id}/payments/{id}",
     tag = "payments",
     params(("tenant_id" = Uuid, Path), ("id" = Uuid, Path)),
-    responses((status = 200, body = inline(Entity<Uuid, PaymentData>)), (status = 404), (status = 409)),
+    responses((status = 200, body = inline(Payment)), (status = 404), (status = 409)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Payment> {
     balance::remove(&ctx.pool, &key).await

@@ -8,7 +8,9 @@ use uuid::Uuid;
 use super::{AddOn, BillingInterval, Plan, PlanPrice, Subscription, SubscriptionItem, SubscriptionStatus};
 use crate::tenant::lifecycle::notify;
 use crate::tenant::{Change, Lifecycle, LifecycleError};
-use crate::{JsonText, TableEntity};
+use crate::auth::rest::ApiError;
+use crate::auth::crud;
+use crate::JsonText;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -21,6 +23,16 @@ pub enum BillingError {
     Database(#[from] sqlx::Error),
     #[error("the app's lifecycle function failed: {0}")]
     Lifecycle(LifecycleError),
+}
+
+impl From<ApiError> for BillingError {
+    fn from(error: ApiError) -> Self {
+        match error {
+            ApiError::NotFound => Self::NotFound,
+            ApiError::Database(error) => Self::Database(error),
+            ApiError::BadRequest(message) | ApiError::Conflict(message) => Self::Database(sqlx::Error::Protocol(message)),
+        }
+    }
 }
 
 /// When a cancellation takes effect.
@@ -48,7 +60,7 @@ impl Subscriptions {
     }
 
     pub async fn create_plan(&self, plan: &Plan) -> Result<Plan, BillingError> {
-        Ok(plan.insert(&self.pool).await?)
+        Ok(crud::create(&self.pool, plan.clone(), None).await?)
     }
 
     /// The active plans.
@@ -65,11 +77,11 @@ impl Subscriptions {
     }
 
     pub async fn add_price(&self, price: &PlanPrice) -> Result<PlanPrice, BillingError> {
-        Ok(price.insert(&self.pool).await?)
+        Ok(crud::create(&self.pool, price.clone(), None).await?)
     }
 
     pub async fn create_add_on(&self, add_on: &AddOn) -> Result<AddOn, BillingError> {
-        Ok(add_on.insert(&self.pool).await?)
+        Ok(crud::create(&self.pool, add_on.clone(), None).await?)
     }
 
     pub async fn attach_plan_add_on(&self, plan_id: Uuid, add_on_id: Uuid) -> Result<(), BillingError> {
@@ -95,7 +107,7 @@ impl Subscriptions {
             Some(existing) => Subscription { id: existing.id, created_at: existing.created_at, ..fresh },
             None => fresh,
         };
-        self.notified(subscription.upsert(&self.pool).await?, Change::Subscribed).await
+        self.notified(crud::upsert(&self.pool, subscription).await?, Change::Subscribed).await
     }
 
     pub async fn change_seats(&self, tenant_id: Uuid, seats: i64) -> Result<Subscription, BillingError> {
@@ -140,7 +152,7 @@ impl Subscriptions {
             .await?;
         if updated.rows_affected() == 0 {
             let item = SubscriptionItem { id: Uuid::now_v7(), subscription_id: subscription.id, add_on_id, quantity: Some(quantity), metadata: JsonText(metadata) };
-            item.insert(&self.pool).await?;
+            crud::create(&self.pool, item, None).await?;
         }
         self.notified(subscription, Change::SubscriptionChanged).await
     }

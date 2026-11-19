@@ -2,6 +2,11 @@
 
 #[cfg(feature = "axum")]
 pub mod access_token;
+pub mod audit;
+pub mod column;
+#[cfg(feature = "postgres")]
+pub mod db;
+pub mod entity;
 pub mod authorizer;
 pub mod grant;
 pub mod oauth;
@@ -20,7 +25,7 @@ pub use oauth::{
 };
 #[cfg(feature = "client")]
 pub use oauth::oauth_http_client;
-pub use user::{UpsertUserInput, User, UserProfile};
+pub use user::{UpsertUserInput, User};
 
 #[cfg(feature = "postgres")]
 pub use user::{PasswordError, Registered, UserRepo};
@@ -34,13 +39,13 @@ pub mod token;
 pub mod client_credentials;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
-pub mod crud;
-#[cfg(all(feature = "axum", feature = "postgres"))]
-pub mod filter;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod openapi;
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod rest;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod crud;
+#[cfg(all(feature = "axum", feature = "postgres"))]
+pub mod filter;
 
 #[cfg(all(feature = "axum", feature = "postgres"))]
 pub use token::{csrf_unless_bearer, jwt_session, JwtSession, JWT_COOKIE};

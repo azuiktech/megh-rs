@@ -43,15 +43,15 @@ where
 {
     let order = *T::PRIMARY_KEY.last().expect("a table has a key");
     let size = request.page.size();
-    let mut query = base::<T>();
-    query.and_where(Expr::col(Alias::new(T::PRIMARY_KEY[0])).eq(Value::from(request.tenant_id)));
-    if let Some(filter) = &request.filter {
-        query.cond_where(filter::condition::<T, DB>(filter)?);
-    }
-    if let Some(token) = &request.page.page_token {
-        query.and_where(Expr::col(Alias::new(order)).gt(Value::from(after(token)?)));
-    }
-    query.order_by(Alias::new(order), sea_query::Order::Asc).limit(u64::from(size) + 1);
+    let filter = request.filter.as_ref().map(filter::condition::<T, DB>).transpose()?;
+    let last = request.page.page_token.as_deref().map(after).transpose()?;
+    let query = base::<T>()
+        .and_where(Expr::col(Alias::new(T::PRIMARY_KEY[0])).eq(Value::from(request.tenant_id)))
+        .cond_where(Condition::all().add_option(filter))
+        .and_where_option(last.map(|id| Expr::col(Alias::new(order)).gt(Value::from(id))))
+        .order_by(Alias::new(order), sea_query::Order::Asc)
+        .limit(u64::from(size) + 1)
+        .to_owned();
 
     let mut connection = db.begin().await.map_err(failed)?;
     let mut items = many::<T, DB>(&mut connection, &query).await?;
@@ -114,7 +114,7 @@ where
     let values: Vec<(&'static str, SimpleExpr)> = data
         .values()
         .into_iter()
-        .map(|(name, value)| (name, if name == "updated_at" { now.clone() } else { expr::<T>(name, value) }))
+        .map(|(name, value)| (name, match name { "updated_at" => now.clone(), _ => expr::<T>(name, value) }))
         .collect();
     let updated = values.iter().map(|(name, _)| *name).filter(|name| !T::PRIMARY_KEY.contains(name) && *name != "created_at");
     let alive = T::SOFT_DELETE.then(|| Expr::col((Alias::new(T::TABLE_NAME), Alias::new("deleted_at"))).is_null());

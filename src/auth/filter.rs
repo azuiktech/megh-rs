@@ -28,11 +28,15 @@ fn expression<T: Table, DB: Backend>(expression: &Expression) -> ApiResult<Condi
 fn restriction_of<T: Table, DB: Backend>(restriction: &Restriction) -> ApiResult<Condition> {
     let Restriction { field, comparator, value } = restriction;
     let json = json(value);
-    if let Comparator::Has = comparator {
-        return Ok(Condition::all().add(has::<T, DB>(field, &json)?));
+    match comparator {
+        Comparator::Has => Ok(Condition::all().add(has::<T, DB>(field, &json)?)),
+        _ => compare::<T>(restriction, &json),
     }
+}
+
+fn compare<T: Table>(Restriction { field, comparator, value }: &Restriction, json: &serde_json::Value) -> ApiResult<Condition> {
     let (left, right) = match T::COLUMNS.iter().find(|column| column.name == field.as_str()) {
-        Some(column) => (Expr::col(Alias::new(column.name)).into(), T::from_json(column.name, &json).map(|value| column.expr(value))),
+        Some(column) => (Expr::col(Alias::new(column.name)).into(), T::from_json(column.name, json).map(|value| column.expr(value))),
         None => (attribute(field), Ok(Expr::val(Value::Json(Some(Box::new(json.clone())))).into())),
     };
     let right: SimpleExpr = right.map_err(|error| ApiError::BadRequest(error.to_string()))?;

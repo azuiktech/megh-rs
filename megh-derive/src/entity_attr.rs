@@ -20,34 +20,33 @@ struct Options {
 fn options(args: TokenStream) -> syn::Result<Options> {
     let mut options = Options::default();
     let parser = syn::meta::parser(|meta| {
-        let path = &meta.path;
-        if path.is_ident("table") {
-            options.table = Some(meta.value()?.parse::<LitStr>()?.value());
-        } else if path.is_ident("keys") {
-            let value = meta.value()?;
-            let content;
-            syn::bracketed!(content in value);
-            let keys = Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?;
-            options.keys = Some(keys.into_iter().map(|key| key.value()).collect());
-        } else if path.is_ident("timestamps") {
-            options.timestamps = true;
-        } else if path.is_ident("soft_delete") {
-            options.soft_delete = true;
-        } else if path.is_ident("audit") {
-            let value = meta.value()?;
-            options.audit = Some(match value.peek(LitStr) {
-                true => {
-                    let table: LitStr = value.parse()?;
-                    quote!(Dedicated(#table))
-                }
-                false => match value.parse::<syn::Ident>()?.to_string().as_str() {
-                    "shared" => quote!(Shared),
-                    "per_table" => quote!(PerTable),
-                    _ => return Err(meta.error("audit is `shared`, `per_table` or a table name in quotes")),
-                },
-            });
-        } else {
-            return Err(meta.error("unknown option"));
+        let name = meta.path.get_ident().map(ToString::to_string);
+        match name.as_deref() {
+            Some("table") => options.table = Some(meta.value()?.parse::<LitStr>()?.value()),
+            Some("keys") => {
+                let value = meta.value()?;
+                let content;
+                syn::bracketed!(content in value);
+                let keys = Punctuated::<LitStr, Token![,]>::parse_terminated(&content)?;
+                options.keys = Some(keys.into_iter().map(|key| key.value()).collect());
+            }
+            Some("timestamps") => options.timestamps = true,
+            Some("soft_delete") => options.soft_delete = true,
+            Some("audit") => {
+                let value = meta.value()?;
+                options.audit = Some(match value.peek(LitStr) {
+                    true => {
+                        let table: LitStr = value.parse()?;
+                        quote!(Dedicated(#table))
+                    }
+                    false => match value.parse::<syn::Ident>()?.to_string().as_str() {
+                        "shared" => quote!(Shared),
+                        "per_table" => quote!(PerTable),
+                        _ => return Err(meta.error("audit is `shared`, `per_table` or a table name in quotes")),
+                    },
+                });
+            }
+            _ => return Err(meta.error("unknown option")),
         }
         Ok(())
     });
@@ -197,7 +196,8 @@ fn inject(item: &mut ItemStruct, options: &Options, krate: &TokenStream, schema:
 fn strip(item: &mut ItemStruct, keeps_sqlx: bool) {
     let is_ours = |attr: &syn::Attribute| attr.path().is_ident("table") || (!keeps_sqlx && (attr.path().is_ident("sqlx") || attr.path().is_ident("key")));
     item.attrs.retain(|attr| !is_ours(attr));
-    if let Fields::Named(named) = &mut item.fields {
-        named.named.iter_mut().for_each(|field| field.attrs.retain(|attr| !is_ours(attr)));
+    match &mut item.fields {
+        Fields::Named(named) => named.named.iter_mut().for_each(|field| field.attrs.retain(|attr| !is_ours(attr))),
+        _ => {}
     }
 }

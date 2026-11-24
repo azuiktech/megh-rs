@@ -1,8 +1,10 @@
-//! Procedural macros of megh: `#[entity]` maps a struct to a table, `#[derive(Column)]` maps an enum to a text column.
+//! Procedural macros of megh: `#[entity]` maps a struct to a table, `#[derive(Column)]` maps an enum to a text column,
+//! `sqlx_type!` stores a type per database.
 
 mod column_derive;
 mod entity_attr;
 mod parse;
+mod sqlx_type;
 
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput, ItemStruct};
@@ -25,4 +27,11 @@ pub fn derive_column(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
+}
+
+/// Stores a type per database: `sqlx_type!(T, match driver { Postgres => (write, read), _ => (write, read) })`.
+#[proc_macro]
+pub fn sqlx_type(input: TokenStream) -> TokenStream {
+    let spec = parse_macro_input!(input as sqlx_type::Spec);
+    sqlx_type::expand(spec).unwrap_or_else(syn::Error::into_compile_error).into()
 }

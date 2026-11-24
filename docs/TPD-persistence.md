@@ -107,9 +107,35 @@ AIP-160 to `sea_query::Condition`. A name in `COLUMNS` compares with the value c
 
 All tenant entities (`Client`, `Resource`, `Provider`, `Service`, `Schedule`, `Blockout`, `Appointment`, `Product`, `Stock`, `Price`, `Tax`, `Invoice`, `InvoiceLine`, `Payment`), `User`, the billing plans (`Plan`, `PlanPrice`, `AddOn`, `PlanAddOn`, `Subscription`, `SubscriptionItem`) and `ConnectedAccount` are `#[entity]` structs: no `XData`, no `Entity<ID, T>`, no `Keyed<T>`. Raw PostgreSQL SQL that needs locks (`FOR UPDATE`, reservations, stock) stays as SQL and reads the same structs through `sqlx::FromRow`.
 
+### `sqlx_type!` (`megh-derive/src/sqlx_type.rs`, `src/lib.rs`)
+
+A Rust type stored differently per database, written as plain `sqlx::Type` + `Encode` + `Decode`:
+
+```rust
+pub struct MyUuid(Uuid);
+
+megh::sqlx_type!(MyUuid, match driver {
+    Postgres => (
+        |value: &MyUuid| -> Uuid { value.0 },
+        |stored: Uuid| Ok(MyUuid(stored)),
+    ),
+    _ => (
+        |value: &MyUuid| -> String { value.0.to_string() },
+        |stored: String| Ok(MyUuid(stored.parse()?)),
+    ),
+});
+
+let found: MyUuid = sqlx::query_scalar("SELECT referrer FROM clients WHERE referrer = ?").bind(MyUuid(id)).fetch_one(&pool).await?;
+```
+
+- One arm per driver (`Postgres`, `Sqlite`); `_` is every driver not named. A driver whose megh feature is off gets no impls.
+- Each arm is two closures: write `&T -> Stored`, read `Stored -> Result<T, _>` (`?` converts any error). The stored type is the write's return type and the read's parameter type.
+- `megh::__sqlx` re-exports sqlx; `__if_postgres!` / `__if_sqlite!` keep or drop a driver's impls by megh's features.
+- Per arm the macro emits `Type<DB>` (the stored type's `type_info` and `compatible`), `Encode<DB>` (write, then the stored type's `Encode`), `Decode<DB>` (the stored type's `Decode`, then read). Nothing else.
+
 ### Tests
 
-`tests/column_test.rs` (mapping and macro metadata); `tests/client_crud_dual_db_test.rs` (every scenario on SQLite and PostgreSQL: create, get, replace, patch, soft and hard delete, validation, composite keys, generated id and system timestamps, uuid / decimal / float / int / bool / date / time / timestamp / list columns, a database enum named by sqlx annotations, a custom `Secret` stored encrypted, AIP-160 filter and `:`, pagination, `select`, audit policies and rollback, a caller's transaction); `tests/soft_delete_test.rs` (cascade, PostgreSQL); `tests/bytea_test.rs`.
+`tests/column_test.rs` (mapping and macro metadata); `tests/client_crud_dual_db_test.rs` (every scenario on SQLite and PostgreSQL: create, get, replace, patch, soft and hard delete, validation, composite keys, generated id and system timestamps, uuid / decimal / float / int / bool / date / time / timestamp / list columns, a database enum named by sqlx annotations, a custom `Secret` stored encrypted, AIP-160 filter and `:`, pagination, `select`, audit policies and rollback, a caller's transaction); `tests/soft_delete_test.rs` (cascade, PostgreSQL); `tests/bytea_test.rs`; `tests/sqlx_type_test.rs` (`_` arm on SQLite: type, write, read, read error; a named `Sqlite` arm; the `Postgres` arm).
 
 ---
 

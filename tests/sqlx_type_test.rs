@@ -86,3 +86,17 @@ async fn postgres_arm_stores_its_own_type(pool: sqlx::PgPool) {
     let read: (MyUuid, Celsius) = sqlx::query_as("SELECT id, heat FROM things").fetch_one(&pool).await.unwrap();
     assert_eq!((stored, read), ((id, 21.5), (MyUuid(id), Celsius(21.5))));
 }
+
+#[cfg(feature = "postgres")]
+#[sqlx::test(migrations = false)]
+async fn postgres_arm_binds_a_list_as_an_array(pool: sqlx::PgPool) {
+    sqlx::raw_sql("CREATE TABLE things (id uuid)").execute(&pool).await.unwrap();
+    let ids = [Uuid::now_v7(), Uuid::now_v7()];
+    sqlx::query("INSERT INTO things (id) VALUES ($1), ($2)").bind(ids[0]).bind(ids[1]).execute(&pool).await.unwrap();
+    let found: Vec<MyUuid> = sqlx::query_scalar("SELECT id FROM things WHERE id = ANY($1) ORDER BY id")
+        .bind(vec![MyUuid(ids[1])])
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(found, vec![MyUuid(ids[1])]);
+}

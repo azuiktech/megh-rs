@@ -19,7 +19,35 @@ pub use event::{
 pub use event::{events_router, events_router_with_csrf};
 
 pub use auth::entity::{ColumnMeta, JsonText, Table};
-pub use megh_derive::{entity, Column};
+pub use megh_derive::{entity, sqlx_type, Column};
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+#[doc(hidden)]
+pub use sqlx as __sqlx;
+
+#[cfg(feature = "postgres")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_postgres {
+    ($($item:item)*) => { $($item)* };
+}
+#[cfg(not(feature = "postgres"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_postgres {
+    ($($item:item)*) => {};
+}
+#[cfg(feature = "sqlite")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_sqlite {
+    ($($item:item)*) => { $($item)* };
+}
+#[cfg(not(feature = "sqlite"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_sqlite {
+    ($($item:item)*) => {};
+}
 #[cfg(feature = "axum")]
 #[doc(hidden)]
 pub use axum as __axum;

@@ -9,6 +9,9 @@ Format:
 - Description of what shipped (PR #NNN, issue #NNN)
 ```
 
+## 2026-11-24
+- `sqlx_type!`: a Rust type stored per database driver (`Postgres`, `Sqlite`, `_` for the rest) through a write and a read closure, expanded to plain `sqlx::Type`, `Encode` and `Decode` (PR #334, issue #333)
+
 ## 2026-11-19
 - Persistence on sea-query and sqlx for PostgreSQL and SQLite, one code path (`Backend` trait, `Column` trait, `#[entity]` and `#[derive(Column)]` macros, generic CRUD with AIP-158 / AIP-160, patch as a single `UPDATE`, audit per table or shared); every entity is one struct (no `*Data`, `Entity<ID, T>`, `Keyed`); `convert.rs`, `bytea.rs`, trigger audit and the `Table` derive removed (PR #262, issue #261)
 

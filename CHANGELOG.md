@@ -10,7 +10,7 @@ Format:
 ```
 
 ## 2026-11-26
-- PostgreSQL and SQLite, the driver chosen at runtime from the URL: `Db`/`Tx` with sqlx's `query`, `query_as`, `query_scalar` and a per-driver `.postgres(...)`/`.sqlite(...)` text where SQL differs; `Array<T>` for list fields through `#[sqlx(try_from)]`; migrations under `migrations/postgres` and `migrations/sqlite`; every test runs on both drivers; sea-query and `derive(Column)` removed (PR #NNN, issue #335)
+- PostgreSQL and SQLite, the driver chosen at runtime from the URL: `Db`/`Tx` with sqlx's `query`, `query_as`, `query_scalar` and a per-driver `.postgres(...)`/`.sqlite(...)` text where SQL differs; `Array<T>` for list fields through `#[sqlx(try_from)]`; migrations under `migrations/postgres` and `migrations/sqlite`; every test runs on both drivers; sea-query and `derive(Column)` removed (PR #336, issue #335)
 
 ## 2026-11-24
 - `sqlx_type!`: a Rust type stored per database driver (`Postgres`, `Sqlite`, `_` for the rest) through a write and a read closure, expanded to plain `sqlx::Type`, `Encode` and `Decode` (PR #334, issue #333)

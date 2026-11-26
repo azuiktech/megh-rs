@@ -19,7 +19,7 @@ use uuid::Uuid;
 const SECRET: &[u8] = b"csrf-bearer-test-secret-32-bytes!";
 
 fn app() -> Router {
-    let jwt = JwtSession::new(SECRET, Duration::from_secs(300), sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap());
+    let jwt = JwtSession::new(SECRET, Duration::from_secs(300), megh::Db::Postgres(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap()));
     Router::new()
         .route("/invoices", post(|| async { "ok" }))
         .layer(from_fn(megh::authorizer))

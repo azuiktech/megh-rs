@@ -1,6 +1,9 @@
 //! S6b (docs/TPD-billing.md section 7, #227): products and services have a current price and a unit; a ledger keeps
 //! every price with the time it took effect; a tenant's stock of a product is read only.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -9,20 +12,20 @@ use chrono::{DateTime, Duration, Utc};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id")
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id")
         .bind(name)
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
         Grant::new(format!("tenants:read:{tenant}")),
@@ -83,9 +86,8 @@ async fn ledger(app: &Router, tenant: Uuid, item: &str) -> Vec<(Value, Value)> {
         .collect()
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_product_has_a_current_price_and_a_unit(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_product_has_a_current_price_and_a_unit);
+async fn a_product_has_a_current_price_and_a_unit(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let app = app(pool.clone(), mine);
     let products = format!("/api/v1/tenants/{mine}/products");
@@ -164,9 +166,8 @@ async fn a_product_has_a_current_price_and_a_unit(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn the_ledger_keeps_every_price_with_when_it_took_effect(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(the_ledger_keeps_every_price_with_when_it_took_effect);
+async fn the_ledger_keeps_every_price_with_when_it_took_effect(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let app = app(pool, mine);
     let products = format!("/api/v1/tenants/{mine}/products");
@@ -256,9 +257,8 @@ async fn the_ledger_keeps_every_price_with_when_it_took_effect(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_service_has_a_current_price_and_a_unit(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_service_has_a_current_price_and_a_unit);
+async fn a_service_has_a_current_price_and_a_unit(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let app = app(pool.clone(), mine);
     let services = format!("/api/v1/tenants/{mine}/services");
@@ -299,9 +299,9 @@ async fn a_service_has_a_current_price_and_a_unit(pool: PgPool) {
         ]
     );
 
-    let existing: Uuid = sqlx::query_scalar(
+    let existing: Uuid = Db::query_scalar(
         r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, uuidv7(), 'Old', '[{"duration": "PT30M"}]') RETURNING id"#,
-    )
+    ).sqlite(r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), 'Old', '[{"duration": "PT30M"}]') RETURNING id"#,)
     .bind(mine)
     .fetch_one(&pool)
     .await
@@ -323,9 +323,8 @@ async fn a_service_has_a_current_price_and_a_unit(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn stock_is_read_only_and_a_tenant_may_stock_another_tenants_product(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(stock_is_read_only_and_a_tenant_may_stock_another_tenants_product);
+async fn stock_is_read_only_and_a_tenant_may_stock_another_tenants_product(pool: Db) {
     let brand = tenant(&pool, "Brand").await;
     let location = tenant(&pool, "Location").await;
     let (_, product) = call(
@@ -352,9 +351,9 @@ async fn stock_is_read_only_and_a_tenant_may_stock_another_tenants_product(pool:
         StatusCode::NOT_FOUND
     );
 
-    let stock_id: Uuid = sqlx::query_scalar(
+    let stock_id: Uuid = Db::query_scalar(
         "INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, uuidv7(), $2, 4) RETURNING id",
-    )
+    ).sqlite("INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, 4) RETURNING id",)
     .bind(location)
     .bind(product_id)
     .fetch_one(&pool)
@@ -388,9 +387,9 @@ async fn stock_is_read_only_and_a_tenant_may_stock_another_tenants_product(pool:
             "{method} {uri}: stock is read only"
         );
     }
-    let twice = sqlx::query(
+    let twice = Db::query(
         "INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, uuidv7(), $2, 1)",
-    )
+    ).sqlite("INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, 1)",)
     .bind(location)
     .bind(product_id)
     .execute(&pool)

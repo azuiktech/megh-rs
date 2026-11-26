@@ -1,6 +1,9 @@
 //! Messaging over the broker, between a client and a member of one tenant: `send(card, from, to)`,
 //! `send_event(signal, from, to)`, `on` and `on_event`, the one-time display configuration, and the browser's routes.
 
+#[macro_use]
+mod common;
+
 use std::time::Duration;
 
 use axum::body::Body;
@@ -12,13 +15,13 @@ use megh::auth::rest::AppContext;
 use megh::messaging::{Avatar, History, Icon, Message, Messaging, Notice, Party, ReadMark, Signal, Surface, TimeFormat};
 use megh::{Broker, Grant, HistoryOptions, HistoryProvider, Topic, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tokio::sync::mpsc::{UnboundedReceiver as Receiver, unbounded_channel as channel};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
 fn card(text: &str) -> Surface {
@@ -53,9 +56,8 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_member_sends_a_card_to_a_client_and_the_client_hears_it(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_member_sends_a_card_to_a_client_and_the_client_hears_it);
+async fn a_member_sends_a_card_to_a_client_and_the_client_hears_it(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await);
     let (agent, ann) = (Party::Member(Uuid::now_v7()), Party::Client(Uuid::now_v7()));
     let mut heard = messages(&messaging, ann);
@@ -70,9 +72,8 @@ async fn a_member_sends_a_card_to_a_client_and_the_client_hears_it(pool: PgPool)
     assert!(components(&got).iter().any(|c| c["text"] == "Do you want to book this appointment?"));
 }
 
-#[sqlx::test(migrations = false)]
-async fn the_member_hears_what_its_clients_send_but_not_its_own(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(the_member_hears_what_its_clients_send_but_not_its_own);
+async fn the_member_hears_what_its_clients_send_but_not_its_own(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await);
     let (agent, ann, bob) = (Party::Member(Uuid::now_v7()), Party::Client(Uuid::now_v7()), Party::Client(Uuid::now_v7()));
     let mut heard = messages(&messaging, agent);
@@ -87,18 +88,16 @@ async fn the_member_hears_what_its_clients_send_but_not_its_own(pool: PgPool) {
     nothing(&mut heard).await;
 }
 
-#[sqlx::test(migrations = false)]
-async fn messages_are_only_between_a_client_and_a_member(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(messages_are_only_between_a_client_and_a_member);
+async fn messages_are_only_between_a_client_and_a_member(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await);
     let (a, b) = (Party::Member(Uuid::now_v7()), Party::Member(Uuid::now_v7()));
     assert!(messaging.send(card("x"), a, b).await.is_err());
     assert!(messaging.send(card("x"), Party::Client(Uuid::now_v7()), Party::Client(Uuid::now_v7())).await.is_err());
 }
 
-#[sqlx::test(migrations = false)]
-async fn one_tenants_messages_do_not_reach_another(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(one_tenants_messages_do_not_reach_another);
+async fn one_tenants_messages_do_not_reach_another(pool: Db) {
     let broker = Broker::new();
     let salon = Messaging::new(pool.clone(), broker.clone(), tenant(&pool, "Salon").await);
     let spa = Messaging::new(pool.clone(), broker, tenant(&pool, "Spa").await);
@@ -111,9 +110,8 @@ async fn one_tenants_messages_do_not_reach_another(pool: PgPool) {
     nothing(&mut in_spa).await;
 }
 
-#[sqlx::test(migrations = false)]
-async fn typing_is_an_event_the_other_side_hears(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(typing_is_an_event_the_other_side_hears);
+async fn typing_is_an_event_the_other_side_hears(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await);
     let (agent, ann) = (Party::Member(Uuid::now_v7()), Party::Client(Uuid::now_v7()));
     let mut at_ann = notices(&messaging, ann);
@@ -128,9 +126,8 @@ async fn typing_is_an_event_the_other_side_hears(pool: PgPool) {
     nothing(&mut at_agent).await;
 }
 
-#[sqlx::test(migrations = false)]
-async fn avatar_timestamp_and_read_mark_are_set_once_and_frame_every_message(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(avatar_timestamp_and_read_mark_are_set_once_and_frame_every_message);
+async fn avatar_timestamp_and_read_mark_are_set_once_and_frame_every_message(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await)
         .with_avatar(|sender| Avatar::Image(format!("https://img.example.com/{sender}.png")))
         .with_timestamp(TimeFormat("%H:%M"))
@@ -148,18 +145,16 @@ async fn avatar_timestamp_and_read_mark_are_set_once_and_frame_every_message(poo
     assert_eq!(sent.body[0]["createSurface"]["dataModel"]["meta"]["mark"], "check");
 }
 
-#[sqlx::test(migrations = false)]
-async fn without_configuration_a_message_is_the_surface_alone(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(without_configuration_a_message_is_the_surface_alone);
+async fn without_configuration_a_message_is_the_surface_alone(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await);
     let sent = messaging.send(Surface::new().text("Hi"), Party::Member(Uuid::now_v7()), Party::Client(Uuid::now_v7())).await.unwrap();
     let all = components(&sent);
     assert_eq!(all.iter().map(|c| c["component"].clone()).collect::<Vec<_>>(), [json!("Column"), json!("Text")]);
 }
 
-#[sqlx::test(migrations = false)]
-async fn reading_turns_the_mark_to_read_for_the_sender_and_in_history(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(reading_turns_the_mark_to_read_for_the_sender_and_in_history);
+async fn reading_turns_the_mark_to_read_for_the_sender_and_in_history(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await)
         .with_read_mark(ReadMark { sent: Icon::name("check"), read: Icon::name("doneAll") });
     let (agent, ann) = (Party::Member(Uuid::now_v7()), Party::Client(Uuid::now_v7()));
@@ -173,13 +168,12 @@ async fn reading_turns_the_mark_to_read_for_the_sender_and_in_history(pool: PgPo
     assert_eq!(notice.signal, Signal::Read(sent.id));
     let surface_id = sent.body[0]["createSurface"]["surfaceId"].clone();
     assert_eq!(notice.updates, vec![json!({"version": "1.0", "updateDataModel": {"surfaceId": surface_id, "path": "/meta/mark", "value": "doneAll"}})]);
-    let stored = sqlx::query_scalar::<_, Value>("SELECT body FROM messages WHERE id = $1").bind(sent.id).fetch_one(&pool).await.unwrap();
+    let stored = Db::query_scalar::<Value>("SELECT body FROM messages WHERE id = $1").bind(sent.id).fetch_one(&pool).await.unwrap();
     assert_eq!(stored[0]["createSurface"]["dataModel"]["meta"]["mark"], "doneAll");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_reconnecting_browser_catches_up_from_the_database(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_reconnecting_browser_catches_up_from_the_database);
+async fn a_reconnecting_browser_catches_up_from_the_database(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let messaging = Messaging::new(pool.clone(), Broker::new(), salon);
     let (agent_id, ann_id) = (Uuid::now_v7(), Uuid::now_v7());
@@ -201,7 +195,7 @@ async fn a_reconnecting_browser_catches_up_from_the_database(pool: PgPool) {
     assert_eq!(history.fetch_history(&everyone, &HistoryOptions { since: None, limit: None }).await.unwrap().len(), 3);
 }
 
-fn app(pool: PgPool, broker: Broker, tenant: Uuid, client: Uuid) -> Router {
+fn app(pool: Db, broker: Broker, tenant: Uuid, client: Uuid) -> Router {
     let (api, _) = megh::messaging::router(1 << 20, "https://app.example.com/api/v1").split_for_parts();
     let grants = [format!("tenants:read:{tenant}"), "members:*".into(), "messages:*".into(), "events:*".into()].map(Grant::new).to_vec();
     let token = AccessToken { sub: client, iss: "megh".into(), aud: vec![tenant.to_string()], exp: u64::MAX, iat: 0, client_id: "megh".into(), scope: String::new() };
@@ -218,9 +212,8 @@ async fn post(app: &Router, uri: &str, body: Value) -> StatusCode {
     app.clone().oneshot(request.body(Body::from(body.to_string())).unwrap()).await.unwrap().status()
 }
 
-#[sqlx::test(migrations = false)]
-async fn the_browser_sends_answers_and_events_to_its_member(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(the_browser_sends_answers_and_events_to_its_member);
+async fn the_browser_sends_answers_and_events_to_its_member(pool: Db) {
     let (broker, salon, agent_id, ann_id) = (Broker::new(), tenant(&pool, "Salon").await, Uuid::now_v7(), Uuid::now_v7());
     let messaging = Messaging::new(pool.clone(), broker.clone(), salon);
     let (mut heard, mut noticed) = (messages(&messaging, Party::Member(agent_id)), notices(&messaging, Party::Member(agent_id)));
@@ -237,9 +230,8 @@ async fn the_browser_sends_answers_and_events_to_its_member(pool: PgPool) {
     assert_eq!(next(&mut noticed).await.signal, Signal::TypingOn);
 }
 
-#[sqlx::test(migrations = false)]
-async fn filled_data_and_the_read_mark_share_the_data_model_and_labels_show_in_the_frame(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(filled_data_and_the_read_mark_share_the_data_model_and_labels_show_in_the_frame);
+async fn filled_data_and_the_read_mark_share_the_data_model_and_labels_show_in_the_frame(pool: Db) {
     let messaging = Messaging::new(pool.clone(), Broker::new(), tenant(&pool, "Salon").await)
         .with_read_mark(ReadMark { sent: Icon::name("check"), read: Icon::name("doneAll") });
     let form = Surface::new().text("Your email?").filled(&json!({"email": "ada@example.com"})).labels(&["intake"]);

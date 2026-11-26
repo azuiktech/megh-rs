@@ -2,6 +2,9 @@
 //! route takes the account, not a token; another user's account is not found. Sending the revocation is the `oauth2`
 //! library's job and is not tested here.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{header, Request, Response, StatusCode};
 use axum::routing::{get, post};
@@ -9,7 +12,7 @@ use axum::{Json, Router};
 use megh::auth::http::{auth_router, MeghAuthState};
 use megh::auth::OAuthProviderConfig;
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
@@ -21,7 +24,7 @@ async fn userinfo() -> Json<Value> {
     Json(json!({"sub": "1", "email": "ann@example.com", "email_verified": true, "name": "Ann"}))
 }
 
-async fn fixture(pool: PgPool) -> Router {
+async fn fixture(pool: Db) -> Router {
     let routes = Router::new().route("/token", post(token)).route("/userinfo", get(userinfo));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -66,11 +69,11 @@ async fn post_revoke(app: &Router, cookie: &str, body: Value) -> StatusCode {
     app.clone().oneshot(request).await.unwrap().status()
 }
 
-#[sqlx::test]
-async fn only_your_own_account_is_revoked(pool: PgPool) {
+dual!(only_your_own_account_is_revoked);
+async fn only_your_own_account_is_revoked(pool: Db) {
     let app = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
-    sqlx::query("INSERT INTO connected_accounts (account_id, provider, email, access_token) VALUES ('9', 'stub', 'bob@example.com', 'bob-token')")
+    Db::query("INSERT INTO connected_accounts (account_id, provider, email, access_token) VALUES ('9', 'stub', 'bob@example.com', 'bob-token')")
         .execute(&pool)
         .await
         .unwrap();

@@ -6,7 +6,7 @@ use tower_http::csrf::CsrfLayer;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
 fn state() -> MeghAuthState {
-    MeghAuthState::new(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap())
+    MeghAuthState::new(megh::Db::Postgres(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap()))
 }
 
 fn session_layer() -> SessionManagerLayer<MemoryStore> {

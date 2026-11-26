@@ -2,6 +2,9 @@
 //! product lines leave the tenant's stock (receivable) or enter it (payable); a full refund, a failure or a void undoes
 //! that. Selling more than is held is a 409.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -10,25 +13,25 @@ use megh::auth::rest::AppContext;
 use megh::billing::ids::{Formats, Middle, Numbering};
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
 
 const HUNDRED: i64 = 100_000_000;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id")
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id")
         .bind(name)
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-async fn product(pool: &PgPool, tenant: Uuid, sku: &str) -> Uuid {
-    sqlx::query_scalar(
+async fn product(pool: &Db, tenant: Uuid, sku: &str) -> Uuid {
+    Db::query_scalar(
         "INSERT INTO products (tenant_id, id, sku, name, unit, price, currency) VALUES ($1, uuidv7(), $2, $2, 'tube', 12000000, 'USD') RETURNING id",
-    )
+    ).sqlite("INSERT INTO products (tenant_id, id, sku, name, unit, price, currency) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, $2, 'tube', 12000000, 'USD') RETURNING id",)
     .bind(tenant)
     .bind(sku)
     .fetch_one(pool)
@@ -36,10 +39,10 @@ async fn product(pool: &PgPool, tenant: Uuid, sku: &str) -> Uuid {
     .unwrap()
 }
 
-async fn hold(pool: &PgPool, tenant: Uuid, product: Uuid, on_hand: i32) {
-    sqlx::query(
+async fn hold(pool: &Db, tenant: Uuid, product: Uuid, on_hand: i32) {
+    Db::query(
         "INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, uuidv7(), $2, $3)",
-    )
+    ).sqlite("INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, $3)",)
     .bind(tenant)
     .bind(product)
     .bind(on_hand)
@@ -48,8 +51,8 @@ async fn hold(pool: &PgPool, tenant: Uuid, product: Uuid, on_hand: i32) {
     .unwrap();
 }
 
-async fn on_hand(pool: &PgPool, tenant: Uuid, product: Uuid) -> Option<String> {
-    sqlx::query_scalar("SELECT on_hand::text FROM stocks WHERE tenant_id = $1 AND product_id = $2")
+async fn on_hand(pool: &Db, tenant: Uuid, product: Uuid) -> Option<String> {
+    Db::query_scalar("SELECT on_hand::text FROM stocks WHERE tenant_id = $1 AND product_id = $2").sqlite("SELECT on_hand FROM stocks WHERE tenant_id = $1 AND product_id = $2")
         .bind(tenant)
         .bind(product)
         .fetch_optional(pool)
@@ -58,21 +61,23 @@ async fn on_hand(pool: &PgPool, tenant: Uuid, product: Uuid) -> Option<String> {
 }
 
 /// An open invoice of 100.00 with one line of `quantity` of the product.
-async fn invoice(pool: &PgPool, tenant: Uuid, kind: &str, product: Uuid, quantity: i32) -> Uuid {
-    let id: Uuid = sqlx::query_scalar(
+async fn invoice(pool: &Db, tenant: Uuid, kind: &str, product: Uuid, quantity: i32) -> Uuid {
+    let id: Uuid = Db::query_scalar(
         "INSERT INTO billing_invoices (tenant_id, id, party_id, party_kind, kind, number, status, date, due_date, currency, total, balance_due)
          VALUES ($1, uuidv7(), $1, 'tenant', $2, uuidv7()::text, 'open', '2026-10-27', '2026-11-26', 'USD', $3, $3) RETURNING id",
-    )
+    ).sqlite("INSERT INTO billing_invoices (tenant_id, id, party_id, party_kind, kind, number, status, date, due_date, currency, total, balance_due)
+         VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $1, 'tenant', $2, lower(hex((unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))))), 'open', '2026-10-27', '2026-11-26', 'USD', $3, $3) RETURNING id",)
     .bind(tenant)
     .bind(kind)
     .bind(HUNDRED)
     .fetch_one(pool)
     .await
     .unwrap();
-    sqlx::query(
+    Db::query(
         "INSERT INTO billing_invoice_lines (tenant_id, id, invoice_id, position, product_id, description, quantity, unit_price)
          VALUES ($1, uuidv7(), $2, 1, $3, 'Hair colour', $4, 12000000)",
-    )
+    ).sqlite("INSERT INTO billing_invoice_lines (tenant_id, id, invoice_id, position, product_id, description, quantity, unit_price)
+         VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, 1, $3, 'Hair colour', $4, 12000000)",)
     .bind(tenant)
     .bind(id)
     .bind(product)
@@ -83,7 +88,7 @@ async fn invoice(pool: &PgPool, tenant: Uuid, kind: &str, product: Uuid, quantit
     id
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let formats = Formats::new(
         Numbering::new("INV", "-", Middle::Year, 4).unwrap(),
         Numbering::new("PAY", "-", Middle::None, 4).unwrap(),
@@ -125,9 +130,8 @@ fn pay(invoice: Uuid, status: &str) -> Value {
     json!({"invoice_id": invoice, "date": "2026-10-27", "amount": HUNDRED, "method": "card", "status": status})
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_paid_sale_takes_its_products_from_stock_until_undone(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_paid_sale_takes_its_products_from_stock_until_undone);
+async fn a_paid_sale_takes_its_products_from_stock_until_undone(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let colour = product(&pool, mine, "WEL-60").await;
     hold(&pool, mine, colour, 4).await;
@@ -213,9 +217,8 @@ async fn a_paid_sale_takes_its_products_from_stock_until_undone(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn selling_more_than_is_held_is_refused(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(selling_more_than_is_held_is_refused);
+async fn selling_more_than_is_held_is_refused(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let colour = product(&pool, mine, "WEL-60").await;
     let gloves = product(&pool, mine, "GLV").await;
@@ -244,9 +247,8 @@ async fn selling_more_than_is_held_is_refused(pool: PgPool) {
     assert_eq!(on_hand(&pool, mine, gloves).await, None);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_paid_bill_adds_its_products_to_stock(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_paid_bill_adds_its_products_to_stock);
+async fn a_paid_bill_adds_its_products_to_stock(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let brand = tenant(&pool, "Brand").await;
     let colour = product(&pool, brand, "WEL-60").await;

@@ -10,6 +10,8 @@ pub struct ParsedColumn {
     pub ty: syn::Type,
     pub name: String,
     pub is_json: bool,
+    /// `#[sqlx(try_from = "Stored")]`: the type the column is read as, and written as through `From`.
+    pub stored: Option<syn::Type>,
 }
 
 /// The `sqlx(...)` attributes among `attrs`, also those written `cfg_attr(condition, sqlx(...))`, which a macro on the
@@ -61,12 +63,13 @@ pub fn is_flattened(field: &Field) -> bool {
 /// The column of a field; `None` for a field with `#[sqlx(skip)]`.
 pub fn parse_field(field: &Field, rename_all: Option<&str>) -> syn::Result<Option<ParsedColumn>> {
     let ident = field.ident.clone().unwrap();
-    let (mut name, mut skip, mut is_json) = (None, false, false);
+    let (mut name, mut skip, mut is_json, mut stored) = (None, false, false, None);
     sqlx_attrs(&field.attrs).iter().try_for_each(|attr| {
         attr.parse_nested_meta(|meta| {
             match meta.path.get_ident().map(|ident| ident.to_string()).as_deref() {
                 Some("skip") => skip = true,
                 Some("rename") => name = Some(meta.value()?.parse::<LitStr>()?.value()),
+                Some("try_from") => stored = Some(meta.value()?.parse::<LitStr>()?.parse::<syn::Type>()?),
                 Some("json") => {
                     is_json = true;
                     if meta.input.peek(syn::token::Paren) {
@@ -80,7 +83,7 @@ pub fn parse_field(field: &Field, rename_all: Option<&str>) -> syn::Result<Optio
         })
     })?;
     let name = name.unwrap_or_else(|| apply_rename_all(&ident.to_string(), rename_all));
-    Ok((!skip).then(|| ParsedColumn { ident, ty: field.ty.clone(), name, is_json }))
+    Ok((!skip).then(|| ParsedColumn { ident, ty: field.ty.clone(), name, is_json, stored }))
 }
 
 /// The name of the crate the generated code refers to: `crate` inside megh, `::megh` outside.

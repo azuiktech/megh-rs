@@ -1,5 +1,8 @@
 use megh::{UpsertUserInput, UserRepo};
-use sqlx::PgPool;
+#[macro_use]
+mod common;
+
+use megh::Db;
 
 fn login(provider: &str, account_id: &str) -> UpsertUserInput {
     UpsertUserInput {
@@ -11,9 +14,9 @@ fn login(provider: &str, account_id: &str) -> UpsertUserInput {
     }
 }
 
-#[sqlx::test]
-async fn users_columns_match_megh_go(pool: PgPool) {
-    let text_columns: Vec<String> = sqlx::query_scalar(
+postgres!(users_columns_match_megh_go);
+async fn users_columns_match_megh_go(pool: Db) {
+    let text_columns: Vec<String> = Db::query_scalar(
         "SELECT column_name FROM information_schema.columns
          WHERE table_name = 'users' AND data_type = 'text' ORDER BY column_name",
     )
@@ -22,15 +25,15 @@ async fn users_columns_match_megh_go(pool: PgPool) {
     .unwrap();
 
     assert_eq!(text_columns, ["account_id", "password_hash", "provider"]);
-    let email: String = sqlx::query_scalar("SELECT udt_name::text FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email'")
+    let email: String = Db::query_scalar("SELECT udt_name::text FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email'").sqlite("SELECT udt_name FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'email'")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(email, "citext", "emails compare without case");
 }
 
-#[sqlx::test]
-async fn one_user_per_email_across_providers_keeps_first_identity(pool: PgPool) {
+dual!(one_user_per_email_across_providers_keeps_first_identity);
+async fn one_user_per_email_across_providers_keeps_first_identity(pool: Db) {
     let users = UserRepo::new(&pool);
 
     let google = users.upsert(&login("google", "g-1")).await.unwrap();
@@ -41,8 +44,8 @@ async fn one_user_per_email_across_providers_keeps_first_identity(pool: PgPool) 
     assert_eq!(github.account_id.as_deref(), Some("g-1"));
 }
 
-#[sqlx::test]
-async fn find_by_account_returns_the_user(pool: PgPool) {
+dual!(find_by_account_returns_the_user);
+async fn find_by_account_returns_the_user(pool: Db) {
     let users = UserRepo::new(&pool);
     let created = users.upsert(&login("google", "g-1")).await.unwrap();
 

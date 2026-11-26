@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
-use sqlx::PgExecutor;
+use crate::{Db, On};
 use uuid::Uuid;
 use validator::Validate;
 
@@ -24,7 +24,6 @@ use crate::auth::rest::{ApiError, ApiResult, AppContext, Changes, Input, Key, Li
 use crate::booking::value::{Address, Attributes, Name};
 
 /// HubSpot's `hs_invoice_status` without `paid`, which follows from the amounts.
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -35,7 +34,6 @@ pub enum InvoiceStatus {
 }
 
 /// Which way the money goes: to the tenant (receivable) or from it (payable, Xero's `ACCPAY`).
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -46,7 +44,6 @@ pub enum InvoiceKind {
 }
 
 /// What `party_id` names.
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -113,11 +110,11 @@ fn check(invoice: &Invoice) -> ApiResult<()> {
 }
 
 /// The party must be a client of the tenant or a tenant (400 otherwise).
-async fn ensure_party<'e>(db: impl PgExecutor<'e>, invoice: &Invoice) -> ApiResult<()> {
+async fn ensure_party(db: impl Into<On<'_>>, invoice: &Invoice) -> ApiResult<()> {
     let query = "SELECT CASE WHEN $3 = 'client' \
                  THEN EXISTS (SELECT 1 FROM clients WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL) \
                  ELSE EXISTS (SELECT 1 FROM tenants WHERE id = $2) END";
-    let found: bool = sqlx::query_scalar(query)
+    let found: bool = Db::query_scalar(query)
         .bind(invoice.tenant_id)
         .bind(invoice.party_id)
         .bind(invoice.party_kind)
@@ -227,8 +224,8 @@ async fn replace(State(ctx): State<AppContext>, Input(body): Input<Invoice>) -> 
     let mut transaction = ctx.pool.begin().await?;
     ensure_draft::<Invoice>(&mut transaction, body.tenant_id, body.id, Lock::Update).await?;
     check(&body)?;
-    ensure_party(&mut *transaction, &body).await?;
-    let replaced = crud::replace(&mut *transaction, body, None).await?;
+    ensure_party(&mut transaction, &body).await?;
+    let replaced = crud::replace(&mut transaction, body, None).await?;
     transaction.commit().await?;
     Ok(replaced)
 }
@@ -246,7 +243,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     let mut transaction = ctx.pool.begin().await?;
     ensure_draft::<Invoice>(&mut transaction, body.key.tenant_id, body.key.id, Lock::Update).await?;
     refuse_changes(&body, &["status", "kind", "party_id", "party_kind", "number"])?;
-    let patched = crud::patch(&mut *transaction, body, None).await?;
+    let patched = crud::patch(&mut transaction, body, None).await?;
     transaction.commit().await?;
     Ok(patched)
 }
@@ -261,7 +258,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Invoice> {
     let mut transaction = ctx.pool.begin().await?;
     ensure_draft::<Invoice>(&mut transaction, key.tenant_id, key.id, Lock::Update).await?;
-    let deleted = crud::delete(&mut *transaction, &key, None).await?;
+    let deleted = crud::delete(&mut transaction, &key, None).await?;
     transaction.commit().await?;
     Ok(deleted)
 }

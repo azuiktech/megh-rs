@@ -1,19 +1,22 @@
 //! Specification (issue #238): the app's `Lifecycle` function runs after each tenant, member or subscription change
 //! megh commits, with megh's pool and the change. A failing function's error is the call's; the change stays committed.
 
+#[macro_use]
+mod common;
+
 use std::future::Future;
 use std::pin::Pin;
 
 use chrono::Duration;
 use megh::billing::{AddOn, AddOnType, BillingError, BillingInterval, CancelWhen, Plan, PlanPrice, Subscriptions};
 use megh::{Change, JsonText, LifecycleError, TenantError, Tenants, UserRepo};
-use sqlx::PgPool;
+use megh::Db;
 use uuid::Uuid;
 
 type Done = Pin<Box<dyn Future<Output = Result<(), LifecycleError>> + Send>>;
 
 /// The function under test: records which change it was given, and for which tenant, in `seen`.
-fn record(pool: PgPool, change: Change) -> Done {
+fn record(pool: Db, change: Change) -> Done {
     let (kind, tenant_id) = match change {
         Change::TenantCreated(tenant) => ("tenant created", tenant.id),
         Change::MemberAdded(member) => ("member added", member.tenant_id),
@@ -23,30 +26,30 @@ fn record(pool: PgPool, change: Change) -> Done {
         _ => ("other", Uuid::nil()),
     };
     Box::pin(async move {
-        sqlx::query("INSERT INTO seen (kind, tenant_id) VALUES ($1, $2)").bind(kind).bind(tenant_id).execute(&pool).await?;
+        Db::query("INSERT INTO seen (kind, tenant_id) VALUES ($1, $2)").bind(kind).bind(tenant_id).execute(&pool).await?;
         Ok(())
     })
 }
 
-fn refuse(_: PgPool, _: Change) -> Done {
+fn refuse(_: Db, _: Change) -> Done {
     Box::pin(async { Err("refused".into()) })
 }
 
-async fn seen_table(pool: &PgPool) {
-    sqlx::query("CREATE TABLE seen (at SERIAL, kind TEXT NOT NULL, tenant_id UUID NOT NULL)").execute(pool).await.unwrap();
+async fn seen_table(pool: &Db) {
+    Db::query("CREATE TABLE seen (at SERIAL, kind TEXT NOT NULL, tenant_id UUID NOT NULL)").execute(pool).await.unwrap();
 }
 
-async fn seen(pool: &PgPool) -> Vec<(String, Uuid)> {
-    sqlx::query_as("SELECT kind, tenant_id FROM seen ORDER BY at").fetch_all(pool).await.unwrap()
+async fn seen(pool: &Db) -> Vec<(String, Uuid)> {
+    Db::query_as("SELECT kind, tenant_id FROM seen ORDER BY at").fetch_all(pool).await.unwrap()
 }
 
-async fn user(pool: &PgPool) -> Uuid {
+async fn user(pool: &Db) -> Uuid {
     let email = format!("{}@example.com", Uuid::now_v7());
-    sqlx::query_scalar("INSERT INTO users (provider, account_id, email) VALUES ('test', $1, $1) RETURNING id").bind(email).fetch_one(pool).await.unwrap()
+    Db::query_scalar("INSERT INTO users (provider, account_id, email) VALUES ('test', $1, $1) RETURNING id").bind(email).fetch_one(pool).await.unwrap()
 }
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(pool).await.unwrap()
 }
 
 async fn price(billing: &Subscriptions) -> PlanPrice {
@@ -75,8 +78,8 @@ async fn add_on(billing: &Subscriptions) -> AddOn {
     billing.create_add_on(&add_on).await.unwrap()
 }
 
-#[sqlx::test]
-async fn creating_a_tenant_runs_the_function_with_the_created_tenant(pool: PgPool) {
+dual!(creating_a_tenant_runs_the_function_with_the_created_tenant);
+async fn creating_a_tenant_runs_the_function_with_the_created_tenant(pool: Db) {
     seen_table(&pool).await;
     let owner = user(&pool).await;
 
@@ -85,26 +88,26 @@ async fn creating_a_tenant_runs_the_function_with_the_created_tenant(pool: PgPoo
     assert_eq!(seen(&pool).await, [("tenant created".to_string(), tenant.id)]);
 }
 
-#[sqlx::test]
-async fn a_failing_function_fails_the_create_and_the_tenant_stays(pool: PgPool) {
+dual!(a_failing_function_fails_the_create_and_the_tenant_stays);
+async fn a_failing_function_fails_the_create_and_the_tenant_stays(pool: Db) {
     let owner = user(&pool).await;
 
     let result = Tenants::new(pool.clone()).with_lifecycle(Some(refuse)).create("Acme", owner).await;
 
     assert!(matches!(result, Err(TenantError::Lifecycle(_))), "{result:?}");
-    let tenants: i64 = sqlx::query_scalar("SELECT count(*) FROM tenants WHERE created_by = $1").bind(owner).fetch_one(&pool).await.unwrap();
+    let tenants: i64 = Db::query_scalar("SELECT count(*) FROM tenants WHERE created_by = $1").bind(owner).fetch_one(&pool).await.unwrap();
     assert_eq!(tenants, 1);
 }
 
-#[sqlx::test]
-async fn without_a_function_a_change_runs_nothing(pool: PgPool) {
+dual!(without_a_function_a_change_runs_nothing);
+async fn without_a_function_a_change_runs_nothing(pool: Db) {
     let owner = user(&pool).await;
 
     assert!(Tenants::new(pool.clone()).create("Acme", owner).await.is_ok());
 }
 
-#[sqlx::test]
-async fn registering_a_machine_runs_the_function_with_its_membership(pool: PgPool) {
+dual!(registering_a_machine_runs_the_function_with_its_membership);
+async fn registering_a_machine_runs_the_function_with_its_membership(pool: Db) {
     seen_table(&pool).await;
     let tenant = tenant(&pool).await;
 
@@ -113,8 +116,8 @@ async fn registering_a_machine_runs_the_function_with_its_membership(pool: PgPoo
     assert_eq!(seen(&pool).await, [("member added".to_string(), tenant)]);
 }
 
-#[sqlx::test]
-async fn subscribing_changing_seats_and_cancelling_run_the_function_in_turn(pool: PgPool) {
+dual!(subscribing_changing_seats_and_cancelling_run_the_function_in_turn);
+async fn subscribing_changing_seats_and_cancelling_run_the_function_in_turn(pool: Db) {
     seen_table(&pool).await;
     let tenant = tenant(&pool).await;
     let billing = Subscriptions::new(pool.clone()).with_lifecycle(Some(record));
@@ -128,8 +131,8 @@ async fn subscribing_changing_seats_and_cancelling_run_the_function_in_turn(pool
     assert_eq!(kinds, ["subscribed", "subscription changed", "subscription cancelled"]);
 }
 
-#[sqlx::test]
-async fn attaching_and_detaching_an_add_on_change_the_subscription(pool: PgPool) {
+dual!(attaching_and_detaching_an_add_on_change_the_subscription);
+async fn attaching_and_detaching_an_add_on_change_the_subscription(pool: Db) {
     seen_table(&pool).await;
     let tenant = tenant(&pool).await;
     let quiet = Subscriptions::new(pool.clone());
@@ -143,8 +146,8 @@ async fn attaching_and_detaching_an_add_on_change_the_subscription(pool: PgPool)
     assert_eq!(seen(&pool).await, [("subscription changed".to_string(), tenant), ("subscription changed".to_string(), tenant)]);
 }
 
-#[sqlx::test]
-async fn a_failing_function_fails_the_subscription_change_and_the_change_stays(pool: PgPool) {
+dual!(a_failing_function_fails_the_subscription_change_and_the_change_stays);
+async fn a_failing_function_fails_the_subscription_change_and_the_change_stays(pool: Db) {
     let tenant = tenant(&pool).await;
     let quiet = Subscriptions::new(pool.clone());
     let price = price(&quiet).await;

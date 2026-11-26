@@ -2,6 +2,14 @@
 //! the transaction of the change. The tables come from migration 0002 (the shared `audit_entries`, and `<table>_audit`
 //! shaped like it).
 
+use chrono::Utc;
+use serde::Serialize;
+use uuid::Uuid;
+
+use crate::auth::db::Tx;
+use crate::auth::entity::Table;
+use crate::Db;
+
 /// Where a table's changes are recorded; `Disabled` writes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditPolicy {
@@ -26,34 +34,23 @@ impl AuditPolicy {
 }
 
 /// Writes the change of one row, in the transaction of the change, as the entity's policy says.
-pub(crate) async fn record<T: crate::Table + serde::Serialize, DB: crate::auth::db::Backend>(
-    tx: &mut sqlx::Transaction<'_, DB>,
-    action: &str,
-    actor: Option<&str>,
-    old: Option<&T>,
-    new: Option<&T>,
-) -> Result<(), sqlx::Error> {
-    use sea_query::{Alias, Expr, Query};
-
+pub(crate) async fn record<T: Table + Serialize>(tx: &mut Tx, action: &str, actor: Option<&str>, old: Option<&T>, new: Option<&T>) -> Result<(), sqlx::Error> {
     let Some(table) = T::AUDIT.table(T::TABLE_NAME) else { return Ok(()) };
-    let snapshot = |entity: Option<&T>| entity.and_then(|entity| serde_json::to_string(entity).ok());
-    let last = T::PRIMARY_KEY.last();
-    let id = old.or(new).and_then(|entity| entity.values().into_iter().find(|(name, _)| Some(name) == last));
-    let record_id = id.and_then(|(_, value)| <uuid::Uuid as crate::auth::column::Column>::from_value(value).ok()).map(|id| id.to_string());
-    let columns = ["id", "table_name", "record_id", "action", "actor_id", "old_data", "new_data", "created_at"];
-    let insert = Query::insert()
-        .into_table(Alias::new(table))
-        .columns(columns.map(Alias::new))
-        .values_panic([
-            Expr::val(uuid::Uuid::now_v7()).into(),
-            Expr::val(T::TABLE_NAME).into(),
-            Expr::val(record_id).into(),
-            Expr::val(action).into(),
-            Expr::val(actor).into(),
-            Expr::val(snapshot(old)).into(),
-            Expr::val(snapshot(new)).into(),
-            DB::now(),
-        ])
-        .to_owned();
-    DB::execute(&mut *tx, DB::build(&insert)).await.map(drop)
+    let snapshot = |entity: Option<&T>| entity.and_then(|entity| serde_json::to_value(entity).ok());
+    let (old, new) = (snapshot(old), snapshot(new));
+    let last = T::PRIMARY_KEY.last().copied().unwrap_or_default();
+    let record_id = old.as_ref().or(new.as_ref()).and_then(|row| row.get(last)).map(|id| id.as_str().map_or_else(|| id.to_string(), str::to_owned));
+    let insert = format!("INSERT INTO \"{table}\" (id, table_name, record_id, action, actor_id, old_data, new_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    Db::query(insert)
+        .bind(Uuid::now_v7())
+        .bind(T::TABLE_NAME.to_owned())
+        .bind(record_id)
+        .bind(action.to_owned())
+        .bind(actor.map(str::to_owned))
+        .bind(old.map(|row| row.to_string()))
+        .bind(new.map(|row| row.to_string()))
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await
+        .map(drop)
 }

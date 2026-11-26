@@ -7,12 +7,14 @@ use axum::extract::State;
 use axum::routing::post;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgConnection, PgPool};
+use crate::{Db, Tx};
 use sqlx::types::Json;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use uuid::Uuid;
+
+use crate::Array;
 use validator::{Validate, ValidationError};
 
 use super::availability::fit;
@@ -34,7 +36,6 @@ pub struct Payment {
     pub attributes: Attributes,
 }
 
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -57,6 +58,7 @@ pub struct Appointment {
     pub service_id: Uuid,
     pub resource_id: Uuid,
     #[serde(default)]
+    #[sqlx(try_from = "Array<Uuid>")]
     pub provider_ids: Vec<Uuid>,
     /// The client's time; the service's setup and cleanup are outside it.
     pub starts_at: DateTime<Utc>,
@@ -195,7 +197,7 @@ async fn create(State(ctx): State<AppContext>, Input(booking): Input<Booking>) -
     if let Some(hold) = booking.reservation_id {
         claim(&mut transaction, data.tenant_id, hold, &places).await?;
     }
-    let saved = crud::create(&mut *transaction, Appointment { booked_at: Utc::now(), ..data }, None).await?;
+    let saved = crud::create(&mut transaction, Appointment { booked_at: Utc::now(), ..data }, None).await?;
     take(&mut transaction, saved.tenant_id, saved.id, &places, None).await?;
     transaction.commit().await?;
     Ok(saved)
@@ -239,7 +241,7 @@ async fn patch(
 }
 
 /// Products a PATCH sets must be on hand.
-async fn ensure_products(pool: &PgPool, body: &Changes) -> ApiResult<()> {
+async fn ensure_products(pool: &Db, body: &Changes) -> ApiResult<()> {
     let used: Vec<Used> = body
         .changes
         .get("products")
@@ -248,16 +250,16 @@ async fn ensure_products(pool: &PgPool, body: &Changes) -> ApiResult<()> {
         .transpose()
         .map_err(|error| ApiError::BadRequest(error.to_string()))?
         .unwrap_or_default();
-    ensure_on_hand(&mut *pool.acquire().await?, body.key.tenant_id, &used).await
+    ensure_on_hand(&mut pool.begin().await?, body.key.tenant_id, &used).await
 }
 
 /// A move: under the booking lock, the changed appointment must pass the booking check for its status,
 /// leaving out its own time; its reservations are written again.
-async fn move_to(pool: &PgPool, body: Changes) -> ApiResult<Appointment> {
+async fn move_to(pool: &Db, body: Changes) -> ApiResult<Appointment> {
     let (tenant_id, id) = (body.key.tenant_id, body.key.id);
     let mut transaction = pool.begin().await?;
     lock(&mut transaction, tenant_id).await?;
-    let moved: Appointment = crud::patch(&mut *transaction, body, None).await?;
+    let moved: Appointment = crud::patch(&mut transaction, body, None).await?;
     [Status::Waitlist, Status::Booked, Status::Confirmed]
         .contains(&moved.status)
         .then_some(())
@@ -302,31 +304,37 @@ async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiRes
 async fn act(State(ctx): State<AppContext>, Input(action): Input<Action>) -> ApiResult<Appointment> {
     match action.verb {
         Verb::Book => book(&ctx.pool, &action).await,
-        _ => change_status(&mut *ctx.pool.acquire().await?, &action.key, action.verb.transition(), action.payment.as_ref()).await,
+        _ => {
+            let mut transaction = ctx.pool.begin().await?;
+            let changed = change_status(&mut transaction, &action.key, action.verb.transition(), action.payment.as_ref()).await?;
+            transaction.commit().await?;
+            Ok(changed)
+        }
     }
 }
 
 /// Waitlist to booked, under the booking lock, only when the booking check finds a free place for the
 /// appointment's time, leaving out the appointment's own time.
-async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
+async fn book(pool: &Db, action: &Action) -> ApiResult<Appointment> {
     let mut transaction = pool.begin().await?;
     lock(&mut transaction, action.key.tenant_id).await?;
-    let waiting: Option<Appointment> = sqlx::query_as(
+    let waiting: Option<Appointment> = Db::query_as(
         "SELECT * FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'waitlist' FOR UPDATE",
     )
+    .sqlite("SELECT * FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'waitlist'")
     .bind(action.key.tenant_id)
     .bind(action.key.id)
-    .fetch_optional(&mut *transaction)
+    .fetch_optional(&mut transaction)
     .await?;
     if let Some(waiting) = waiting {
         let booked = Appointment { status: Status::Booked, ..waiting };
         fit(&mut transaction, &booked, Some(waiting.id)).await?;
     }
     let booked = change_status(&mut transaction, &action.key, action.verb.transition(), action.payment.as_ref()).await?;
-    sqlx::query("UPDATE reservations SET waitlist = false WHERE tenant_id = $1 AND owner_id = $2")
+    Db::query("UPDATE reservations SET waitlist = false WHERE tenant_id = $1 AND owner_id = $2")
         .bind(action.key.tenant_id)
         .bind(action.key.id)
-        .execute(&mut *transaction)
+        .execute(&mut transaction)
         .await?;
     transaction.commit().await?;
     Ok(booked)
@@ -334,20 +342,24 @@ async fn book(pool: &PgPool, action: &Action) -> ApiResult<Appointment> {
 
 /// One guarded UPDATE, so of two requests at once only one can move the status.
 async fn change_status(
-    conn: &mut PgConnection,
+    conn: &mut Tx,
     key: &Key,
     (to, from): Transition,
     payment: Option<&Payment>,
 ) -> ApiResult<Appointment> {
-    let changed = sqlx::query_as(
+    let changed = Db::query_as(
         "UPDATE appointments SET status = $3, payment = COALESCE($4, payment), updated_at = now() \
          WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status = ANY($5) RETURNING *",
     )
+    .sqlite(concat!(
+        "UPDATE appointments SET status = $3, payment = COALESCE($4, payment), updated_at = ", crate::sqlite_now!(), " \
+         WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL AND status IN (SELECT value FROM json_each($5)) RETURNING *",
+    ))
     .bind(key.tenant_id)
     .bind(key.id)
     .bind(to)
     .bind(payment.map(Json))
-    .bind(from)
+    .bind(Array(from.to_vec()))
     .fetch_optional(&mut *conn)
     .await?;
     match changed {
@@ -357,9 +369,9 @@ async fn change_status(
 }
 
 /// Why a status change matched no row: the appointment is missing, or its status cannot move to `to`.
-async fn refusal(conn: &mut PgConnection, key: &Key, to: Status) -> ApiError {
+async fn refusal(conn: &mut Tx, key: &Key, to: Status) -> ApiError {
     let current: Result<Option<Status>, sqlx::Error> =
-        sqlx::query_scalar("SELECT status FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL")
+        Db::query_scalar("SELECT status FROM appointments WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL")
             .bind(key.tenant_id)
             .bind(key.id)
             .fetch_optional(conn)

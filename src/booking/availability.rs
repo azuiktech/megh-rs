@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::iter::{once, successors};
-use std::ops::Bound;
 
 use axum::extract::State;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime, SecondsFormat, TimeDelta, TimeZone, Utc};
@@ -13,8 +12,7 @@ use itertools::Itertools;
 use rrule::{RRuleSet, Tz};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sqlx::PgConnection;
-use sqlx::postgres::types::PgRange;
+use crate::{Array, Db, Tx};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -201,7 +199,7 @@ struct Fit {
 
 impl Calendar {
     /// `except` leaves one appointment's time out, for booking it again.
-    async fn load(conn: &mut PgConnection, request: &Availability, window: Span, except: Option<Uuid>) -> ApiResult<Self> {
+    async fn load(conn: &mut Tx, request: &Availability, window: Span, except: Option<Uuid>) -> ApiResult<Self> {
         let horizon = (window.0 - TimeDelta::days(1), window.1 + TimeDelta::days(1));
         let services: Vec<Uuid> = request.parties.iter().map(|party| party.service_id).unique().collect();
         let plans: HashMap<Uuid, Plan> = services_of(conn, request.tenant_id, &services)
@@ -505,7 +503,7 @@ async fn search(State(ctx): State<AppContext>, Input(request): Input<Availabilit
     let (start, to) = (page_start(&request)?, request.to.to_utc());
     let span_end = (start + PAGE_SPAN).min(to);
     let window = (start, (span_end + TimeDelta::days(1)).min(to));
-    let mut conn = ctx.pool.acquire().await?;
+    let mut conn = ctx.pool.begin().await?;
     let calendar = Calendar::load(&mut conn, &request, window, None).await?;
     let size = usize::from(request.page.size());
     let items: Vec<Slot> = Search::new(&calendar, &request, window).slots().take_while(|slot| starts_at(slot) < span_end).take(size).collect();
@@ -545,7 +543,7 @@ pub(super) type Place = (Uuid, Span, bool);
 /// The places `appointment` takes, read in the caller's transaction, if it fits as its status asks: `booked`
 /// needs a free place, `waitlist` a waitlist place. `except` leaves out the places of the appointment being
 /// booked again, or of the hold it is booked from.
-pub(super) async fn fit(conn: &mut PgConnection, appointment: &Appointment, except: Option<Uuid>) -> ApiResult<Vec<Place>> {
+pub(super) async fn fit(conn: &mut Tx, appointment: &Appointment, except: Option<Uuid>) -> ApiResult<Vec<Place>> {
     let party = Placed {
         client: Client::Known { id: appointment.client_id },
         service_id: appointment.service_id,
@@ -561,7 +559,7 @@ pub(super) async fn fit(conn: &mut PgConnection, appointment: &Appointment, exce
 
 /// The places a slot's parties take, if each still fits as given (a free place, or a waitlist place when
 /// `waitlist`), counting the parties before it.
-pub(super) async fn fit_slot(conn: &mut PgConnection, tenant_id: Uuid, parties: &[Placed], except: Option<Uuid>) -> ApiResult<Vec<Place>> {
+pub(super) async fn fit_slot(conn: &mut Tx, tenant_id: Uuid, parties: &[Placed], except: Option<Uuid>) -> ApiResult<Vec<Place>> {
     let bad = |reason: &str| ApiError::BadRequest(reason.to_string());
     let from = parties.iter().map(|placed| placed.starts_at).min().ok_or_else(|| bad("a slot has parties"))?;
     let to = parties.iter().map(|placed| placed.ends_at).max().ok_or_else(|| bad("a slot has parties"))?;
@@ -609,83 +607,100 @@ struct Candidates<'a> {
     services: &'a [Uuid],
 }
 
-async fn services_of(conn: &mut PgConnection, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Service>> {
-    Ok(sqlx::query_as("SELECT * FROM services WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
+async fn services_of(conn: &mut Tx, tenant_id: Uuid, ids: &[Uuid]) -> ApiResult<Vec<Service>> {
+    Ok(Db::query_as("SELECT * FROM services WHERE tenant_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
+        .sqlite(format!("SELECT * FROM services WHERE tenant_id = $1 AND {} AND deleted_at IS NULL", sqlite_any("id", 2)))
         .bind(tenant_id)
-        .bind(ids)
+        .bind(Array(ids.to_vec()))
         .fetch_all(conn)
         .await?)
 }
 
 /// Providers whose role a step of the services needs, e.g. every hygienist.
-async fn providers_in(conn: &mut PgConnection, tenant_id: Uuid, roles: &[String]) -> ApiResult<Vec<Provider>> {
-    Ok(sqlx::query_as("SELECT * FROM providers WHERE tenant_id = $1 AND role = ANY($2) AND deleted_at IS NULL ORDER BY id")
+async fn providers_in(conn: &mut Tx, tenant_id: Uuid, roles: &[String]) -> ApiResult<Vec<Provider>> {
+    Ok(Db::query_as("SELECT * FROM providers WHERE tenant_id = $1 AND role = ANY($2) AND deleted_at IS NULL ORDER BY id")
+        .sqlite("SELECT * FROM providers WHERE tenant_id = $1 AND role IN (SELECT value FROM json_each($2)) AND deleted_at IS NULL ORDER BY id")
         .bind(tenant_id)
-        .bind(roles)
+        .bind(Array(roles.to_vec()))
         .fetch_all(conn)
         .await?)
 }
 
-/// Rooms with every field some party asks of its room.
-async fn rooms_for(conn: &mut PgConnection, request: &Availability) -> ApiResult<Vec<Resource>> {
+/// Rooms with every field some party asks of its room. SQLite cannot match a row against JSON, so its rooms are
+/// matched here.
+async fn rooms_for(conn: &mut Tx, request: &Availability) -> ApiResult<Vec<Resource>> {
     let wanted: Vec<Value> = request.parties.iter().map(|party| Value::Object(party.resources.iter().flatten().map(|(k, v)| (k.clone(), v.clone())).collect())).collect();
-    Ok(sqlx::query_as(
+    let rooms: Vec<Resource> = Db::query_as(
         "SELECT * FROM resources r WHERE tenant_id = $1 AND deleted_at IS NULL \
          AND EXISTS (SELECT 1 FROM unnest($2::jsonb[]) wanted WHERE to_jsonb(r) @> wanted) ORDER BY id",
     )
+    .sqlite("SELECT * FROM resources WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY id")
     .bind(request.tenant_id)
-    .bind(wanted)
+    .bind(Array(wanted.clone()))
     .fetch_all(conn)
-    .await?)
+    .await?;
+    let fits = |room: &Resource| wanted.iter().filter_map(Value::as_object).any(|fields| matches(&to_json(room), fields));
+    Ok(rooms.into_iter().filter(fits).collect())
 }
 
 /// Schedules or blockouts that apply to the candidates and services: naming none of them means any.
-async fn applying<T: Table + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin>(conn: &mut PgConnection, candidates: &Candidates<'_>) -> ApiResult<Vec<T>> {
+async fn applying<T: Table>(conn: &mut Tx, candidates: &Candidates<'_>) -> ApiResult<Vec<T>> {
     let query = format!(
         "SELECT * FROM {} WHERE tenant_id = $1 AND deleted_at IS NULL \
          AND (provider_id IS NULL OR provider_id = ANY($2)) AND (resource_id IS NULL OR resource_id = ANY($3)) \
          AND (cardinality(service_ids) = 0 OR service_ids && $4)",
         T::TABLE_NAME
     );
-    Ok(sqlx::query_as(&query)
+    let sqlite = format!(
+        "SELECT * FROM {} WHERE tenant_id = $1 AND deleted_at IS NULL \
+         AND (provider_id IS NULL OR {}) AND (resource_id IS NULL OR {}) \
+         AND (json_array_length(service_ids) = 0 OR EXISTS (SELECT 1 FROM json_each(service_ids) a JOIN json_each($4) b ON a.value = b.value))",
+        T::TABLE_NAME,
+        sqlite_any("provider_id", 2),
+        sqlite_any("resource_id", 3),
+    );
+    Ok(Db::query_as(&query)
+        .sqlite(sqlite)
         .bind(candidates.tenant_id)
-        .bind(candidates.providers)
-        .bind(candidates.rooms)
-        .bind(candidates.services)
+        .bind(Array(candidates.providers.to_vec()))
+        .bind(Array(candidates.rooms.to_vec()))
+        .bind(Array(candidates.services.to_vec()))
         .fetch_all(conn)
         .await?)
 }
 
 /// The places taken from the participants in `horizon`: appointments and unexpired holds, except `except`'s.
 async fn taken(
-    conn: &mut PgConnection,
+    conn: &mut Tx,
     tenant_id: Uuid,
     participants: &[Uuid],
     horizon: Span,
     except: Option<Uuid>,
 ) -> ApiResult<HashMap<Uuid, Vec<Taken>>> {
-    let rows: Vec<(Uuid, PgRange<DateTime<Utc>>, bool)> = sqlx::query_as(
-        "SELECT participant_id, during, waitlist FROM reservations \
-         WHERE tenant_id = $1 AND participant_id = ANY($2) AND during && $3 \
-         AND (expires_at IS NULL OR expires_at > now()) AND owner_id IS DISTINCT FROM $4",
+    let rows: Vec<(Uuid, DateTime<Utc>, DateTime<Utc>, bool)> = Db::query_as(
+        "SELECT participant_id, lower(during), upper(during), waitlist FROM reservations \
+         WHERE tenant_id = $1 AND participant_id = ANY($2) AND during && tstzrange($3, $4) \
+         AND (expires_at IS NULL OR expires_at > now()) AND owner_id IS DISTINCT FROM $5",
     )
+    .sqlite(format!(
+        "SELECT participant_id, starts_at, ends_at, waitlist FROM reservations \
+         WHERE tenant_id = $1 AND {} AND unixepoch(starts_at, 'subsec') < unixepoch($4, 'subsec') AND unixepoch(ends_at, 'subsec') > unixepoch($3, 'subsec') \
+         AND (expires_at IS NULL OR unixepoch(expires_at, 'subsec') > unixepoch('now', 'subsec')) AND owner_id IS NOT $5",
+        sqlite_any("participant_id", 2),
+    ))
     .bind(tenant_id)
-    .bind(participants)
-    .bind(PgRange::from(horizon.0..horizon.1))
+    .bind(Array(participants.to_vec()))
+    .bind(horizon.0)
+    .bind(horizon.1)
     .bind(except)
     .fetch_all(conn)
     .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(who, during, waitlist)| span(&during).map(|span| (who, Taken { span, waitlist })))
-        .into_group_map())
+    Ok(rows.into_iter().map(|(who, start, end, waitlist)| (who, Taken { span: (start, end), waitlist })).into_group_map())
 }
 
-fn span(range: &PgRange<DateTime<Utc>>) -> Option<Span> {
-    match (range.start, range.end) {
-        (Bound::Included(start) | Bound::Excluded(start), Bound::Included(end) | Bound::Excluded(end)) => Some((start, end)),
-        _ => None,
-    }
+/// `column` is one of the uuids of the array bound at `$n`, on SQLite: the array is JSON text there, the uuid a blob.
+fn sqlite_any(column: &str, n: usize) -> String {
+    format!("hex({column}) IN (SELECT upper(replace(value, '-', '')) FROM json_each(${n}))")
 }
 
 /// The windows a recurrence gives inside `horizon`, from `starts_at` to `ends_at` on each day, in its time zone.
@@ -718,7 +733,7 @@ fn matches(fields: &Value, wanted: &Fields) -> bool {
 
 /// A wanted field that is not a column, or is `attributes` (matching attributes needs a GIN index, later).
 fn unknown_field<T: Table>(wanted: &[Fields]) -> Option<String> {
-    let is_field = |field: &str| field == "id" || (field != "attributes" && T::COLUMNS.iter().any(|column| column.name == field));
+    let is_field = |field: &str| field == "id" || (field != "attributes" && T::COLUMNS.iter().any(|column| *column == field));
     wanted.iter().flat_map(Map::keys).find(|field| !is_field(field)).cloned()
 }
 

@@ -1,35 +1,35 @@
 //! Generic booking: values and entities for appointments across domains (docs/TPD-booking.md).
 
 pub mod value;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod appointment;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod availability;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod blockout;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod client;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod price;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod product;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod provider;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod reservation;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod resource;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod schedule;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod service;
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub mod stock;
 
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub use api::{openapi, rewrite_aip_136, router};
 
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 mod api {
     use axum::extract::{OriginalUri, Request};
     use axum::http::Uri;

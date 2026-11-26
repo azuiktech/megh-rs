@@ -1,5 +1,8 @@
 //! B4 (docs/TPD-booking.md): Provider CRUD over HTTP: names, contact columns, capacity, attributes, scoped to the path's tenant.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -7,18 +10,18 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
         Grant::new(format!("tenants:read:{tenant}")),
@@ -49,9 +52,8 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
     )
 }
 
-#[sqlx::test(migrations = false)]
-async fn provider_with_contact_columns(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(provider_with_contact_columns);
+async fn provider_with_contact_columns(pool: Db) {
     let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let app = app(pool, mine);
     let collection = format!("/api/v1/tenants/{mine}/providers");

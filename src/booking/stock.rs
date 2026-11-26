@@ -3,7 +3,7 @@
 use axum::extract::State;
 use axum::routing::get as get_route;
 use serde::{Deserialize, Serialize};
-use sqlx::PgConnection;
+use crate::{Db, Tx};
 use sqlx::types::Json;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
@@ -39,14 +39,19 @@ pub struct Used {
 
 /// Each product used must be on hand at the tenant, at least as much as is used (409 otherwise). Nothing is held.
 pub(super) async fn ensure_on_hand(
-    connection: &mut PgConnection,
+    connection: &mut Tx,
     tenant_id: Uuid,
     used: &[Used],
 ) -> ApiResult<()> {
-    let short: Option<Uuid> = sqlx::query_scalar(
+    let short: Option<Uuid> = Db::query_scalar(
         "SELECT u.product_id FROM jsonb_to_recordset($2) AS u(product_id uuid, quantity numeric) \
          LEFT JOIN stocks s ON s.tenant_id = $1 AND s.product_id = u.product_id AND s.deleted_at IS NULL \
          WHERE COALESCE(s.on_hand, 0) < u.quantity LIMIT 1",
+    )
+    .sqlite(
+        "SELECT unhex(replace(u.value ->> '$.product_id', '-', '')) FROM json_each($2) u \
+         LEFT JOIN stocks s ON s.tenant_id = $1 AND s.product_id = unhex(replace(u.value ->> '$.product_id', '-', '')) AND s.deleted_at IS NULL \
+         WHERE COALESCE(CAST(s.on_hand AS REAL), 0) < CAST(u.value ->> '$.quantity' AS REAL) LIMIT 1",
     )
     .bind(tenant_id)
     .bind(Json(used))
@@ -130,7 +135,7 @@ async fn of_product(
     State(ctx): State<AppContext>,
     Input(OfProduct { key, .. }): Input<OfProduct>,
 ) -> ApiResult<Stock> {
-    sqlx::query_as(
+    Db::query_as(
         "SELECT * FROM stocks WHERE tenant_id = $1 AND product_id = $2 AND deleted_at IS NULL",
     )
     .bind(key.tenant_id)

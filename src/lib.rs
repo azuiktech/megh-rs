@@ -8,7 +8,7 @@ pub mod event;
 pub mod messaging;
 pub mod money;
 pub mod tenant;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "sql")]
 mod soft_delete;
 
 pub use event::{
@@ -18,9 +18,11 @@ pub use event::{
 #[cfg(feature = "axum")]
 pub use event::{events_router, events_router_with_csrf};
 
-pub use auth::entity::{ColumnMeta, JsonText, Table};
-pub use megh_derive::{entity, sqlx_type, Column};
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub use auth::entity::{Array, JsonText, Table, Where};
+#[cfg(feature = "sql")]
+pub use auth::db::{Db, On, Tx};
+pub use megh_derive::{entity, sqlx_type};
+#[cfg(feature = "sql")]
 #[doc(hidden)]
 pub use sqlx as __sqlx;
 
@@ -51,7 +53,6 @@ macro_rules! __if_sqlite {
 #[cfg(feature = "axum")]
 #[doc(hidden)]
 pub use axum as __axum;
-pub use sea_query;
 #[doc(hidden)]
 pub use constcat as __constcat;
 
@@ -65,59 +66,21 @@ pub use auth::{
 pub use auth::oauth_http_client;
 #[cfg(feature = "axum")]
 pub use auth::authorizer;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "sql")]
 pub use auth::{PasswordError, UserRepo};
 
-#[cfg(all(feature = "axum", feature = "postgres"))]
+#[cfg(all(feature = "axum", feature = "sql"))]
 pub use auth::{auth_router, AuthMeResponse, AuthUser, FromRef, MeghAuthState};
 
 pub use account::{ConnectedAccount, OAuth2Tokens};
-#[cfg(feature = "postgres")]
+#[cfg(feature = "sql")]
 pub use account::{ConnectedAccountRepo, EncryptError, Encryptor};
-#[cfg(all(feature = "postgres", feature = "client"))]
+#[cfg(all(feature = "sql", feature = "client"))]
 pub use account::{AccountAuth, AccountError, Accounts, Connections, Secret};
-#[cfg(all(feature = "axum", feature = "postgres", feature = "client"))]
+#[cfg(all(feature = "axum", feature = "sql", feature = "client"))]
 pub use account::connections_router;
 
 pub use tenant::{Member, Tenant};
-#[cfg(feature = "postgres")]
+#[cfg(feature = "sql")]
 pub use tenant::{Change, Lifecycle, LifecycleError, TenantError, Tenants};
 
-#[cfg(feature = "postgres")]
-/// Executes all embedded database migrations for Megh foundation tables.
-pub async fn migrate(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
-    sqlx::raw_sql(include_str!("../migrations/0001_auth.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0002_audit.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0003_tenant.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0004_booking.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0005_billing.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0006_products.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0007_connections.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0008_connection_spec.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0009_messages.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0010_attachments.sql"))
-        .execute(pool)
-        .await?;
-    sqlx::raw_sql(include_str!("../migrations/0011_client_moved.sql"))
-        .execute(pool)
-        .await?;
-    Ok(())
-}

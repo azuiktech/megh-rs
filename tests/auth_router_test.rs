@@ -10,7 +10,7 @@ fn app(state: MeghAuthState) -> axum::Router {
 
 #[tokio::test]
 async fn test_auth_router_unconfigured_provider_returns_not_found() {
-    let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+    let pool = megh::Db::Postgres(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap());
     let state = MeghAuthState::new(pool);
     let app = app(state);
 
@@ -29,7 +29,7 @@ async fn test_auth_router_unconfigured_provider_returns_not_found() {
 
 #[tokio::test]
 async fn test_auth_router_configured_provider_redirects() {
-    let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+    let pool = megh::Db::Postgres(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap());
     let google_provider = OAuthProviderConfig::google("test-client-id", Some("secret".to_string()));
     let state = MeghAuthState::new(pool).add_provider(google_provider);
     let app = app(state);
@@ -57,7 +57,7 @@ async fn test_auth_router_configured_provider_redirects() {
 
 #[tokio::test]
 async fn test_auth_router_me_without_cookie_returns_unauthorized() {
-    let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+    let pool = megh::Db::Postgres(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap());
     let state = MeghAuthState::new(pool);
     let app = app(state);
 

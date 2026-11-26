@@ -6,6 +6,9 @@
 //! - The account is stored with the tenant and `auth` `oauth`, and is one of the tenant's connections.
 //! - An account another tenant has connected is refused (`409`) and stays theirs.
 
+#[macro_use]
+mod common;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +20,7 @@ use axum::{Json, Router};
 use megh::auth::http::{auth_router, MeghAuthState};
 use megh::auth::OAuthProviderConfig;
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
@@ -38,7 +41,7 @@ fn person(sub: &str, email: &str) -> Value {
     json!({"sub": sub, "email": email, "email_verified": true, "name": "N"})
 }
 
-async fn fixture(pool: PgPool) -> (Router, Stub) {
+async fn fixture(pool: Db) -> (Router, Stub) {
     let stub = Stub { userinfo: Arc::new(Mutex::new(person("1", "ann@example.com"))) };
     let routes = Router::new().route("/token", post(token)).route("/userinfo", get(userinfo)).with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -102,16 +105,16 @@ async fn connect_for(app: &Router, cookie: &str, tenant: &str) -> Response<Body>
     get_page(app, &format!("/auth/stub/callback?code=abc&state={state}"), cookie).await
 }
 
-async fn stored(pool: &PgPool, account_id: &str) -> (Option<uuid::Uuid>, Option<String>, String) {
-    sqlx::query_as("SELECT tenant_id, auth, email::text FROM connected_accounts WHERE account_id = $1 AND provider = 'stub'")
+async fn stored(pool: &Db, account_id: &str) -> (Option<uuid::Uuid>, Option<String>, String) {
+    Db::query_as("SELECT tenant_id, auth, email::text FROM connected_accounts WHERE account_id = $1 AND provider = 'stub'").sqlite("SELECT tenant_id, auth, email FROM connected_accounts WHERE account_id = $1 AND provider = 'stub'")
         .bind(account_id)
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-#[sqlx::test]
-async fn a_tenant_connects_a_shared_inbox_whatever_its_email(pool: PgPool) {
+dual!(a_tenant_connects_a_shared_inbox_whatever_its_email);
+async fn a_tenant_connects_a_shared_inbox_whatever_its_email(pool: Db) {
     let (app, stub) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
     let tenant = own_tenant(&app, &cookie).await;
@@ -125,27 +128,27 @@ async fn a_tenant_connects_a_shared_inbox_whatever_its_email(pool: PgPool) {
     assert_eq!(listed.iter().map(|connection| (connection.account_id.as_str(), connection.connected)).collect::<Vec<_>>(), [("inbox", true)]);
 }
 
-#[sqlx::test]
-async fn a_tenant_the_user_is_not_a_member_of_is_refused(pool: PgPool) {
+dual!(a_tenant_the_user_is_not_a_member_of_is_refused);
+async fn a_tenant_the_user_is_not_a_member_of_is_refused(pool: Db) {
     let (app, stub) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
-    let elsewhere: uuid::Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Elsewhere') RETURNING id").fetch_one(&pool).await.unwrap();
+    let elsewhere: uuid::Uuid = Db::query_scalar("INSERT INTO tenants (name) VALUES ('Elsewhere') RETURNING id").fetch_one(&pool).await.unwrap();
     *stub.userinfo.lock().unwrap() = person("inbox", "orders@shop.example");
 
     let refused = connect_for(&app, &cookie, &elsewhere.to_string()).await;
-    let accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM connected_accounts WHERE account_id = 'inbox'").fetch_one(&pool).await.unwrap();
+    let accounts: i64 = Db::query_scalar("SELECT count(*) FROM connected_accounts WHERE account_id = 'inbox'").fetch_one(&pool).await.unwrap();
 
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
     assert_eq!(accounts, 0);
 }
 
-#[sqlx::test]
-async fn an_account_another_tenant_connected_is_refused_and_stays_theirs(pool: PgPool) {
+dual!(an_account_another_tenant_connected_is_refused_and_stays_theirs);
+async fn an_account_another_tenant_connected_is_refused_and_stays_theirs(pool: Db) {
     let (app, stub) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
     let tenant = own_tenant(&app, &cookie).await;
-    let theirs: uuid::Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Theirs') RETURNING id").fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO connected_accounts (account_id, provider, email, access_token, tenant_id, auth) VALUES ('inbox', 'stub', 'orders@shop.example', 'theirs', $1, 'oauth')")
+    let theirs: uuid::Uuid = Db::query_scalar("INSERT INTO tenants (name) VALUES ('Theirs') RETURNING id").fetch_one(&pool).await.unwrap();
+    Db::query("INSERT INTO connected_accounts (account_id, provider, email, access_token, tenant_id, auth) VALUES ('inbox', 'stub', 'orders@shop.example', 'theirs', $1, 'oauth')")
         .bind(theirs)
         .execute(&pool)
         .await
@@ -153,14 +156,14 @@ async fn an_account_another_tenant_connected_is_refused_and_stays_theirs(pool: P
     *stub.userinfo.lock().unwrap() = person("inbox", "orders@shop.example");
 
     let refused = connect_for(&app, &cookie, &tenant).await;
-    let token: String = sqlx::query_scalar("SELECT access_token FROM connected_accounts WHERE account_id = 'inbox'").fetch_one(&pool).await.unwrap();
+    let token: String = Db::query_scalar("SELECT access_token FROM connected_accounts WHERE account_id = 'inbox'").fetch_one(&pool).await.unwrap();
 
     assert_eq!(refused.status(), StatusCode::CONFLICT);
     assert_eq!((stored(&pool, "inbox").await.0, token.as_str()), (Some(theirs), "theirs"));
 }
 
-#[sqlx::test]
-async fn a_connect_without_a_tenant_keeps_the_own_email_check(pool: PgPool) {
+dual!(a_connect_without_a_tenant_keeps_the_own_email_check);
+async fn a_connect_without_a_tenant_keeps_the_own_email_check(pool: Db) {
     let (app, stub) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
     *stub.userinfo.lock().unwrap() = person("inbox", "orders@shop.example");
@@ -171,8 +174,8 @@ async fn a_connect_without_a_tenant_keeps_the_own_email_check(pool: PgPool) {
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 }
 
-#[sqlx::test]
-async fn an_account_connected_again_after_its_card_was_deleted_is_back(pool: PgPool) {
+dual!(an_account_connected_again_after_its_card_was_deleted_is_back);
+async fn an_account_connected_again_after_its_card_was_deleted_is_back(pool: Db) {
     let (app, stub) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
     let tenant: uuid::Uuid = own_tenant(&app, &cookie).await.parse().unwrap();

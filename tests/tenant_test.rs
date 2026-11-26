@@ -1,18 +1,21 @@
 use megh::booking::value::Contact;
+#[macro_use]
+mod common;
+
 use megh::{Tenant, Tenants};
 use serde_json::json;
-use sqlx::PgPool;
+use megh::Db;
 use uuid::Uuid;
 
-async fn table_names(pool: &PgPool) -> Vec<String> {
-    sqlx::query_scalar("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1")
+async fn table_names(pool: &Db) -> Vec<String> {
+    Db::query_scalar("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1")
         .fetch_all(pool)
         .await
         .unwrap()
 }
 
-async fn columns(pool: &PgPool, table: &str) -> String {
-    sqlx::query_scalar(
+async fn columns(pool: &Db, table: &str) -> String {
+    Db::query_scalar(
         "SELECT string_agg(column_name || ':' || data_type, ',' ORDER BY column_name)
          FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1",
     )
@@ -22,8 +25,8 @@ async fn columns(pool: &PgPool, table: &str) -> String {
     .unwrap()
 }
 
-#[sqlx::test]
-async fn tenant_tables_have_their_columns(pool: PgPool) {
+postgres!(tenant_tables_have_their_columns);
+async fn tenant_tables_have_their_columns(pool: Db) {
     const TS: &str = "timestamp with time zone";
     assert_eq!(
         columns(&pool, "tenants").await,
@@ -45,12 +48,13 @@ async fn tenant_tables_have_their_columns(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
-async fn memberships_reads_rows_written_directly(pool: PgPool) {
+dual!(memberships_reads_rows_written_directly);
+async fn memberships_reads_rows_written_directly(pool: Db) {
     let user = Uuid::now_v7();
     for (grants, joined) in [(Some(r#"["invoices:read"]"#), "2026-01-02"), (Some("[]"), "2026-01-01"), (None, "2026-01-03")] {
-        let tenant: Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(&pool).await.unwrap();
-        sqlx::query("INSERT INTO tenant_members (id, tenant_id, user_id, grants, joined_at) VALUES ($1, $2, $3, $4, $5::date)")
+        let tenant: Uuid = Db::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(&pool).await.unwrap();
+        Db::query("INSERT INTO tenant_members (id, tenant_id, user_id, grants, joined_at) VALUES ($1, $2, $3, $4, $5::date)")
+            .sqlite("INSERT INTO tenant_members (id, tenant_id, user_id, grants, joined_at) VALUES ($1, $2, $3, $4, $5 || 'T00:00:00+00:00')")
             .bind(Uuid::now_v7())
             .bind(tenant)
             .bind(user)
@@ -69,16 +73,16 @@ async fn memberships_reads_rows_written_directly(pool: PgPool) {
     assert!(members.iter().all(|m| m.user_id == user && m.role == "member"));
 }
 
-#[sqlx::test]
-async fn a_tenant_keeps_a_contact_and_an_address(pool: PgPool) {
+dual!(a_tenant_keeps_a_contact_and_an_address);
+async fn a_tenant_keeps_a_contact_and_an_address(pool: Db) {
     let address = json!({"line_1": "1 Main St", "line_2": null, "city": "Austin", "region": "TX", "postal_code": "78701", "country": "US"});
-    sqlx::query("INSERT INTO tenants (name, email, home_phone, work_phone, mobile_phone, address) VALUES ('Acme', 'hello@acme.test', '+14155552671', '+14155552672', '+14155552673', $1)")
+    Db::query("INSERT INTO tenants (name, email, home_phone, work_phone, mobile_phone, address) VALUES ('Acme', 'hello@acme.test', '+14155552671', '+14155552672', '+14155552673', $1)")
         .bind(&address)
         .execute(&pool)
         .await
         .unwrap();
 
-    let tenant: Tenant = sqlx::query_as("SELECT * FROM tenants").fetch_one(&pool).await.unwrap();
+    let tenant: Tenant = Db::query_as("SELECT * FROM tenants").fetch_one(&pool).await.unwrap();
 
     let contact = tenant.contact;
     let phones = [contact.home_phone, contact.work_phone, contact.mobile_phone].map(|phone| phone.unwrap().to_string());
@@ -86,28 +90,27 @@ async fn a_tenant_keeps_a_contact_and_an_address(pool: PgPool) {
     assert_eq!(serde_json::to_value(tenant.address).unwrap(), address);
 }
 
-#[sqlx::test]
-async fn a_tenant_without_a_contact_or_an_address_reads_empty(pool: PgPool) {
-    sqlx::query("INSERT INTO tenants (name) VALUES ('Acme')").execute(&pool).await.unwrap();
+dual!(a_tenant_without_a_contact_or_an_address_reads_empty);
+async fn a_tenant_without_a_contact_or_an_address_reads_empty(pool: Db) {
+    Db::query("INSERT INTO tenants (name) VALUES ('Acme')").execute(&pool).await.unwrap();
 
-    let tenant: Tenant = sqlx::query_as("SELECT * FROM tenants").fetch_one(&pool).await.unwrap();
+    let tenant: Tenant = Db::query_as("SELECT * FROM tenants").fetch_one(&pool).await.unwrap();
 
     assert_eq!((tenant.contact, tenant.address), (Contact::default(), None));
 }
 
-#[sqlx::test]
-async fn migrating_again_keeps_a_contact_and_an_address(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tenants (name, email) VALUES ('Acme', 'hello@acme.test')").execute(&pool).await.unwrap();
+dual!(migrating_again_keeps_a_contact_and_an_address);
+async fn migrating_again_keeps_a_contact_and_an_address(pool: Db) {
+    Db::query("INSERT INTO tenants (name, email) VALUES ('Acme', 'hello@acme.test')").execute(&pool).await.unwrap();
+    pool.migrate().await.unwrap();
 
-    megh::migrate(&pool).await.unwrap();
 
-    let email: String = sqlx::query_scalar("SELECT email FROM tenants").fetch_one(&pool).await.unwrap();
+    let email: String = Db::query_scalar("SELECT email FROM tenants").fetch_one(&pool).await.unwrap();
     assert_eq!(email, "hello@acme.test");
 }
 
-#[sqlx::test]
-async fn a_created_tenant_has_its_owner_as_first_member_with_every_grant(pool: PgPool) {
+dual!(a_created_tenant_has_its_owner_as_first_member_with_every_grant);
+async fn a_created_tenant_has_its_owner_as_first_member_with_every_grant(pool: Db) {
     let owner = Uuid::now_v7();
 
     let tenant = Tenants::new(pool.clone()).create("Ann's", owner).await.unwrap();

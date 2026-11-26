@@ -1,6 +1,9 @@
 //! B5b (docs/TPD-billing.md): CRUD over HTTP for taxes, scoped to the tenant in the path and checked by `authorizer`, like
 //! the booking collections. (Payment terms, series and vendors were cut when billing was simplified.)
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -8,7 +11,7 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{authorizer, Grant};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -37,11 +40,11 @@ fn kinds() -> Vec<Kind> {
     ]
 }
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
 }
 
-fn app(pool: PgPool, grants: &[String]) -> Router {
+fn app(pool: Db, grants: &[String]) -> Router {
     let (api, _) = megh::billing::router().split_for_parts();
     Router::new()
         .nest("/api/v1", api.layer(from_fn(authorizer)))
@@ -65,9 +68,8 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
-#[sqlx::test(migrations = false)]
-async fn create_takes_the_tenant_from_the_path_and_fills_defaults(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(create_takes_the_tenant_from_the_path_and_fills_defaults);
+async fn create_takes_the_tenant_from_the_path_and_fills_defaults(pool: Db) {
     let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let app = app(pool, &grants(mine));
     for kind in kinds() {
@@ -84,9 +86,8 @@ async fn create_takes_the_tenant_from_the_path_and_fills_defaults(pool: PgPool) 
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn invalid_values_are_a_bad_request(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(invalid_values_are_a_bad_request);
+async fn invalid_values_are_a_bad_request(pool: Db) {
     let mine = tenant(&pool).await;
     let app = app(pool, &grants(mine));
     for kind in kinds() {
@@ -97,9 +98,8 @@ async fn invalid_values_are_a_bad_request(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn get_put_patch_delete_one_row(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(get_put_patch_delete_one_row);
+async fn get_put_patch_delete_one_row(pool: Db) {
     let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let (mine_app, other_app) = (app(pool.clone(), &grants(mine)), app(pool, &grants(other)));
     for kind in kinds() {
@@ -132,9 +132,8 @@ async fn get_put_patch_delete_one_row(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn list_filters_and_pages_with_a_cursor(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(list_filters_and_pages_with_a_cursor);
+async fn list_filters_and_pages_with_a_cursor(pool: Db) {
     let mine = tenant(&pool).await;
     let app = app(pool, &grants(mine));
     let collection = format!("/api/v1/tenants/{mine}/taxes");
@@ -158,9 +157,8 @@ async fn list_filters_and_pages_with_a_cursor(pool: PgPool) {
     assert_eq!(call(&app, "GET", &format!("{collection}?page_token=garbage"), Value::Null).await.0, StatusCode::BAD_REQUEST);
 }
 
-#[sqlx::test(migrations = false)]
-async fn authorizer_guards_every_collection(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(authorizer_guards_every_collection);
+async fn authorizer_guards_every_collection(pool: Db) {
     let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     for kind in kinds() {
         let collection = format!("/api/v1/tenants/{mine}/{}", kind.segment);

@@ -1,6 +1,9 @@
 //! Specification: `UserRepo::machine(tenant_id, name, grants)` is the tenant's machine member named `name`, created
 //! with `grants` when the tenant has none of that name (issue #240). An app signs its own in-process calls as it.
 
+#[macro_use]
+mod common;
+
 use std::time::Duration;
 
 use axum::body::Body;
@@ -9,38 +12,38 @@ use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::get;
 use axum::Router;
 use megh::auth::{jwt_session, JwtSession, UserRepo};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use uuid::Uuid;
 
 const SECRET: &[u8] = b"machine-member-test-secret-32byte";
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
 fn grants(tenant: Uuid) -> Vec<String> {
     vec![format!("tenants:read:{tenant}"), "invoices".to_string()]
 }
 
-async fn machines(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM tenant_members WHERE role = 'machine'").fetch_one(pool).await.unwrap()
+async fn machines(pool: &Db) -> i64 {
+    Db::query_scalar("SELECT count(*) FROM tenant_members WHERE role = 'machine'").fetch_one(pool).await.unwrap()
 }
 
-#[sqlx::test]
-async fn the_first_call_creates_the_machine_member_with_its_grants(pool: PgPool) {
+dual!(the_first_call_creates_the_machine_member_with_its_grants);
+async fn the_first_call_creates_the_machine_member_with_its_grants(pool: Db) {
     let acme = tenant(&pool, "Acme").await;
 
     let member = UserRepo::new(&pool).machine(acme, "workflows", grants(acme)).await.unwrap();
 
     assert_eq!((member.tenant_id, member.role.as_str(), member.grants), (acme, "machine", grants(acme)));
-    let (provider, name): (String, String) = sqlx::query_as("SELECT provider, display_name FROM users WHERE id = $1").bind(member.user_id).fetch_one(&pool).await.unwrap();
+    let (provider, name): (String, String) = Db::query_as("SELECT provider, display_name FROM users WHERE id = $1").bind(member.user_id).fetch_one(&pool).await.unwrap();
     assert_eq!((provider.as_str(), name.as_str()), ("megh", "workflows"));
 }
 
-#[sqlx::test]
-async fn a_later_call_answers_the_same_member_and_creates_none(pool: PgPool) {
+dual!(a_later_call_answers_the_same_member_and_creates_none);
+async fn a_later_call_answers_the_same_member_and_creates_none(pool: Db) {
     let acme = tenant(&pool, "Acme").await;
     let users = UserRepo::new(&pool);
 
@@ -51,8 +54,8 @@ async fn a_later_call_answers_the_same_member_and_creates_none(pool: PgPool) {
     assert_eq!(machines(&pool).await, 1);
 }
 
-#[sqlx::test]
-async fn another_name_or_another_tenant_is_another_machine(pool: PgPool) {
+dual!(another_name_or_another_tenant_is_another_machine);
+async fn another_name_or_another_tenant_is_another_machine(pool: Db) {
     let (acme, globex) = (tenant(&pool, "Acme").await, tenant(&pool, "Globex").await);
     let users = UserRepo::new(&pool);
 
@@ -66,8 +69,8 @@ async fn another_name_or_another_tenant_is_another_machine(pool: PgPool) {
     assert_eq!(machines(&pool).await, 3);
 }
 
-#[sqlx::test]
-async fn a_token_issued_for_the_machine_enters_its_tenant_and_no_other(pool: PgPool) {
+dual!(a_token_issued_for_the_machine_enters_its_tenant_and_no_other);
+async fn a_token_issued_for_the_machine_enters_its_tenant_and_no_other(pool: Db) {
     let (acme, globex) = (tenant(&pool, "Acme").await, tenant(&pool, "Globex").await);
     let member = UserRepo::new(&pool).machine(acme, "workflows", grants(acme)).await.unwrap();
     let jwt = JwtSession::new(SECRET, Duration::from_secs(300), pool.clone());

@@ -6,7 +6,7 @@ use axum::{Extension, Json};
 use axum_extra::extract::cookie::CookieJar;
 use futures_util::{TryStreamExt, stream};
 use serde::Serialize;
-use sqlx::PgPool;
+use crate::Db;
 use tower_sessions::Session;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
@@ -22,16 +22,16 @@ use crate::auth::{AccessToken, JwtSession};
 pub(crate) const CLIENT: &str = "client";
 
 /// The live client `client` stands for now: itself, or the client it moved to.
-pub(crate) async fn current(pool: &PgPool, tenant_id: Uuid, client: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-    sqlx::query_scalar("SELECT COALESCE(moved_to, id) FROM clients WHERE tenant_id = $1 AND id = $2 AND (deleted_at IS NULL OR moved_to IS NOT NULL)")
+pub(crate) async fn current(pool: &Db, tenant_id: Uuid, client: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+    Db::query_scalar("SELECT COALESCE(moved_to, id) FROM clients WHERE tenant_id = $1 AND id = $2 AND (deleted_at IS NULL OR moved_to IS NOT NULL)")
         .bind(tenant_id)
         .bind(client)
         .fetch_optional(pool)
         .await
 }
 
-async fn new_guest(pool: &PgPool, tenant_id: Uuid) -> Result<Uuid, sqlx::Error> {
-    sqlx::query_scalar("INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, $2, 'Guest', 'Guest', 'Guest') RETURNING id")
+async fn new_guest(pool: &Db, tenant_id: Uuid) -> Result<Uuid, sqlx::Error> {
+    Db::query_scalar("INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, $2, 'Guest', 'Guest', 'Guest') RETURNING id")
         .bind(tenant_id)
         .bind(Uuid::now_v7())
         .fetch_one(pool)
@@ -43,26 +43,30 @@ impl Messaging {
     /// each member the guest talked to, on the guest's topic, so an open widget switches to the client.
     pub async fn identify(&self, guest: Uuid, client: Uuid) -> Result<(), MessagingError> {
         let mut moving = self.pool.begin().await?;
-        let removed = sqlx::query("UPDATE clients SET deleted_at = now(), moved_to = $3 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL")
+        let removed = Db::query("UPDATE clients SET deleted_at = now(), moved_to = $3 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL").sqlite("UPDATE clients SET deleted_at = strftime('%Y-%m-%dT%H:%M:%f+00:00'), moved_to = $3 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL")
             .bind(self.tenant_id)
             .bind(guest)
             .bind(client)
-            .execute(&mut *moving)
+            .execute(&mut moving)
             .await?;
         (removed.rows_affected() == 1).then_some(()).ok_or(MessagingError::NotFound)?;
-        let members: Vec<Uuid> = sqlx::query_scalar(
+        let members: Vec<Uuid> = Db::query_scalar(
             "WITH moved AS (UPDATE messages SET client_id = $3 WHERE tenant_id = $1 AND client_id = $2 RETURNING member_id) SELECT DISTINCT member_id FROM moved",
+        )
+        .sqlite(
+            "SELECT DISTINCT member_id FROM messages WHERE tenant_id = $1 AND client_id = $2; \
+             UPDATE messages SET client_id = $3 WHERE tenant_id = $1 AND client_id = $2",
         )
         .bind(self.tenant_id)
         .bind(guest)
         .bind(client)
-        .fetch_all(&mut *moving)
+        .fetch_all(&mut moving)
         .await?;
-        sqlx::query("UPDATE attachments SET client_id = $3 WHERE tenant_id = $1 AND client_id = $2")
+        Db::query("UPDATE attachments SET client_id = $3 WHERE tenant_id = $1 AND client_id = $2")
             .bind(self.tenant_id)
             .bind(guest)
             .bind(client)
-            .execute(&mut *moving)
+            .execute(&mut moving)
             .await?;
         moving.commit().await?;
         let told = |member| self.send_event(Signal::Moved(client), Party::Member(member), Party::Client(guest));

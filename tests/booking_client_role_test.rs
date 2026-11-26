@@ -1,6 +1,9 @@
 //! S6a (docs/TPD-billing.md section 7, #227): a client has an optional role, as a provider has; a supplier is a
 //! client with a role. Existing clients have none.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -8,18 +11,18 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Salon') RETURNING id")
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Salon') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
         Grant::new(format!("tenants:read:{tenant}")),
@@ -59,9 +62,8 @@ fn names(page: &Value) -> Vec<String> {
         .collect()
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_client_has_an_optional_role(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_client_has_an_optional_role);
+async fn a_client_has_an_optional_role(pool: Db) {
     let mine = tenant(&pool).await;
     let app = app(pool, mine);
     let collection = format!("/api/v1/tenants/{mine}/clients");
@@ -117,23 +119,19 @@ async fn a_client_has_an_optional_role(pool: PgPool) {
     assert_eq!((status, got["role"].clone()), (StatusCode::OK, Value::Null));
 }
 
-#[sqlx::test(migrations = false)]
-async fn existing_clients_have_no_role_after_the_migration(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+postgres!(existing_clients_have_no_role_after_the_migration);
+async fn existing_clients_have_no_role_after_the_migration(pool: Db) {
     let mine = tenant(&pool).await;
-    sqlx::raw_sql("ALTER TABLE clients DROP COLUMN IF EXISTS role")
-        .execute(&pool)
-        .await
-        .unwrap();
-    let id: Uuid = sqlx::query_scalar(
+    common::raw(&pool, "ALTER TABLE clients DROP COLUMN IF EXISTS role").await.unwrap();
+    let id: Uuid = Db::query_scalar(
         "INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, uuidv7(), 'Old', 'Client', 'Old') RETURNING id",
-    )
+    ).sqlite("INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), 'Old', 'Client', 'Old') RETURNING id",)
     .bind(mine)
     .fetch_one(&pool)
     .await
     .unwrap();
+    pool.migrate().await.unwrap();
 
-    megh::migrate(&pool).await.unwrap();
     let app = app(pool, mine);
     let (status, old) = call(
         &app,

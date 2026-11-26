@@ -4,6 +4,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
+use crate::parse::crate_path;
 use syn::{Arm, Expr, ExprClosure, ExprMatch, Ident, Pat, ReturnType, Token, Type};
 
 type Arms = Vec<(Option<String>, Mapping)>;
@@ -111,63 +112,68 @@ fn closure(expr: &Expr) -> syn::Result<ExprClosure> {
 /// `Type`, `Encode` and `Decode` of `ty` for one driver (and `PgHasArrayType` for `Postgres`), kept only when megh has
 /// that driver's feature.
 fn impls(ty: &Ident, driver: &str, mapping: &Mapping) -> TokenStream {
+    let krate = crate_path();
     let gate = format_ident!("__if_{}", driver.to_lowercase());
     let db = Ident::new(driver, Span::call_site());
     let (type_info, encode, decode) = (type_info(ty, &db, mapping), encode(ty, &db, mapping), decode(ty, &db, mapping));
     let array = (driver == "Postgres").then(|| array_type(ty, mapping));
-    quote! { ::megh::#gate! { #type_info #encode #decode #array } }
+    quote! { #krate::#gate! { #type_info #encode #decode #array } }
 }
 
 fn array_type(ty: &Ident, Mapping { stored, .. }: &Mapping) -> TokenStream {
+    let krate = crate_path();
     quote! {
-        impl ::megh::__sqlx::postgres::PgHasArrayType for #ty {
-            fn array_type_info() -> ::megh::__sqlx::postgres::PgTypeInfo {
-                <#stored as ::megh::__sqlx::postgres::PgHasArrayType>::array_type_info()
+        impl #krate::__sqlx::postgres::PgHasArrayType for #ty {
+            fn array_type_info() -> #krate::__sqlx::postgres::PgTypeInfo {
+                <#stored as #krate::__sqlx::postgres::PgHasArrayType>::array_type_info()
             }
-            fn array_compatible(ty: &::megh::__sqlx::postgres::PgTypeInfo) -> bool {
-                <#stored as ::megh::__sqlx::postgres::PgHasArrayType>::array_compatible(ty)
+            fn array_compatible(ty: &#krate::__sqlx::postgres::PgTypeInfo) -> bool {
+                <#stored as #krate::__sqlx::postgres::PgHasArrayType>::array_compatible(ty)
             }
         }
     }
 }
 
 fn type_info(ty: &Ident, db: &Ident, Mapping { stored, .. }: &Mapping) -> TokenStream {
+    let krate = crate_path();
     quote! {
-        impl ::megh::__sqlx::Type<::megh::__sqlx::#db> for #ty {
-            fn type_info() -> <::megh::__sqlx::#db as ::megh::__sqlx::Database>::TypeInfo {
-                <#stored as ::megh::__sqlx::Type<::megh::__sqlx::#db>>::type_info()
+        impl #krate::__sqlx::Type<#krate::__sqlx::#db> for #ty {
+            fn type_info() -> <#krate::__sqlx::#db as #krate::__sqlx::Database>::TypeInfo {
+                <#stored as #krate::__sqlx::Type<#krate::__sqlx::#db>>::type_info()
             }
-            fn compatible(ty: &<::megh::__sqlx::#db as ::megh::__sqlx::Database>::TypeInfo) -> bool {
-                <#stored as ::megh::__sqlx::Type<::megh::__sqlx::#db>>::compatible(ty)
+            fn compatible(ty: &<#krate::__sqlx::#db as #krate::__sqlx::Database>::TypeInfo) -> bool {
+                <#stored as #krate::__sqlx::Type<#krate::__sqlx::#db>>::compatible(ty)
             }
         }
     }
 }
 
 fn encode(ty: &Ident, db: &Ident, Mapping { stored, write, .. }: &Mapping) -> TokenStream {
+    let krate = crate_path();
     let (input, body) = (&write.inputs, block(&write.body));
     quote! {
-        impl<'q> ::megh::__sqlx::Encode<'q, ::megh::__sqlx::#db> for #ty {
+        impl<'q> #krate::__sqlx::Encode<'q, #krate::__sqlx::#db> for #ty {
             fn encode_by_ref(
                 &self,
-                buf: &mut <::megh::__sqlx::#db as ::megh::__sqlx::Database>::ArgumentBuffer<'q>,
-            ) -> ::std::result::Result<::megh::__sqlx::encode::IsNull, ::megh::__sqlx::error::BoxDynError> {
+                buf: &mut <#krate::__sqlx::#db as #krate::__sqlx::Database>::ArgumentBuffer<'q>,
+            ) -> ::std::result::Result<#krate::__sqlx::encode::IsNull, #krate::__sqlx::error::BoxDynError> {
                 fn write(#input) -> #stored #body
-                <#stored as ::megh::__sqlx::Encode<'q, ::megh::__sqlx::#db>>::encode(write(self), buf)
+                <#stored as #krate::__sqlx::Encode<'q, #krate::__sqlx::#db>>::encode(write(self), buf)
             }
         }
     }
 }
 
 fn decode(ty: &Ident, db: &Ident, Mapping { stored, read, .. }: &Mapping) -> TokenStream {
+    let krate = crate_path();
     let (input, body) = (&read.inputs, block(&read.body));
     quote! {
-        impl<'r> ::megh::__sqlx::Decode<'r, ::megh::__sqlx::#db> for #ty {
+        impl<'r> #krate::__sqlx::Decode<'r, #krate::__sqlx::#db> for #ty {
             fn decode(
-                value: <::megh::__sqlx::#db as ::megh::__sqlx::Database>::ValueRef<'r>,
-            ) -> ::std::result::Result<Self, ::megh::__sqlx::error::BoxDynError> {
-                fn read(#input) -> ::std::result::Result<#ty, ::megh::__sqlx::error::BoxDynError> #body
-                read(<#stored as ::megh::__sqlx::Decode<'r, ::megh::__sqlx::#db>>::decode(value)?)
+                value: <#krate::__sqlx::#db as #krate::__sqlx::Database>::ValueRef<'r>,
+            ) -> ::std::result::Result<Self, #krate::__sqlx::error::BoxDynError> {
+                fn read(#input) -> ::std::result::Result<#ty, #krate::__sqlx::error::BoxDynError> #body
+                read(<#stored as #krate::__sqlx::Decode<'r, #krate::__sqlx::#db>>::decode(value)?)
             }
         }
     }

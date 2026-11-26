@@ -4,6 +4,9 @@
 //! A step's provider group matches a provider's role; `providers` and `resources` match fields, not attributes.
 //! Booking (`POST /appointments`) stores an appointment only when the same check passes, and stores its time.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -11,7 +14,7 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
@@ -20,7 +23,7 @@ const MON_WED: &str =
     "DTSTART;TZID=Asia/Kolkata:20261023T000000\nRRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261230T235959Z";
 const MONDAY: &str = "2026-10-26";
 
-fn app(pool: PgPool, grants: &[&str]) -> Router {
+fn app(pool: Db, grants: &[&str]) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     Router::new()
         .nest("/api/v1", api.layer(from_fn(authorizer)))
@@ -45,7 +48,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 /// A clinic open Monday and Wednesday 9:00–16:00 India time, built through the API.
 struct Clinic {
     app: Router,
-    pool: PgPool,
+    pool: Db,
     tenant: Uuid,
     room: String,
     meera: String,
@@ -58,9 +61,8 @@ struct Clinic {
 }
 
 impl Clinic {
-    async fn new(pool: PgPool) -> Self {
-        megh::migrate(&pool).await.unwrap();
-        let tenant: Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
+    async fn new(pool: Db) -> Self {
+        let tenant: Uuid = Db::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -110,10 +112,11 @@ impl Clinic {
     /// Time a stored appointment in `status` takes from `participant`, as booking stores it: one reservation
     /// row per place, none once cancelled.
     async fn occupy(&self, status: &str, participant: &str, from: &str, to: &str) {
-        let appointment: Uuid = sqlx::query_scalar(
+        let appointment: Uuid = Db::query_scalar(
             "INSERT INTO appointments (tenant_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
              VALUES ($1, $2, $3::uuid, $4::uuid, $5::uuid, $6::timestamptz, $7::timestamptz, $8, '{\"payer_id\": \"00000000-0000-0000-0000-000000000000\", \"method\": \"card\"}') RETURNING id",
-        )
+        ).sqlite("INSERT INTO appointments (tenant_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
+             VALUES ($1, $2, unhex(replace($3, '-', '')), unhex(replace($4, '-', '')), unhex(replace($5, '-', '')), $6::timestamptz, $7::timestamptz, $8, '{\"payer_id\": \"00000000-0000-0000-0000-000000000000\", \"method\": \"card\"}') RETURNING id",)
         .bind(self.tenant)
         .bind(Uuid::now_v7())
         .bind(&self.ada)
@@ -128,10 +131,11 @@ impl Clinic {
         if status == "cancelled" {
             return;
         }
-        sqlx::query(
+        Db::query(
             "INSERT INTO reservations (tenant_id, id, owner_id, participant_id, during, waitlist) \
              VALUES ($1, uuidv7(), $2, $3::uuid, tstzrange($4::timestamptz, $5::timestamptz), $6)",
-        )
+        ).sqlite("INSERT INTO reservations (tenant_id, id, owner_id, participant_id, starts_at, ends_at, waitlist) \
+             VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, unhex(replace($3, '-', '')), $4, $5, $6)",)
         .bind(self.tenant)
         .bind(appointment)
         .bind(participant)
@@ -152,8 +156,8 @@ fn starts(found: &Value, party: usize) -> Vec<String> {
     found["items"].as_array().unwrap().iter().map(|slot| slot["parties"][party]["starts_at"].as_str().unwrap().to_string()).collect()
 }
 
-#[sqlx::test(migrations = false)]
-async fn dental_slots_take_a_hygienist_a_dentist_and_the_room(pool: PgPool) {
+dual!(dental_slots_take_a_hygienist_a_dentist_and_the_room);
+async fn dental_slots_take_a_hygienist_a_dentist_and_the_room(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let window = json!({"from": at("09:00"), "to": at("12:00")});
     let party = |extra: Value| {
@@ -195,8 +199,8 @@ async fn dental_slots_take_a_hygienist_a_dentist_and_the_room(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_known_client_is_not_offered_time_already_taken(pool: PgPool) {
+dual!(a_known_client_is_not_offered_time_already_taken);
+async fn a_known_client_is_not_offered_time_already_taken(pool: Db) {
     let clinic = Clinic::new(pool).await;
     clinic.occupy("booked", &clinic.ada, &at("09:00"), &at("10:00")).await;
     let search = |client: Value| {
@@ -208,8 +212,8 @@ async fn a_known_client_is_not_offered_time_already_taken(pool: PgPool) {
     assert_eq!(starts(&found, 0), [at("09:00"), at("10:00"), at("11:00")]);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_full_room_offers_its_waitlist_and_cancelled_time_is_free(pool: PgPool) {
+dual!(a_full_room_offers_its_waitlist_and_cancelled_time_is_free);
+async fn a_full_room_offers_its_waitlist_and_cancelled_time_is_free(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let pod = &clinic.pods[0];
     let search = json!({"from": at("09:00"), "to": at("11:00"),
@@ -225,8 +229,8 @@ async fn a_full_room_offers_its_waitlist_and_cancelled_time_is_free(pool: PgPool
     assert_eq!(starts(&found, 0), [at("10:00")], "capacity 1 and the one waitlist place are taken");
 }
 
-#[sqlx::test(migrations = false)]
-async fn blockouts_close_schedules(pool: PgPool) {
+dual!(blockouts_close_schedules);
+async fn blockouts_close_schedules(pool: Db) {
     let clinic = Clinic::new(pool).await;
     clinic.post("blockouts", json!({"name": "Lunch", "recurrence": MON_WED, "starts_at": "12:00:00", "ends_at": "13:00:00", "reason": "lunch"})).await;
     clinic.post("blockouts", json!({"name": "Pod 1 repair", "resource_id": clinic.pods[0], "recurrence": MON_WED, "starts_at": "09:00:00", "ends_at": "10:00:00"})).await;
@@ -239,8 +243,8 @@ async fn blockouts_close_schedules(pool: PgPool) {
     assert_eq!(starts(&found, 0), [at("09:00"), at("10:00"), at("11:00"), at("13:00")]);
 }
 
-#[sqlx::test(migrations = false)]
-async fn parties_are_placed_together_within_the_gaps(pool: PgPool) {
+dual!(parties_are_placed_together_within_the_gaps);
+async fn parties_are_placed_together_within_the_gaps(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let floats = |parties: Vec<(Value, Value)>, gaps: Value| {
         let parties: Vec<Value> = parties
@@ -278,8 +282,8 @@ async fn parties_are_placed_together_within_the_gaps(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_day_without_slots_is_an_empty_last_page_and_a_longer_window_finds_the_next(pool: PgPool) {
+dual!(a_day_without_slots_is_an_empty_last_page_and_a_longer_window_finds_the_next);
+async fn a_day_without_slots_is_an_empty_last_page_and_a_longer_window_finds_the_next(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let tuesday = json!({"from": "2026-10-27T09:00:00+05:30", "to": "2026-10-27T18:00:00+05:30",
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
@@ -292,8 +296,8 @@ async fn a_day_without_slots_is_an_empty_last_page_and_a_longer_window_finds_the
     assert!(found["items"][0]["parties"][0]["starts_at"].as_str().unwrap().starts_with("2026-10-28"), "{found}");
 }
 
-#[sqlx::test(migrations = false)]
-async fn bad_searches_are_refused(pool: PgPool) {
+dual!(bad_searches_are_refused);
+async fn bad_searches_are_refused(pool: Db) {
     let clinic = Clinic::new(pool.clone()).await;
     let party = json!({"client": {"tag": "guest"}, "service_id": clinic.float});
     for bad in [
@@ -324,14 +328,14 @@ impl Clinic {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn booking_stores_an_open_slot_and_takes_its_time(pool: PgPool) {
+dual!(booking_stores_an_open_slot_and_takes_its_time);
+async fn booking_stores_an_open_slot_and_takes_its_time(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let extraction = clinic.appointment(&clinic.extraction, &clinic.room, &[&clinic.meera, &clinic.albert], "09:10", "10:25", "booked");
     let (status, booked) = clinic.book(extraction.clone()).await;
     assert_eq!((status, booked["status"].clone()), (StatusCode::OK, json!("booked")), "{booked}");
     assert!(booked["booked_at"].as_str().is_some_and(|at| !at.starts_with("1970")), "set by the server");
-    let stretches: i64 = sqlx::query_scalar("SELECT count(*) FROM reservations WHERE owner_id = $1::uuid")
+    let stretches: i64 = Db::query_scalar("SELECT count(*) FROM reservations WHERE owner_id = $1::uuid").sqlite("SELECT count(*) FROM reservations WHERE owner_id = unhex(replace($1, '-', ''))")
         .bind(booked["id"].as_str().unwrap())
         .fetch_one(&clinic.pool)
         .await
@@ -363,8 +367,8 @@ async fn booking_stores_an_open_slot_and_takes_its_time(pool: PgPool) {
     assert_eq!(clinic.book(tuesday).await.0, StatusCode::CONFLICT, "outside the schedule");
 }
 
-#[sqlx::test(migrations = false)]
-async fn booking_takes_capacity_then_the_waitlist_and_cancel_frees_it(pool: PgPool) {
+dual!(booking_takes_capacity_then_the_waitlist_and_cancel_frees_it);
+async fn booking_takes_capacity_then_the_waitlist_and_cancel_frees_it(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let pod = &clinic.pods[0];
     let float = |status: &str| clinic.appointment(&clinic.float, pod, &[], "09:00", "10:00", status);
@@ -400,8 +404,8 @@ async fn booking_takes_capacity_then_the_waitlist_and_cancel_frees_it(pool: PgPo
     assert_eq!(clinic.book(float("booked")).await.0, StatusCode::CONFLICT, "the waitlisted guest took it");
 }
 
-#[sqlx::test(migrations = false)]
-async fn two_bookings_at_once_cannot_take_one_place(pool: PgPool) {
+dual!(two_bookings_at_once_cannot_take_one_place);
+async fn two_bookings_at_once_cannot_take_one_place(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let mut bodies = Vec::new();
     for name in ["Cy", "Di"] {
@@ -416,8 +420,8 @@ async fn two_bookings_at_once_cannot_take_one_place(pool: PgPool) {
     assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
 }
 
-#[sqlx::test(migrations = false)]
-async fn patch_moves_an_appointment_only_to_an_open_time(pool: PgPool) {
+dual!(patch_moves_an_appointment_only_to_an_open_time);
+async fn patch_moves_an_appointment_only_to_an_open_time(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let (pod1, pod2) = (&clinic.pods[0], &clinic.pods[1]);
     let (_, ada) = clinic.book(clinic.appointment(&clinic.float, pod1, &[], "09:00", "10:00", "booked")).await;
@@ -451,8 +455,8 @@ async fn patch_moves_an_appointment_only_to_an_open_time(pool: PgPool) {
     assert_eq!(patch(json!({"starts_at": at("13:00"), "ends_at": at("14:00")})).await.0, StatusCode::BAD_REQUEST, "a cancelled appointment does not move");
 }
 
-#[sqlx::test(migrations = false)]
-async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: PgPool) {
+dual!(each_booking_takes_one_place_and_cancel_gives_it_back);
+async fn each_booking_takes_one_place_and_cancel_gives_it_back(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let (_, studio) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/resources", clinic.tenant), json!({"name": "Studio", "capacity": 2, "waitlist": 1})).await;
     let studio = studio["id"].as_str().unwrap().to_string();
@@ -497,8 +501,8 @@ impl Clinic {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: PgPool) {
+dual!(a_hold_keeps_a_slot_until_it_is_booked_released_or_expired);
+async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let party = json!([{"client": {"id": clinic.ada}, "service_id": clinic.float, "resources": [{"id": clinic.room}]}]);
     let slot = clinic.first_slot(party.clone()).await;
@@ -529,7 +533,7 @@ async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: PgPool
     assert_eq!(clinic.first_slot(party.clone()).await["parties"][0]["starts_at"], json!(at("10:00")), "released");
 
     let (_, held) = clinic.hold(&slot).await;
-    sqlx::query("UPDATE reservations SET expires_at = now() - interval '1 minute' WHERE owner_id = $1::uuid")
+    Db::query("UPDATE reservations SET expires_at = now() - interval '1 minute' WHERE owner_id = $1::uuid").sqlite("UPDATE reservations SET expires_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', '-1 minutes') WHERE owner_id = unhex(replace($1, '-', ''))")
         .bind(held["id"].as_str().unwrap())
         .execute(&clinic.pool)
         .await
@@ -544,8 +548,8 @@ async fn a_hold_keeps_a_slot_until_it_is_booked_released_or_expired(pool: PgPool
     assert_eq!((status, purged["places"].clone()), (StatusCode::OK, json!(4)), "the expired hold's two places and the 9:00 booking's two");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_hold_of_two_parties_is_booked_one_appointment_at_a_time(pool: PgPool) {
+dual!(a_hold_of_two_parties_is_booked_one_appointment_at_a_time);
+async fn a_hold_of_two_parties_is_booked_one_appointment_at_a_time(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let (_, bo) = call(&clinic.app, "POST", &format!("/api/v1/tenants/{}/clients", clinic.tenant), json!({"first_name": "Bo", "last_name": "B", "name": "Bo"})).await;
     let couple = json!([
@@ -569,8 +573,8 @@ async fn a_hold_of_two_parties_is_booked_one_appointment_at_a_time(pool: PgPool)
     assert_eq!(clinic.book(booking(&slot["parties"][1], &bo["id"])).await.0, StatusCode::OK);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_purge_before_a_future_time_is_refused(pool: PgPool) {
+dual!(a_purge_before_a_future_time_is_refused);
+async fn a_purge_before_a_future_time_is_refused(pool: Db) {
     let clinic = Clinic::new(pool).await;
     clinic.occupy("booked", &clinic.room, "2100-01-04T09:00:00Z", "2100-01-04T10:00:00Z").await;
 
@@ -578,7 +582,7 @@ async fn a_purge_before_a_future_time_is_refused(pool: PgPool) {
     let (status, _) = call(&clinic.app, "POST", &purge, json!({"before": "2100-01-05T00:00:00Z"})).await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let places: i64 = sqlx::query_scalar("SELECT count(*) FROM reservations WHERE tenant_id = $1").bind(clinic.tenant).fetch_one(&clinic.pool).await.unwrap();
+    let places: i64 = Db::query_scalar("SELECT count(*) FROM reservations WHERE tenant_id = $1").bind(clinic.tenant).fetch_one(&clinic.pool).await.unwrap();
     assert_eq!(places, 1, "the booked place is kept");
 }
 
@@ -597,8 +601,8 @@ async fn every_start(clinic: &Clinic, mut search: Value) -> (Vec<String>, usize)
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_page_holds_at_most_page_size_slots_and_the_next_page_goes_on_after_it(pool: PgPool) {
+dual!(a_page_holds_at_most_page_size_slots_and_the_next_page_goes_on_after_it);
+async fn a_page_holds_at_most_page_size_slots_and_the_next_page_goes_on_after_it(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let search = |page_size: u16| json!({"from": at("09:00"), "to": at("12:00"), "page_size": page_size,
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
@@ -612,8 +616,8 @@ async fn a_page_holds_at_most_page_size_slots_and_the_next_page_goes_on_after_it
     assert_eq!(pages, all.len().div_ceil(2) + usize::from(all.len() % 2 == 0), "pages of two, the last one maybe empty");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_long_window_comes_a_week_at_a_time(pool: PgPool) {
+dual!(a_long_window_comes_a_week_at_a_time);
+async fn a_long_window_comes_a_week_at_a_time(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let month = json!({"from": at("09:00"), "to": "2026-11-25T18:00:00+05:30", "page_size": 1000,
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});
@@ -628,8 +632,8 @@ async fn a_long_window_comes_a_week_at_a_time(pool: PgPool) {
     assert!(pages >= 5 && every.iter().any(|start| start.starts_with("2026-11-25")), "{pages} pages, through the last day");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_bad_page_token_is_refused(pool: PgPool) {
+dual!(a_bad_page_token_is_refused);
+async fn a_bad_page_token_is_refused(pool: Db) {
     let clinic = Clinic::new(pool).await;
     let search = json!({"from": at("09:00"), "to": at("12:00"), "page_token": "not a token",
         "parties": [{"client": {"tag": "guest"}, "service_id": clinic.float}]});

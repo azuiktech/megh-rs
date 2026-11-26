@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use chrono::NaiveDate;
-use sqlx::PgConnection;
+use crate::{Db, Tx};
 use uuid::Uuid;
 
 use crate::booking::value::Name;
@@ -14,7 +14,6 @@ use crate::booking::value::Name;
 const NAME_LENGTH: usize = 255;
 
 /// The documents that have an id.
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::Type)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 pub enum Numbered {
@@ -100,12 +99,14 @@ impl Ids for Numbering {
 
 /// The next id of the tenant's documents of that kind: the counter of the `ids.scope(on)` is taken atomically
 /// (`next = next + 1`, created at 1), in the caller's transaction, so a rolled back document gives its number back.
-pub async fn issue<I: Ids + ?Sized>(connection: &mut PgConnection, tenant_id: Uuid, document: Numbered, on: NaiveDate, ids: &I) -> Result<Name, sqlx::Error> {
-    let sequence: i64 = sqlx::query_scalar(
+pub async fn issue<I: Ids + ?Sized>(connection: &mut Tx, tenant_id: Uuid, document: Numbered, on: NaiveDate, ids: &I) -> Result<Name, sqlx::Error> {
+    let sequence: i64 = Db::query_scalar(
         "INSERT INTO billing_counters (tenant_id, document, scope, next) VALUES ($1, $2, $3, 2) \
          ON CONFLICT (tenant_id, document, scope) DO UPDATE SET next = billing_counters.next + 1, updated_at = now() \
          RETURNING next - 1",
-    )
+    ).sqlite("INSERT INTO billing_counters (tenant_id, document, scope, next) VALUES ($1, $2, $3, 2) \
+         ON CONFLICT (tenant_id, document, scope) DO UPDATE SET next = billing_counters.next + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') \
+         RETURNING next - 1",)
     .bind(tenant_id)
     .bind(document)
     .bind(ids.scope(on))

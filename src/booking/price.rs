@@ -4,7 +4,7 @@
 use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, PgTransaction};
+use crate::{Db, Tx};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -17,7 +17,6 @@ use crate::auth::rest::{
 };
 use crate::billing::value::{Currency, Micros};
 
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -42,38 +41,38 @@ pub struct Price {
 }
 
 /// An item with a current price that the ledger follows.
-pub trait Priced: Row + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Unpin {
+pub trait Priced: Row {
     const KIND: ItemKind;
     fn tenant_id(&self) -> Uuid;
     fn id(&self) -> Uuid;
     fn price(&self) -> (Micros, Currency);
 }
 
-pub(super) async fn create<T: Priced>(pool: &PgPool, data: T) -> ApiResult<T> {
+pub(super) async fn create<T: Priced>(pool: &Db, data: T) -> ApiResult<T> {
     let mut transaction = pool.begin().await?;
-    let saved = crud::create(&mut *transaction, data, None).await?;
+    let saved = crud::create(&mut transaction, data, None).await?;
     record(&mut transaction, None, &saved).await?;
     transaction.commit().await?;
     Ok(saved)
 }
 
-pub(super) async fn replace<T: Priced>(pool: &PgPool, data: T) -> ApiResult<T> {
+pub(super) async fn replace<T: Priced>(pool: &Db, data: T) -> ApiResult<T> {
     let mut transaction = pool.begin().await?;
     let key = Key {
         tenant_id: data.tenant_id(),
         id: data.id(),
     };
     let before = locked_price::<T>(&mut transaction, &key).await?;
-    let saved = crud::replace(&mut *transaction, data, None).await?;
+    let saved = crud::replace(&mut transaction, data, None).await?;
     record(&mut transaction, Some(before), &saved).await?;
     transaction.commit().await?;
     Ok(saved)
 }
 
-pub(super) async fn patch<T: Priced>(pool: &PgPool, body: Changes) -> ApiResult<T> {
+pub(super) async fn patch<T: Priced>(pool: &Db, body: Changes) -> ApiResult<T> {
     let mut transaction = pool.begin().await?;
     let before = locked_price::<T>(&mut transaction, &body.key).await?;
-    let saved = crud::patch::<T, _>(&mut *transaction, body, None).await?;
+    let saved = crud::patch::<T>(&mut transaction, body, None).await?;
     record(&mut transaction, Some(before), &saved).await?;
     transaction.commit().await?;
     Ok(saved)
@@ -81,17 +80,17 @@ pub(super) async fn patch<T: Priced>(pool: &PgPool, body: Changes) -> ApiResult<
 
 /// The item's price, its row locked until the transaction ends, so changes of one item are recorded in turn.
 async fn locked_price<T: Priced>(
-    transaction: &mut PgTransaction<'_>,
+    transaction: &mut Tx,
     key: &Key,
 ) -> ApiResult<(Micros, Currency)> {
     let sql = format!(
         "SELECT * FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
         T::TABLE_NAME
     );
-    sqlx::query_as::<_, T>(&sql)
+    Db::query_as::<T>(&sql).sqlite(sql.replace(" FOR UPDATE", ""))
         .bind(key.tenant_id)
         .bind(key.id)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(&mut *transaction)
         .await?
         .map(|item| item.price())
         .ok_or(ApiError::NotFound)
@@ -99,7 +98,7 @@ async fn locked_price<T: Priced>(
 
 /// Adds the item's price to the ledger unless it is the price it had before.
 async fn record<T: Priced>(
-    transaction: &mut PgTransaction<'_>,
+    transaction: &mut Tx,
     before: Option<(Micros, Currency)>,
     item: &T,
 ) -> ApiResult<()> {
@@ -119,7 +118,7 @@ async fn record<T: Priced>(
     };
     match unchanged {
         true => Ok(()),
-        false => crud::create(&mut **transaction, row, None).await.map(drop),
+        false => crud::create(&mut *transaction, row, None).await.map(drop),
     }
 }
 

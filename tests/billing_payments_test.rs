@@ -1,6 +1,9 @@
 //! B5e and S4 (docs/TPD-billing.md): payments over HTTP. A payment is money received for one open invoice; it gets its
 //! number from the app's payment `Ids` when it is recorded, and a refund is kept on the payment.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -9,18 +12,18 @@ use megh::auth::rest::AppContext;
 use megh::billing::ids::{Formats, Middle, Numbering};
 use megh::{authorizer, Grant};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
 /// An invoice of 500.00 written straight to the table, as `:open` will leave it.
-async fn invoice(pool: &PgPool, tenant: Uuid, status: &str) -> Uuid {
+async fn invoice(pool: &Db, tenant: Uuid, status: &str) -> Uuid {
     let customer = tenant_of_customer(pool).await;
-    sqlx::query_scalar("INSERT INTO billing_invoices (tenant_id, id, party_id, status, date, due_date, currency, total, balance_due) VALUES ($1, $2, $3, $4, '2026-10-22', '2026-11-21', 'USD', 500000000, 500000000) RETURNING id")
+    Db::query_scalar("INSERT INTO billing_invoices (tenant_id, id, party_id, status, date, due_date, currency, total, balance_due) VALUES ($1, $2, $3, $4, '2026-10-22', '2026-11-21', 'USD', 500000000, 500000000) RETURNING id")
         .bind(tenant)
         .bind(Uuid::now_v7())
         .bind(customer)
@@ -30,7 +33,7 @@ async fn invoice(pool: &PgPool, tenant: Uuid, status: &str) -> Uuid {
         .unwrap()
 }
 
-async fn tenant_of_customer(pool: &PgPool) -> Uuid {
+async fn tenant_of_customer(pool: &Db) -> Uuid {
     tenant(pool, "Ada").await
 }
 
@@ -38,7 +41,7 @@ fn formats() -> Formats {
     Formats::new(Numbering::new("INV", "-", Middle::Year, 4).unwrap(), Numbering::new("PAY", "-", Middle::None, 4).unwrap())
 }
 
-fn app_with(pool: PgPool, grants: &[String], formats: Option<Formats>) -> Router {
+fn app_with(pool: Db, grants: &[String], formats: Option<Formats>) -> Router {
     let (api, _) = megh::billing::router().split_for_parts();
     let router = Router::new().nest("/api/v1", api.layer(from_fn(authorizer))).layer(Extension(grants.iter().map(Grant::new).collect::<Vec<_>>()));
     let router = match formats {
@@ -48,7 +51,7 @@ fn app_with(pool: PgPool, grants: &[String], formats: Option<Formats>) -> Router
     router.with_state(AppContext { pool })
 }
 
-fn app(pool: PgPool, grants: &[String]) -> Router {
+fn app(pool: Db, grants: &[String]) -> Router {
     app_with(pool, grants, Some(formats()))
 }
 
@@ -77,9 +80,8 @@ fn with(mut body: Value, extra: Value) -> Value {
     body
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_payment_is_for_an_open_invoice_of_the_tenant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_payment_is_for_an_open_invoice_of_the_tenant);
+async fn a_payment_is_for_an_open_invoice_of_the_tenant(pool: Db) {
     let (mine, other) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await);
     let app = app(pool.clone(), &[grants(mine), grants(other)].concat());
     let payments = format!("/api/v1/tenants/{mine}/payments");
@@ -111,9 +113,8 @@ async fn a_payment_is_for_an_open_invoice_of_the_tenant(pool: PgPool) {
     assert_eq!(second["number"], "PAY-0002", "the refused ones used no number");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_payment_is_read_replaced_patched_and_deleted(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_payment_is_read_replaced_patched_and_deleted);
+async fn a_payment_is_read_replaced_patched_and_deleted(pool: Db) {
     let (mine, other) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await);
     let (mine_app, other_app) = (app(pool.clone(), &grants(mine)), app(pool.clone(), &grants(other)));
     let (owed, second) = (invoice(&pool, mine, "open").await, invoice(&pool, mine, "open").await);
@@ -143,9 +144,8 @@ async fn a_payment_is_read_replaced_patched_and_deleted(pool: PgPool) {
     assert_eq!(call(&mine_app, "PUT", &item, payment(owed)).await.0, StatusCode::NOT_FOUND, "a deleted payment stays deleted");
 }
 
-#[sqlx::test(migrations = false)]
-async fn authorizer_guards_payments(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(authorizer_guards_payments);
+async fn authorizer_guards_payments(pool: Db) {
     let (mine, other) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await);
     let collection = format!("/api/v1/tenants/{mine}/payments");
     let read_only = app(pool.clone(), &[format!("tenants:read:{mine}"), "payments:read".into()]);

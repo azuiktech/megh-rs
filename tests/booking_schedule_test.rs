@@ -2,6 +2,9 @@
 //! UNTIL or COUNT rule end) and the window of each day it gives, for an optional provider and resource and any
 //! listed services.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -9,18 +12,18 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
         Grant::new(format!("tenants:read:{tenant}")),
@@ -62,9 +65,8 @@ fn days(recurrence: &Value) -> Vec<String> {
     set.all(100).dates.iter().map(|d| d.date_naive().to_string()).collect()
 }
 
-#[sqlx::test(migrations = false)]
-async fn schedule_is_a_recurrence_and_a_daily_window(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(schedule_is_a_recurrence_and_a_daily_window);
+async fn schedule_is_a_recurrence_and_a_daily_window(pool: Db) {
     let mine = tenant(&pool).await;
     let app = app(pool, mine);
     let base = format!("/api/v1/tenants/{mine}");
@@ -135,9 +137,8 @@ async fn schedule_is_a_recurrence_and_a_daily_window(pool: PgPool) {
     assert_eq!(call(&app, "GET", &item, Value::Null).await.0, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test(migrations = false)]
-async fn blockout_is_a_schedule_with_a_reason(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(blockout_is_a_schedule_with_a_reason);
+async fn blockout_is_a_schedule_with_a_reason(pool: Db) {
     let mine = tenant(&pool).await;
     let app = app(pool, mine);
     let collection = format!("/api/v1/tenants/{mine}/blockouts");

@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, TimeDelta, Utc};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use sqlx::PgConnection;
+use crate::{Array, Db, Tx};
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -99,7 +99,10 @@ async fn hold(State(ctx): State<AppContext>, Input(request): Input<Reserve>) -> 
     responses((status = 200, body = Released), (status = 404)),
 )]
 async fn release(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Released> {
-    match give_back(&mut *ctx.pool.acquire().await?, key.tenant_id, key.id).await? {
+    let mut transaction = ctx.pool.begin().await?;
+    let places = give_back(&mut transaction, key.tenant_id, key.id).await?;
+    transaction.commit().await?;
+    match places {
         0 => Err(ApiError::NotFound),
         places => Ok(Released { places }),
     }
@@ -115,7 +118,7 @@ async fn release(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiRe
     responses((status = 200, body = Released)),
 )]
 async fn purge(State(ctx): State<AppContext>, Input(request): Input<Purge>) -> ApiResult<Released> {
-    let deleted = sqlx::query("DELETE FROM reservations WHERE tenant_id = $1 AND (upper(during) <= $2 OR expires_at <= now())")
+    let deleted = Db::query("DELETE FROM reservations WHERE tenant_id = $1 AND (upper(during) <= $2 OR expires_at <= now())").sqlite("DELETE FROM reservations WHERE tenant_id = $1 AND (unixepoch(ends_at, 'subsec') <= unixepoch($2, 'subsec') OR unixepoch(expires_at, 'subsec') <= unixepoch('now', 'subsec'))")
         .bind(request.tenant_id)
         .bind(request.before)
         .execute(&ctx.pool)
@@ -124,8 +127,9 @@ async fn purge(State(ctx): State<AppContext>, Input(request): Input<Purge>) -> A
 }
 
 /// Bookings and holds of one tenant wait for each other until their transaction ends, so two cannot take one place.
-pub(super) async fn lock(conn: &mut PgConnection, tenant_id: Uuid) -> ApiResult<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+pub(super) async fn lock(conn: &mut Tx, tenant_id: Uuid) -> ApiResult<()> {
+    Db::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+        .sqlite("SELECT $1")
         .bind(tenant_id)
         .execute(conn)
         .await?;
@@ -134,7 +138,7 @@ pub(super) async fn lock(conn: &mut PgConnection, tenant_id: Uuid) -> ApiResult<
 
 /// One row per place `owner` takes; a hold's rows expire at `expires_at`.
 pub(super) async fn take(
-    conn: &mut PgConnection,
+    conn: &mut Tx,
     tenant_id: Uuid,
     owner: Uuid,
     places: &[Place],
@@ -142,17 +146,22 @@ pub(super) async fn take(
 ) -> ApiResult<()> {
     let (participants, starts, ends, waitlist): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
         places.iter().map(|(id, (start, end), waitlist)| (*id, *start, *end, *waitlist)).multiunzip();
-    sqlx::query(
+    Db::query(
         "INSERT INTO reservations (tenant_id, id, owner_id, participant_id, during, waitlist, expires_at) \
          SELECT $1, uuidv7(), $2, participant, tstzrange(starts, ends), waitlist, $7 \
          FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[], $6::bool[]) AS t(participant, starts, ends, waitlist)",
     )
+    .sqlite(
+        "INSERT INTO reservations (tenant_id, owner_id, participant_id, starts_at, ends_at, waitlist, expires_at) \
+         SELECT $1, $2, unhex(replace(p.value, '-', '')), s.value, e.value, w.value, $7 \
+         FROM json_each($3) p JOIN json_each($4) s ON s.key = p.key JOIN json_each($5) e ON e.key = p.key JOIN json_each($6) w ON w.key = p.key",
+    )
     .bind(tenant_id)
     .bind(owner)
-    .bind(participants)
-    .bind(starts)
-    .bind(ends)
-    .bind(waitlist)
+    .bind(Array(participants))
+    .bind(Array(starts))
+    .bind(Array(ends))
+    .bind(Array(waitlist))
     .bind(expires_at)
     .execute(conn)
     .await?;
@@ -160,8 +169,8 @@ pub(super) async fn take(
 }
 
 /// Gives back every place `owner` takes; how many.
-pub(super) async fn give_back(conn: &mut PgConnection, tenant_id: Uuid, owner: Uuid) -> ApiResult<u64> {
-    let deleted = sqlx::query("DELETE FROM reservations WHERE tenant_id = $1 AND owner_id = $2")
+pub(super) async fn give_back(conn: &mut Tx, tenant_id: Uuid, owner: Uuid) -> ApiResult<u64> {
+    let deleted = Db::query("DELETE FROM reservations WHERE tenant_id = $1 AND owner_id = $2")
         .bind(tenant_id)
         .bind(owner)
         .execute(conn)
@@ -170,20 +179,28 @@ pub(super) async fn give_back(conn: &mut PgConnection, tenant_id: Uuid, owner: U
 }
 
 /// Takes `places` out of the unexpired hold `hold`, one held row each; a conflict unless it holds them all.
-pub(super) async fn claim(conn: &mut PgConnection, tenant_id: Uuid, hold: Uuid, places: &[Place]) -> ApiResult<()> {
+pub(super) async fn claim(conn: &mut Tx, tenant_id: Uuid, hold: Uuid, places: &[Place]) -> ApiResult<()> {
     let (participants, starts, ends): (Vec<_>, Vec<_>, Vec<_>) = places.iter().map(|(id, (start, end), _)| (*id, *start, *end)).multiunzip();
-    let claimed = sqlx::query(
+    let claimed = Db::query(
         "WITH wanted AS (SELECT * FROM unnest($3::uuid[], $4::timestamptz[], $5::timestamptz[]) WITH ORDINALITY AS t(participant, starts, ends, n)), \
          held AS (SELECT DISTINCT ON (w.n) r.id FROM wanted w JOIN reservations r ON r.tenant_id = $1 AND r.owner_id = $2 \
                   AND r.participant_id = w.participant AND r.during = tstzrange(w.starts, w.ends) AND r.expires_at > now() \
                   ORDER BY w.n, r.id) \
          DELETE FROM reservations WHERE tenant_id = $1 AND id IN (SELECT id FROM held)",
     )
+    .sqlite(
+        "WITH wanted AS (SELECT unhex(replace(p.value, '-', '')) AS participant, s.value AS starts, e.value AS ends \
+                         FROM json_each($3) p JOIN json_each($4) s ON s.key = p.key JOIN json_each($5) e ON e.key = p.key), \
+         held AS (SELECT (SELECT r.id FROM reservations r WHERE r.tenant_id = $1 AND r.owner_id = $2 AND r.participant_id = w.participant \
+                          AND unixepoch(r.starts_at, 'subsec') = unixepoch(w.starts, 'subsec') AND unixepoch(r.ends_at, 'subsec') = unixepoch(w.ends, 'subsec') \
+                          AND unixepoch(r.expires_at, 'subsec') > unixepoch('now', 'subsec') ORDER BY r.id LIMIT 1) AS id FROM wanted w) \
+         DELETE FROM reservations WHERE tenant_id = $1 AND id IN (SELECT id FROM held)",
+    )
     .bind(tenant_id)
     .bind(hold)
-    .bind(participants)
-    .bind(starts)
-    .bind(ends)
+    .bind(Array(participants))
+    .bind(Array(starts))
+    .bind(Array(ends))
     .execute(conn)
     .await?;
     (claimed.rows_affected() == places.len() as u64)

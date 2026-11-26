@@ -2,6 +2,9 @@
 //! `refunded` over its processing and succeeded payments, `balance_due` is the total less that, and a payment never
 //! pays more than is owed. Every change to a payment is one transaction with the refresh of its invoice.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -10,20 +13,20 @@ use megh::auth::rest::AppContext;
 use megh::billing::ids::{Formats, Middle, Numbering};
 use megh::{authorizer, Grant};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
 
 const HUNDRED: i64 = 100_000_000;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
 /// An open invoice of 100.00.
-async fn invoice(pool: &PgPool, tenant: Uuid, customer: Uuid) -> Uuid {
-    sqlx::query_scalar("INSERT INTO billing_invoices (tenant_id, id, party_id, number, status, date, due_date, currency, total, balance_due) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD', $5, $5) RETURNING id")
+async fn invoice(pool: &Db, tenant: Uuid, customer: Uuid) -> Uuid {
+    Db::query_scalar("INSERT INTO billing_invoices (tenant_id, id, party_id, number, status, date, due_date, currency, total, balance_due) VALUES ($1, $2, $3, $4, 'open', '2026-10-22', '2026-11-21', 'USD', $5, $5) RETURNING id")
         .bind(tenant)
         .bind(Uuid::now_v7())
         .bind(customer)
@@ -34,7 +37,7 @@ async fn invoice(pool: &PgPool, tenant: Uuid, customer: Uuid) -> Uuid {
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let formats = Formats::new(Numbering::new("INV", "-", Middle::Year, 4).unwrap(), Numbering::new("PAY", "-", Middle::None, 4).unwrap());
     let (api, _) = megh::billing::router().split_for_parts();
     let grants = vec![format!("tenants:read:{tenant}"), "payments:*".to_string(), "invoices:*".to_string()];
@@ -75,9 +78,8 @@ fn item(tenant: Uuid, payment: &Value) -> String {
     format!("/api/v1/tenants/{tenant}/payments/{}", payment["id"].as_str().unwrap())
 }
 
-#[sqlx::test(migrations = false)]
-async fn paying_lowers_what_is_owed_until_nothing_is(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(paying_lowers_what_is_owed_until_nothing_is);
+async fn paying_lowers_what_is_owed_until_nothing_is(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let (app, owed) = (app(pool.clone(), mine), invoice(&pool, mine, customer).await);
     assert_eq!(amounts(&app, mine, owed).await, (0, 100));
@@ -94,9 +96,8 @@ async fn paying_lowers_what_is_owed_until_nothing_is(pool: PgPool) {
     assert_eq!(listed["items"].as_array().unwrap().len(), 2, "and is not recorded");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_payment_that_is_more_than_is_owed_is_refused_and_uses_no_number(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_payment_that_is_more_than_is_owed_is_refused_and_uses_no_number);
+async fn a_payment_that_is_more_than_is_owed_is_refused_and_uses_no_number(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let (app, owed) = (app(pool.clone(), mine), invoice(&pool, mine, customer).await);
     assert_eq!(record(&app, mine, pay(owed, 101, "succeeded")).await.0, StatusCode::CONFLICT);
@@ -104,9 +105,8 @@ async fn a_payment_that_is_more_than_is_owed_is_refused_and_uses_no_number(pool:
     assert_eq!((status, first["number"].clone()), (StatusCode::OK, json!("PAY-0001")), "the refused payment took no number");
 }
 
-#[sqlx::test(migrations = false)]
-async fn only_processing_and_succeeded_payments_count(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(only_processing_and_succeeded_payments_count);
+async fn only_processing_and_succeeded_payments_count(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let (app, owed) = (app(pool.clone(), mine), invoice(&pool, mine, customer).await);
 
@@ -122,9 +122,8 @@ async fn only_processing_and_succeeded_payments_count(pool: PgPool) {
     assert_eq!(amounts(&app, mine, owed).await, (20, 80));
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_refund_gives_back_what_was_paid(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_refund_gives_back_what_was_paid);
+async fn a_refund_gives_back_what_was_paid(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let (app, owed) = (app(pool.clone(), mine), invoice(&pool, mine, customer).await);
     let (_, paid) = record(&app, mine, pay(owed, 50, "succeeded")).await;
@@ -139,9 +138,8 @@ async fn a_refund_gives_back_what_was_paid(pool: PgPool) {
     assert_eq!(call(&app, "POST", &format!("/api/v1/tenants/{mine}/invoices/{owed}:void"), json!({})).await.0, StatusCode::OK, "nothing is left paid, so it can be voided");
 }
 
-#[sqlx::test(migrations = false)]
-async fn changing_a_payment_refreshes_the_invoice_and_cannot_overpay(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(changing_a_payment_refreshes_the_invoice_and_cannot_overpay);
+async fn changing_a_payment_refreshes_the_invoice_and_cannot_overpay(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let (app, owed) = (app(pool.clone(), mine), invoice(&pool, mine, customer).await);
     let (_, paid) = record(&app, mine, pay(owed, 50, "succeeded")).await;
@@ -156,9 +154,8 @@ async fn changing_a_payment_refreshes_the_invoice_and_cannot_overpay(pool: PgPoo
     assert_eq!(call(&app, "GET", &here, Value::Null).await.1["amount"], json!(80000000));
 }
 
-#[sqlx::test(migrations = false)]
-async fn deleting_a_payment_gives_the_invoice_its_balance_back(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(deleting_a_payment_gives_the_invoice_its_balance_back);
+async fn deleting_a_payment_gives_the_invoice_its_balance_back(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let (app, owed) = (app(pool.clone(), mine), invoice(&pool, mine, customer).await);
     let (_, first) = record(&app, mine, pay(owed, 30, "succeeded")).await;
@@ -168,9 +165,8 @@ async fn deleting_a_payment_gives_the_invoice_its_balance_back(pool: PgPool) {
     assert_eq!(amounts(&app, mine, owed).await, (20, 80), "a deleted payment no longer counts");
 }
 
-#[sqlx::test(migrations = false)]
-async fn payments_made_at_the_same_time_never_pay_more_than_is_owed(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(payments_made_at_the_same_time_never_pay_more_than_is_owed);
+async fn payments_made_at_the_same_time_never_pay_more_than_is_owed(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let (app, owed) = (app(pool.clone(), mine), invoice(&pool, mine, customer).await);
     let tasks: Vec<_> = (0..6)
@@ -195,9 +191,8 @@ async fn payments_made_at_the_same_time_never_pay_more_than_is_owed(pool: PgPool
     assert_eq!(amounts(&app, mine, owed).await, (90, 10));
 }
 
-#[sqlx::test(migrations = false)]
-async fn each_tenants_payments_are_numbered_apart_and_the_app_must_give_its_ids(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(each_tenants_payments_are_numbered_apart_and_the_app_must_give_its_ids);
+async fn each_tenants_payments_are_numbered_apart_and_the_app_must_give_its_ids(pool: Db) {
     let (mine, other, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     let (mine_app, other_app) = (app(pool.clone(), mine), app(pool.clone(), other));
     let (mine_invoice, other_invoice) = (invoice(&pool, mine, customer).await, invoice(&pool, other, customer).await);

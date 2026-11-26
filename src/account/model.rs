@@ -8,7 +8,7 @@ use serde::Deserialize;
 /// Third-party OAuth connected account stored in `connected_accounts`.
 #[crate::entity(table = "connected_accounts", keys = ["account_id", "provider"])]
 #[derive(Clone, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
+#[cfg_attr(feature = "sql", derive(sqlx::FromRow))]
 pub struct ConnectedAccount {
     pub account_id: String,
     pub provider: String,

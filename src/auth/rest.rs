@@ -13,7 +13,7 @@ use validator::Validate;
 
 #[derive(Clone)]
 pub struct AppContext {
-    pub pool: sqlx::PgPool,
+    pub pool: crate::Db,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +116,13 @@ fn parse_filter<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Opt
 pub struct Key {
     pub tenant_id: Uuid,
     pub id: Uuid,
+}
+
+/// `(tenant_id, id)`.
+impl From<(Uuid, Uuid)> for Key {
+    fn from((tenant_id, id): (Uuid, Uuid)) -> Self {
+        Key { tenant_id, id }
+    }
 }
 
 /// A PATCH body for the row named by the path: the JSON merge patch (RFC 7396) to apply.

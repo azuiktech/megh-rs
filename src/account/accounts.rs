@@ -8,7 +8,7 @@ use oauth2::basic::BasicErrorResponseType;
 use oauth2::http::Extensions;
 use oauth2::{RefreshToken, RequestTokenError};
 use reqwest::header::{HeaderValue, AUTHORIZATION};
-use sqlx::PgPool;
+use crate::Db;
 
 use super::encryption::Encryptor;
 use super::model::{ConnectedAccount, OAuth2Tokens};
@@ -38,7 +38,7 @@ pub enum AccountError {
 /// Connected accounts and their tokens. Holds the injected pool and the configured providers.
 #[derive(Clone)]
 pub struct Accounts {
-    pool: PgPool,
+    pool: Db,
     providers: Arc<HashMap<String, OAuthProviderConfig>>,
     http: reqwest::Client,
     expiry_margin: Duration,
@@ -46,7 +46,7 @@ pub struct Accounts {
 }
 
 impl Accounts {
-    pub fn new(pool: PgPool, providers: Arc<HashMap<String, OAuthProviderConfig>>) -> Self {
+    pub fn new(pool: Db, providers: Arc<HashMap<String, OAuthProviderConfig>>) -> Self {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(10))
@@ -91,7 +91,7 @@ impl Accounts {
     /// The account's access token, refreshed first when expired. No row is locked and no connection is held while the
     /// provider answers; when two callers refresh at once, the last update is the one stored.
     pub(crate) async fn access_token(&self, provider: &str, account_id: &str) -> Result<String, AccountError> {
-        let account = sqlx::query_as::<_, ConnectedAccount>("SELECT * FROM connected_accounts WHERE account_id = $1 AND provider = $2")
+        let account = Db::query_as::<ConnectedAccount>("SELECT * FROM connected_accounts WHERE account_id = $1 AND provider = $2")
             .bind(account_id)
             .bind(provider)
             .fetch_optional(&self.pool)
@@ -107,7 +107,7 @@ impl Accounts {
         match self.request_refresh(provider, refresh_token).await {
             Ok(tokens) => self.store_refreshed(provider, account_id, tokens).await,
             Err(error @ AccountError::InvalidGrant(_)) => {
-                sqlx::query("UPDATE connected_accounts SET disconnected_at = NOW(), updated_at = NOW() WHERE account_id = $1 AND provider = $2")
+                Db::query("UPDATE connected_accounts SET disconnected_at = NOW(), updated_at = NOW() WHERE account_id = $1 AND provider = $2").sqlite("UPDATE connected_accounts SET disconnected_at = strftime('%Y-%m-%dT%H:%M:%f+00:00'), updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') WHERE account_id = $1 AND provider = $2")
                     .bind(account_id)
                     .bind(provider)
                     .execute(&self.pool)
@@ -121,7 +121,7 @@ impl Accounts {
     async fn store_refreshed(&self, provider: &str, account_id: &str, tokens: OAuth2Tokens) -> Result<String, AccountError> {
         let stored_access = self.encrypt(&tokens.access_token)?;
         let stored_refresh = tokens.refresh_token.as_deref().map(|t| self.encrypt(t)).transpose()?;
-        sqlx::query("UPDATE connected_accounts SET access_token = $3, refresh_token = COALESCE($4, refresh_token), expiry = $5, updated_at = NOW() WHERE account_id = $1 AND provider = $2")
+        Db::query("UPDATE connected_accounts SET access_token = $3, refresh_token = COALESCE($4, refresh_token), expiry = $5, updated_at = NOW() WHERE account_id = $1 AND provider = $2").sqlite("UPDATE connected_accounts SET access_token = $3, refresh_token = COALESCE($4, refresh_token), expiry = $5, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') WHERE account_id = $1 AND provider = $2")
             .bind(account_id)
             .bind(provider)
             .bind(stored_access)

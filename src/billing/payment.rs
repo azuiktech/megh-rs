@@ -18,7 +18,6 @@ use crate::auth::rest::{ApiResult, AppContext, Changes, Input, Key, ListRequest,
 use crate::booking::value::{Attributes, Name};
 
 /// HubSpot's `hs_latest_status` without the refund and dispute states: the refund is the `refunded` amount.
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]

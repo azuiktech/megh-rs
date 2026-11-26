@@ -1,6 +1,9 @@
 //! S6e (docs/TPD-billing.md section 7, #227): an appointment lists the products it uses. Booking it, or changing its
 //! products, needs that much on hand at the tenant (409 otherwise); a booked appointment holds no stock.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -8,19 +11,20 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn one(pool: &PgPool, sql: &str, tenant: Uuid) -> Uuid {
-    sqlx::query_scalar(sql)
+async fn one(pool: &Db, sql: &str, tenant: Uuid) -> Uuid {
+    Db::query_scalar(sql)
+        .sqlite(sql.replace("uuidv7()", common::SQLITE_UUIDV7))
         .bind(tenant)
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
         Grant::new(format!("tenants:read:{tenant}")),
@@ -49,17 +53,16 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
     )
 }
 
-async fn on_hand(pool: &PgPool, product: Uuid) -> String {
-    sqlx::query_scalar("SELECT on_hand::text FROM stocks WHERE product_id = $1")
+async fn on_hand(pool: &Db, product: Uuid) -> String {
+    Db::query_scalar("SELECT on_hand::text FROM stocks WHERE product_id = $1").sqlite("SELECT on_hand FROM stocks WHERE product_id = $1")
         .bind(product)
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-#[sqlx::test(migrations = false)]
-async fn booking_with_products_needs_them_on_hand(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(booking_with_products_needs_them_on_hand);
+async fn booking_with_products_needs_them_on_hand(pool: Db) {
     let mine = one(
         &pool,
         "INSERT INTO tenants (name) VALUES ('Salon') RETURNING id",
@@ -76,9 +79,9 @@ async fn booking_with_products_needs_them_on_hand(pool: PgPool) {
     .await;
     one(&pool, r#"INSERT INTO schedules (tenant_id, id, name, recurrence, starts_at, ends_at) VALUES ($1, uuidv7(), 'Open', '"DTSTART:20261102T000000Z\nRRULE:FREQ=DAILY;COUNT=1"', '00:00', '23:00') RETURNING id"#, mine).await;
     let colour = one(&pool, "INSERT INTO products (tenant_id, id, sku, name, unit, price, currency) VALUES ($1, uuidv7(), 'WEL-60', 'Hair colour', 'tube', 12000000, 'USD') RETURNING id", mine).await;
-    sqlx::query(
+    Db::query(
         "INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, uuidv7(), $2, 1)",
-    )
+    ).sqlite("INSERT INTO stocks (tenant_id, id, product_id, on_hand) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, 1)",)
     .bind(mine)
     .bind(colour)
     .execute(&pool)

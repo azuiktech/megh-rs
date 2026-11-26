@@ -104,8 +104,6 @@ Every test that touches a database runs on SQLite (a database file of its own) a
 
 ## Open
 
-- `AddOn::price()` is renamed `amount()`: the generated column constant `AddOn::price` has the same name. To decide: keep the rename, or name the column constants differently.
 - `crud` assumes a uuid last key and a tenant-first key for `list`; backward pagination is not planned.
 - An `Option<T>` field cannot be stored through `try_from` (sqlx reads NULL before the conversion); none exists.
 - On SQLite, decimal arithmetic in SQL (stock, totals) goes through `REAL`.
-- `sea-query` is no longer used.

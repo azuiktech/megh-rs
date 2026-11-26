@@ -168,7 +168,7 @@ json_text!(sqlx::Sqlite);
 /// A list stored as a PostgreSQL array, and as the text of a JSON array on SQLite: a `Vec<T>` field annotated
 /// `#[sqlx(try_from = "Array<T>")]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
+#[derive(utoipa::ToSchema)]
 #[serde(transparent)]
 pub struct Array<T>(pub Vec<T>);
 

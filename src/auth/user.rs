@@ -26,7 +26,6 @@ pub struct UpsertUserInput {
 }
 
 /// Why a password could not be set or verified.
-#[cfg(feature = "sql")]
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PasswordError {
@@ -45,29 +44,24 @@ pub enum PasswordError {
 }
 
 /// The `provider` of a machine's user row.
-#[cfg(feature = "sql")]
 pub(crate) const MACHINE: &str = "megh";
 
 /// A new machine's credentials. The secret cannot be read again.
-#[cfg(feature = "sql")]
 pub struct Registered {
     pub client_id: String,
     pub secret: String,
 }
 
 /// Compared against when the user or password is missing, so every failure costs one bcrypt verification.
-#[cfg(feature = "sql")]
 static DUMMY_HASH: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| bcrypt::hash("", bcrypt::DEFAULT_COST).expect("bcrypt hashes the empty password"));
 
-#[cfg(feature = "sql")]
 /// The users of a database.
 pub struct UserRepo<'a> {
     pool: &'a crate::Db,
     lifecycle: Option<crate::tenant::Lifecycle>,
 }
 
-#[cfg(feature = "sql")]
 impl<'a> UserRepo<'a> {
     pub fn new(pool: &'a crate::Db) -> Self {
         Self { pool, lifecycle: None }

@@ -5,14 +5,12 @@ use crate::{Db, Array};
 use super::encryption::Encryptor;
 use super::model::ConnectedAccount;
 
-#[cfg(feature = "sql")]
 /// Repository for `connected_accounts` table operations in PostgreSQL.
 pub struct ConnectedAccountRepo<'a> {
     pool: &'a Db,
     encryptor: Option<Encryptor>,
 }
 
-#[cfg(feature = "sql")]
 impl<'a> ConnectedAccountRepo<'a> {
     pub fn new(pool: &'a Db) -> Self {
         Self { pool, encryptor: None }

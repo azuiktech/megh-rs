@@ -19,7 +19,6 @@ pub struct Member {
 }
 
 /// Read on each driver: `grants` is the text of a JSON array.
-#[cfg(feature = "sql")]
 macro_rules! member_row {
     ($row:ty) => {
 impl<'r> sqlx::FromRow<'r, $row> for Member {

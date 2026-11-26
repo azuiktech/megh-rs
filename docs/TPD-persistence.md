@@ -39,7 +39,7 @@ Db::query("UPDATE … ").bind(id).execute(&mut tx).await?.rows_affected();
 tx.commit().await?;
 ```
 
-- `Db { Postgres(PgPool), Sqlite(SqlitePool) }` (each behind its feature), `Tx` the same for a transaction; `connect`, `migrate`, `begin`, `close`; `Tx::commit`, `Tx::rollback`. On SQLite a transaction starts `BEGIN IMMEDIATE`, so it holds the write lock where PostgreSQL locks rows (`FOR UPDATE`).
+- `Db { Postgres(PgPool), Sqlite(SqlitePool) }` (each behind its feature, `postgres` (default) or `sqlite`; the drivers are megh's only features, at least one is needed), `Tx` the same for a transaction; `connect`, `migrate`, `begin`, `close`; `Tx::commit`, `Tx::rollback`. On SQLite a transaction starts `BEGIN IMMEDIATE`, so it holds the write lock where PostgreSQL locks rows (`FOR UPDATE`).
 - `Db::query`, `Db::query_as::<T>`, `Db::query_scalar::<T>` as sqlx's: `.bind(v)` (owned or borrowed), `.postgres(sql)`, `.sqlite(sql)`, `.fetch_one/fetch_optional/fetch_all(on)`, `.execute(on)`. `on` is `&Db`, `&mut Tx` (anything `Into<On>`). Placeholders are `$n` (both drivers) or `?` (numbered for PostgreSQL). A SQLite text may hold several statements.
 - A bound value is `Param<'q>`: `sqlx::Type` + `Encode` on every enabled driver. A read row is `Record`: `sqlx::FromRow` on every enabled driver.
 - `sqlite_now!()`: the current time in SQLite SQL, written as sqlx writes a `DateTime<Utc>`.

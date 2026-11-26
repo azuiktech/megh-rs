@@ -92,10 +92,8 @@ pub fn request_grants(method: &str, matched_template: &str, uri_path: &str) -> V
     if grants.is_empty() { vec![Grant::from_parts("root", leaf_action, None)] } else { grants }
 }
 
-#[cfg(feature = "axum")]
 pub use axum_middleware::authorizer;
 
-#[cfg(feature = "axum")]
 mod axum_middleware {
     use axum::extract::{MatchedPath, OriginalUri, RawPathParams, Request};
     use axum::http::StatusCode;

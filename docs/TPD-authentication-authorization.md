@@ -52,7 +52,7 @@ pac4j's `csrfCheck` is an app-level double-submit check on POSTs. Its OAuth clie
 ## 3. Architecture
 
 - **Stack:** axum 0.8, `tower-sessions` 0.14, sqlx 0.8 (Postgres; held back, see `AGENTS.md`), `oauth2` 5 (no bundled HTTP client; `oauth_http_client` adapts the caller's `reqwest` 0.13 client), `reqwest` 0.13 (rustls), `sha2`/`hex` for token hashing, `reqwest` for userinfo.
-- **Feature flags:** `postgres` gates repos and `sqlx::FromRow`; `client` gates `reqwest` and `fetch_user_info`; `axum` gates the router, extractor and authorizer middleware. The router (`auth::http`) needs both `axum` and `postgres`. All three are default.
+- **Feature flags:** only the database drivers, `postgres` (default) and `sqlite`, are features; axum, utoipa, the HTTP client and the rest are always compiled.
 - **Authentication path:** browser → `/auth/{provider}/login` → provider → `/auth/{provider}/callback` → code exchange → userinfo → `users` upsert → `connected_accounts` upsert → `session.cycle_id()` and `user_id` stored in the `tower-sessions` session (cookie set by the app's `SessionManagerLayer`). Later requests: session `user_id` → `UserRepo::get_by_id` → `AuthUser`.
 - **Authorization path:** the application puts a `Member` (or a `Vec<Grant>`) into request extensions; the `authorizer` middleware derives the required `Grant` from the matched route and method and checks it. megh does not populate those extensions; nothing links `AuthUser` to `OrgMember` yet (see §8).
 
@@ -113,7 +113,7 @@ pub type User = Entity<Uuid, UserProfile>;
 pub struct UserProfile { account_id: Option<String>, provider: Option<String>, email: String, display_name: String, photo_url: String }
 pub struct UpsertUserInput { provider: String, account_id: String, email: String, display_name: Option<String>, photo_url: Option<String> }
 
-impl UserRepo<'_> {                            // feature "postgres"
+impl UserRepo<'_> {
     pub fn new(pool: &PgPool) -> UserRepo;
     pub async fn get_by_id(&self, id: Uuid) -> Result<Option<User>, sqlx::Error>;
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error>;
@@ -161,7 +161,7 @@ pub fn build_authorization_url(client: &ProviderClient, csrf_token: CsrfToken, o
 
 pub struct OAuthUserInfo { subject: String, email: String, email_verified: Option<bool>, name: Option<String>, picture: Option<String> }
 pub async fn fetch_user_info(http: &reqwest::Client, userinfo_url: &str, access_token: &str)
-    -> Result<OAuthUserInfo, OAuthError>;               // feature "client"; subject = `sub` or `id`
+    -> Result<OAuthUserInfo, OAuthError>;               // subject = `sub` or `id`
 
 pub enum OAuthFlowMode { WebRedirect{..}, DesktopLoopback{..}, CustomScheme{..} }   // each { redirect_uri: String }
 pub enum OAuthError { UrlParse, Http, TokenExchange, InvalidResponse }
@@ -170,7 +170,7 @@ pub struct ConnectedAccount { account_id, provider, email, access_token, refresh
 impl ConnectedAccount { pub fn is_connected(&self) -> bool; pub fn is_expired(&self, margin_secs: i64) -> bool }
 pub struct OAuth2Tokens { access_token, refresh_token, token_expires_at }      // From<&BasicTokenResponse>
 
-impl ConnectedAccountRepo<'_> {                        // feature "postgres"
+impl ConnectedAccountRepo<'_> {
     pub fn new(pool: &PgPool) -> ConnectedAccountRepo;
     pub async fn get(&self, account_id: &str, provider: &str) -> Result<Option<ConnectedAccount>, sqlx::Error>;
     pub async fn find_by_email_or_account(&self, identifier: &str, provider: &str) -> Result<Option<ConnectedAccount>, sqlx::Error>;
@@ -182,7 +182,7 @@ impl ConnectedAccountRepo<'_> {                        // feature "postgres"
 
 `oauth2` types (`BasicClient`, `CsrfToken`, `PkceCodeChallenge`, `PkceCodeVerifier`, `RedirectUrl`, `Scope`, `TokenResponse`, …) are re-exported from `megh::auth` and `megh::`. Provider factories exist only for Google; other providers are built with the generic config.
 
-### F15 — Token refresh (`account::accounts`, features `postgres` + `client`)
+### F15 — Token refresh (`account::accounts`)
 
 The caller builds and configures their own `reqwest` client and adds megh's layer; every request is authenticated as the connected account, with the access token refreshed first when it has expired. Callers never handle tokens.
 
@@ -208,7 +208,7 @@ Refresh runs under a row lock (`SELECT … FOR UPDATE`), so concurrent requests 
 
 Replaced by F16: the `session` module (`SessionRepo`, `Session`, `SessionView`, token helpers) no longer exists.
 
-### F5 — Axum auth router (`auth::http`, features `axum` + `postgres`)
+### F5 — Axum auth router (`auth::http`)
 
 ```rust
 pub struct MeghAuthState {                              // Clone; all fields pub
@@ -249,7 +249,7 @@ The callback returns an HTML page that runs `window.opener.postMessage({type:"oa
 
 The SDK also defines `signInWithPassword`, `connectWithOAuth`/`connectWithGoogle`, `disconnectWithOAuth`/`disconnectWithGoogle` and `revokeOAuth`/`revokeGoogle`. The server has no matching routes (§8).
 
-### F7 — Route-based authorizer (`auth::authorizer`, feature `axum`)
+### F7 — Route-based authorizer (`auth::authorizer`)
 
 ```rust
 pub fn request_action(method: &str) -> &'static str;   // POST→create, PUT/PATCH→update, DELETE→delete, else read
@@ -275,7 +275,7 @@ let app = megh::auth_router(state).layer(SessionManagerLayer::new(store));
 
 Versions are held back (`AGENTS.md`): the only Postgres store for `tower-sessions` is `tower-sessions-sqlx-store` 0.15, which needs `tower-sessions-core` 0.14 and `sqlx` 0.8; The store's `tower_sessions.session` table (`id`, `data`, `expiry_date`) cannot match megh-go's `sessions` table. `events_router` (`POST /sub`) is not covered (§9).
 
-### F17 — JWT access token (`auth::token`, features `axum` + `postgres`; #50 / #49)
+### F17 — JWT access token (`auth::token`; #50 / #49)
 
 A short-lived signed token that answers requests without a database lookup, and is renewed from the session when it expires. It is not a session: nothing is stored, and the transport (a cookie here) is independent of the token.
 

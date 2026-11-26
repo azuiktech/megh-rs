@@ -302,10 +302,8 @@ fn linked_icon(page: &str) -> Option<String> {
     Html::parse_document(page).select(&links).next().and_then(|link| link.attr("href")).map(str::to_string)
 }
 
-#[cfg(feature = "axum")]
 pub use routes::connections_router;
 
-#[cfg(feature = "axum")]
 mod routes {
     use axum::extract::{FromRef, OriginalUri, Path, Query, State};
     use axum::http::StatusCode;

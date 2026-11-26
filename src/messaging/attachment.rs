@@ -12,7 +12,7 @@ pub struct File {
 
 /// A file as a model takes it (`fileData`): where it is, its media type and its name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
+#[derive(utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FileData {
     pub file_uri: String,
@@ -20,10 +20,8 @@ pub struct FileData {
     pub display_name: String,
 }
 
-#[cfg(all(feature = "axum", feature = "sql"))]
 pub(super) use stored::routes;
 
-#[cfg(all(feature = "axum", feature = "sql"))]
 mod stored {
     use std::collections::HashMap;
 

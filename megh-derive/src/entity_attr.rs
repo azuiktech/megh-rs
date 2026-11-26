@@ -134,7 +134,6 @@ pub fn expand(args: TokenStream, mut item: ItemStruct) -> syn::Result<TokenStrea
 
     let response = (!keys.is_empty() && attributes.contains("Serialize")).then(|| {
         quote! {
-            #[cfg(feature = "axum")]
             impl #krate::__axum::response::IntoResponse for #ident {
                 fn into_response(self) -> #krate::__axum::response::Response {
                     #krate::__axum::response::IntoResponse::into_response(#krate::__axum::Json(self))

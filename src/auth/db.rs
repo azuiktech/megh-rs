@@ -8,11 +8,8 @@ use std::marker::PhantomData;
 
 use sqlx::error::BoxDynError;
 
-#[cfg(feature = "axum")]
 use crate::auth::crud;
-#[cfg(feature = "axum")]
 use crate::auth::entity::{Table, Where};
-#[cfg(feature = "axum")]
 use crate::auth::rest::{ApiResult, Changes, Key, ListRequest, Page};
 
 /// The current time in SQLite SQL, written as sqlx writes a `DateTime<Utc>` (RFC 3339), so the two compare as text:
@@ -358,7 +355,6 @@ builder!(Query, Query);
 builder!(QueryAs<T>, (|statement| QueryAs(statement, PhantomData)));
 builder!(QueryScalar<T>, (|statement| QueryScalar(statement, PhantomData)));
 
-#[cfg(feature = "axum")]
 impl Db {
     pub async fn get<T: Table>(&self, key: impl Into<Key>) -> ApiResult<T> {
         crud::get(self, &key.into()).await
@@ -393,7 +389,6 @@ impl Db {
     }
 }
 
-#[cfg(feature = "axum")]
 impl Tx {
     pub async fn get<T: Table>(&mut self, key: impl Into<Key>) -> ApiResult<T> {
         crud::get(self, &key.into()).await

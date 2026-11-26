@@ -6,7 +6,6 @@ use uuid::Uuid;
 /// A user: who signs in, with the id and timestamps every row has.
 #[crate::entity(table = "users", keys = ["id"], timestamps, soft_delete)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 pub struct User {
     pub id: Uuid,
     pub account_id: Option<String>,
@@ -27,7 +26,6 @@ pub struct UpsertUserInput {
 }
 
 /// Why a password could not be set or verified.
-#[cfg(feature = "postgres")]
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PasswordError {
@@ -46,31 +44,26 @@ pub enum PasswordError {
 }
 
 /// The `provider` of a machine's user row.
-#[cfg(feature = "postgres")]
 pub(crate) const MACHINE: &str = "megh";
 
 /// A new machine's credentials. The secret cannot be read again.
-#[cfg(feature = "postgres")]
 pub struct Registered {
     pub client_id: String,
     pub secret: String,
 }
 
 /// Compared against when the user or password is missing, so every failure costs one bcrypt verification.
-#[cfg(feature = "postgres")]
 static DUMMY_HASH: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| bcrypt::hash("", bcrypt::DEFAULT_COST).expect("bcrypt hashes the empty password"));
 
-#[cfg(feature = "postgres")]
-/// User repository for PostgreSQL operations.
+/// The users of a database.
 pub struct UserRepo<'a> {
-    pool: &'a sqlx::PgPool,
+    pool: &'a crate::Db,
     lifecycle: Option<crate::tenant::Lifecycle>,
 }
 
-#[cfg(feature = "postgres")]
 impl<'a> UserRepo<'a> {
-    pub fn new(pool: &'a sqlx::PgPool) -> Self {
+    pub fn new(pool: &'a crate::Db) -> Self {
         Self { pool, lifecycle: None }
     }
 
@@ -81,7 +74,7 @@ impl<'a> UserRepo<'a> {
 
     /// Fetches a user by UUID.
     pub async fn get_by_id(&self, id: Uuid) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL")
+        crate::Db::query_as::<User>("SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(self.pool)
             .await
@@ -89,17 +82,18 @@ impl<'a> UserRepo<'a> {
 
     /// Finds a user by email.
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1::citext AND deleted_at IS NULL")
-            .bind(email)
+        crate::Db::query_as::<User>("SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL")
+            .postgres("SELECT * FROM users WHERE email = $1::citext AND deleted_at IS NULL")
+            .bind(email.to_owned())
             .fetch_optional(self.pool)
             .await
     }
 
     /// Finds a user by the identity of the provider that first created it.
     pub async fn find_by_account(&self, provider: &str, account_id: &str) -> Result<Option<User>, sqlx::Error> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE provider = $1 AND account_id = $2 AND deleted_at IS NULL")
-            .bind(provider)
-            .bind(account_id)
+        crate::Db::query_as::<User>("SELECT * FROM users WHERE provider = $1 AND account_id = $2 AND deleted_at IS NULL")
+            .bind(provider.to_owned())
+            .bind(account_id.to_owned())
             .fetch_optional(self.pool)
             .await
     }
@@ -111,25 +105,27 @@ impl<'a> UserRepo<'a> {
         let display_name = input.display_name.as_deref().unwrap_or("");
         let photo_url = input.photo_url.as_deref().unwrap_or("");
 
-        sqlx::query_as::<_, User>(
+        crate::Db::query_as::<User>(
             r#"
-            INSERT INTO users (provider, account_id, email, display_name, photo_url, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NOW())
+            INSERT INTO users (provider, account_id, email, display_name, photo_url, updated_at, id, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $6)
             ON CONFLICT (email) DO UPDATE SET
                 provider = COALESCE(users.provider, EXCLUDED.provider),
                 account_id = COALESCE(users.account_id, EXCLUDED.account_id),
                 display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE users.display_name END,
                 photo_url = CASE WHEN EXCLUDED.photo_url <> '' THEN EXCLUDED.photo_url ELSE users.photo_url END,
-                updated_at = NOW()
+                updated_at = EXCLUDED.updated_at
             WHERE users.deleted_at IS NULL
             RETURNING *
             "#,
         )
-        .bind(&input.provider)
-        .bind(&input.account_id)
-        .bind(&input.email)
-        .bind(display_name)
-        .bind(photo_url)
+        .bind(input.provider.clone())
+        .bind(input.account_id.clone())
+        .bind(input.email.clone())
+        .bind(display_name.to_owned())
+        .bind(photo_url.to_owned())
+        .bind(chrono::Utc::now())
+        .bind(Uuid::now_v7())
         .fetch_one(self.pool)
         .await
     }
@@ -137,9 +133,10 @@ impl<'a> UserRepo<'a> {
     /// Stores a bcrypt hash of the password (portable with megh-go).
     pub async fn set_password(&self, user_id: Uuid, password: &str) -> Result<(), PasswordError> {
         let hash = bcrypt::hash(password, bcrypt::DEFAULT_COST)?;
-        let updated = sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL")
+        let updated = crate::Db::query("UPDATE users SET password_hash = $2, updated_at = $3 WHERE id = $1 AND deleted_at IS NULL")
             .bind(user_id)
             .bind(hash)
+            .bind(chrono::Utc::now())
             .execute(self.pool)
             .await?;
         (updated.rows_affected() > 0).then_some(()).ok_or(PasswordError::UserNotFound)
@@ -148,8 +145,9 @@ impl<'a> UserRepo<'a> {
     /// The user with that email if the password matches, otherwise the reason it does not. megh-go stores an
     /// unset password as an empty string, which counts as no password.
     pub async fn verify_password(&self, email: &str, password: &str) -> Result<User, PasswordError> {
-        let stored: Option<Option<String>> = sqlx::query_scalar("SELECT password_hash FROM users WHERE email = $1::citext AND deleted_at IS NULL")
-            .bind(email)
+        let stored: Option<Option<String>> = crate::Db::query_scalar("SELECT password_hash FROM users WHERE email = $1 AND deleted_at IS NULL")
+            .postgres("SELECT password_hash FROM users WHERE email = $1::citext AND deleted_at IS NULL")
+            .bind(email.to_owned())
             .fetch_optional(self.pool)
             .await?;
         let hash = stored.as_ref().and_then(|hash| hash.as_deref()).filter(|hash| !hash.is_empty());
@@ -168,19 +166,31 @@ impl<'a> UserRepo<'a> {
     pub async fn register_machine(&self, tenant_id: Uuid, name: &str, grants: Vec<String>) -> Result<Registered, PasswordError> {
         let client_id = Uuid::now_v7().to_string();
         let secret = oauth2::CsrfToken::new_random_len(32).secret().clone();
-        let member: crate::tenant::Member = sqlx::query_as(
-            "WITH machine AS (INSERT INTO users (provider, account_id, email, display_name, password_hash, updated_at)
-                              VALUES ($1, $2, $2, $3, $4, NOW()) RETURNING id)
-             INSERT INTO tenant_members (tenant_id, user_id, role, grants) SELECT $5::uuid, id, 'machine', $6 FROM machine RETURNING *",
+        let (user_id, now) = (Uuid::now_v7(), chrono::Utc::now());
+        let mut transaction = self.pool.begin().await?;
+        crate::Db::query(
+            "INSERT INTO users (provider, account_id, email, display_name, password_hash, updated_at, id, created_at)
+             VALUES ($1, $2, $2, $3, $4, $5, $6, $5)",
         )
-        .bind(MACHINE)
-        .bind(&client_id)
-        .bind(name)
+        .bind(MACHINE.to_owned())
+        .bind(client_id.clone())
+        .bind(name.to_owned())
         .bind(bcrypt::hash(&secret, bcrypt::DEFAULT_COST)?)
-        .bind(tenant_id)
-        .bind(serde_json::json!(grants).to_string())
-        .fetch_one(self.pool)
+        .bind(now)
+        .bind(user_id)
+        .execute(&mut transaction)
         .await?;
+        let member: crate::tenant::Member = crate::Db::query_as(
+            "INSERT INTO tenant_members (tenant_id, user_id, role, grants, id, joined_at) VALUES ($1, $2, 'machine', $3, $4, $5) RETURNING *",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(serde_json::json!(grants).to_string())
+        .bind(Uuid::now_v7())
+        .bind(now)
+        .fetch_one(&mut transaction)
+        .await?;
+        transaction.commit().await?;
         let added = crate::tenant::Change::MemberAdded(member);
         crate::tenant::lifecycle::notify(self.lifecycle, self.pool, added).await.map_err(PasswordError::Lifecycle)?;
         Ok(Registered { client_id, secret })
@@ -199,14 +209,14 @@ impl<'a> UserRepo<'a> {
     }
 
     async fn named_machine(&self, tenant_id: Uuid, name: &str) -> Result<Option<crate::tenant::Member>, sqlx::Error> {
-        sqlx::query_as(
+        crate::Db::query_as(
             "SELECT m.* FROM tenant_members m JOIN users u ON u.id = m.user_id
              WHERE m.tenant_id = $1 AND m.role = 'machine' AND u.provider = $2 AND u.display_name = $3 AND u.deleted_at IS NULL
              ORDER BY m.joined_at LIMIT 1",
         )
         .bind(tenant_id)
-        .bind(MACHINE)
-        .bind(name)
+        .bind(MACHINE.to_owned())
+        .bind(name.to_owned())
         .fetch_optional(self.pool)
         .await
     }
@@ -218,17 +228,18 @@ impl<'a> UserRepo<'a> {
         display_name: &str,
         photo_url: &str,
     ) -> Result<User, sqlx::Error> {
-        sqlx::query_as::<_, User>(
+        crate::Db::query_as::<User>(
             r#"
             UPDATE users
-            SET display_name = $2, photo_url = $3, updated_at = NOW()
+            SET display_name = $2, photo_url = $3, updated_at = $4
             WHERE id = $1 AND deleted_at IS NULL
             RETURNING *
             "#,
         )
         .bind(id)
-        .bind(display_name)
-        .bind(photo_url)
+        .bind(display_name.to_owned())
+        .bind(photo_url.to_owned())
+        .bind(chrono::Utc::now())
         .fetch_one(self.pool)
         .await
     }
@@ -272,11 +283,4 @@ mod tests {
         assert!(json.contains("Test User"));
     }
 
-    #[cfg(feature = "postgres")]
-    #[tokio::test]
-    async fn test_user_repo_construction() {
-        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
-        let repo = UserRepo::new(&pool);
-        assert_eq!(repo.pool.size(), 0);
-    }
 }

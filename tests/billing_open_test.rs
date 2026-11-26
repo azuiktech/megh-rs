@@ -2,6 +2,9 @@
 //! the app's `Ids`, fixes the totals of the lines and the invoice, keeps `bill_to`, and the invoice is then locked;
 //! `:void` is for an open invoice nothing was paid on.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -10,20 +13,20 @@ use megh::auth::rest::AppContext;
 use megh::billing::ids::{Formats, Middle, Numbering};
 use megh::{authorizer, Grant};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
 fn formats() -> Formats {
     Formats::new(Numbering::new("INV", "-", Middle::Year, 4).unwrap(), Numbering::new("PAY", "-", Middle::None, 4).unwrap())
 }
 
-fn app_with(pool: PgPool, grants: &[String], formats: Option<Formats>) -> Router {
+fn app_with(pool: Db, grants: &[String], formats: Option<Formats>) -> Router {
     let (api, _) = megh::billing::router().split_for_parts();
     let router = Router::new().nest("/api/v1", api.layer(from_fn(authorizer))).layer(Extension(grants.iter().map(Grant::new).collect::<Vec<_>>()));
     let router = match formats {
@@ -33,7 +36,7 @@ fn app_with(pool: PgPool, grants: &[String], formats: Option<Formats>) -> Router
     router.with_state(AppContext { pool })
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     app_with(pool, &grants(tenant), Some(formats()))
 }
 
@@ -87,9 +90,8 @@ async fn verb(app: &Router, tenant: Uuid, invoice: Uuid, verb: &str) -> (StatusC
     call(app, "POST", &format!("/api/v1/tenants/{tenant}/invoices/{invoice}:{verb}"), json!({})).await
 }
 
-#[sqlx::test(migrations = false)]
-async fn opening_numbers_the_invoice_and_fixes_the_totals(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(opening_numbers_the_invoice_and_fixes_the_totals);
+async fn opening_numbers_the_invoice_and_fixes_the_totals(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), mine);
     let (_, tax) = call(&app, "POST", &path(mine, "taxes"), json!({"name": "Sales tax", "rate": "7.5"})).await;
@@ -115,9 +117,8 @@ async fn opening_numbers_the_invoice_and_fixes_the_totals(pool: PgPool) {
     assert_eq!(stored["number"], "INV-2026-0001");
 }
 
-#[sqlx::test(migrations = false)]
-async fn numbers_follow_the_tenants_ids_and_the_invoice_date(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(numbers_follow_the_tenants_ids_and_the_invoice_date);
+async fn numbers_follow_the_tenants_ids_and_the_invoice_date(pool: Db) {
     let (mine, other, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     let app = app_with(pool.clone(), &[grants(mine), grants(other)].concat(), Some(formats()));
     let number = |opened: (StatusCode, Value)| opened.1["number"].as_str().unwrap().to_string();
@@ -130,9 +131,8 @@ async fn numbers_follow_the_tenants_ids_and_the_invoice_date(pool: PgPool) {
     assert_eq!(numbers, ["INV-2026-0001", "INV-2026-0002", "INV-2027-0001", "INV-2026-0001"]);
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_invoice_that_cannot_be_opened_stays_a_draft_and_keeps_its_number_free(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_invoice_that_cannot_be_opened_stays_a_draft_and_keeps_its_number_free);
+async fn an_invoice_that_cannot_be_opened_stays_a_draft_and_keeps_its_number_free(pool: Db) {
     let (mine, other, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     let app = app_with(pool.clone(), &[grants(mine), grants(other)].concat(), Some(formats()));
 
@@ -164,9 +164,8 @@ async fn an_invoice_that_cannot_be_opened_stays_a_draft_and_keeps_its_number_fre
     assert_eq!(call(&app, "POST", &format!("/api/v1/tenants/{mine}/invoices/{good}:close"), json!({})).await.0, StatusCode::BAD_REQUEST, "an unknown verb");
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_open_invoice_is_locked(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_open_invoice_is_locked);
+async fn an_open_invoice_is_locked(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), mine);
     let invoice = with_one_line(&app, mine, customer, "2026-10-22").await;
@@ -178,9 +177,8 @@ async fn an_open_invoice_is_locked(pool: PgPool) {
     assert_eq!(call(&app, "POST", &path(mine, "invoiceLines"), line).await.0, StatusCode::CONFLICT);
 }
 
-#[sqlx::test(migrations = false)]
-async fn voiding_an_open_invoice_nothing_was_paid_on(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(voiding_an_open_invoice_nothing_was_paid_on);
+async fn voiding_an_open_invoice_nothing_was_paid_on(pool: Db) {
     let (mine, other, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     let app = app_with(pool.clone(), &[grants(mine), grants(other)].concat(), Some(formats()));
 
@@ -194,7 +192,7 @@ async fn voiding_an_open_invoice_nothing_was_paid_on(pool: PgPool) {
 
     let paid = with_one_line(&app, mine, customer, "2026-10-22").await;
     verb(&app, mine, paid, "open").await;
-    sqlx::query("UPDATE billing_invoices SET amount_paid = 1000000, balance_due = balance_due - 1000000 WHERE id = $1").bind(paid).execute(&pool).await.unwrap();
+    Db::query("UPDATE billing_invoices SET amount_paid = 1000000, balance_due = balance_due - 1000000 WHERE id = $1").bind(paid).execute(&pool).await.unwrap();
     assert_eq!(verb(&app, mine, paid, "void").await.0, StatusCode::CONFLICT, "something was paid");
     assert_eq!(verb(&app, mine, Uuid::now_v7(), "void").await.0, StatusCode::NOT_FOUND);
     let theirs = with_one_line(&app, other, customer, "2026-10-22").await;
@@ -202,9 +200,8 @@ async fn voiding_an_open_invoice_nothing_was_paid_on(pool: PgPool) {
     assert_eq!(verb(&app, mine, theirs, "void").await.0, StatusCode::NOT_FOUND, "another tenant's invoice");
 }
 
-#[sqlx::test(migrations = false)]
-async fn invoices_opened_at_the_same_time_get_different_numbers(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(invoices_opened_at_the_same_time_get_different_numbers);
+async fn invoices_opened_at_the_same_time_get_different_numbers(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), mine);
     let mut invoices = vec![];
@@ -229,9 +226,8 @@ async fn invoices_opened_at_the_same_time_get_different_numbers(pool: PgPool) {
     assert_eq!(numbers, expected, "every number once, none skipped");
 }
 
-#[sqlx::test(migrations = false)]
-async fn the_app_must_give_the_router_its_ids(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(the_app_must_give_the_router_its_ids);
+async fn the_app_must_give_the_router_its_ids(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let without = app_with(pool.clone(), &grants(mine), None);
     let invoice = with_one_line(&without, mine, customer, "2026-10-22").await;
@@ -240,9 +236,8 @@ async fn the_app_must_give_the_router_its_ids(pool: PgPool) {
     assert_eq!(stored["status"], "draft", "nothing changed");
 }
 
-#[sqlx::test(migrations = false)]
-async fn the_verbs_are_guarded_and_documented(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(the_verbs_are_guarded_and_documented);
+async fn the_verbs_are_guarded_and_documented(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let full = app(pool.clone(), mine);
     let invoice = with_one_line(&full, mine, customer, "2026-10-22").await;

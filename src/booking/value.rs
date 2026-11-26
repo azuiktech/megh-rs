@@ -12,33 +12,30 @@ pub type Attributes = serde_json::Map<String, serde_json::Value>;
 #[nutype(
     sanitize(trim),
     validate(not_empty, len_char_max = 255),
-    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Serialize, Deserialize),
-    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
-    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
+    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Into, Serialize, Deserialize),
+    derive_unchecked(sqlx::Type, utoipa::ToSchema),
 )]
-#[cfg_attr(feature = "postgres", sqlx(transparent))]
+#[sqlx(transparent)]
 pub struct Name(String);
 
 /// An international phone number, kept in E.164 (`+15165550100`).
 #[nutype(
     sanitize(with = |s: String| phonenumber::parse(None, &s).map_or(s, |n| n.format().mode(phonenumber::Mode::E164).to_string())),
     validate(predicate = |s: &str| phonenumber::parse(None, s).is_ok_and(|n| n.is_valid())),
-    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Serialize, Deserialize),
-    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
-    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
+    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Into, Serialize, Deserialize),
+    derive_unchecked(sqlx::Type, utoipa::ToSchema),
 )]
-#[cfg_attr(feature = "postgres", sqlx(transparent))]
+#[sqlx(transparent)]
 pub struct Phone(String);
 
 /// An email address, checked by `email_address`.
 #[nutype(
     sanitize(trim),
     validate(predicate = |s: &str| EmailAddress::is_valid(s)),
-    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Serialize, Deserialize),
-    cfg_attr(feature = "postgres", derive_unchecked(sqlx::Type)),
-    cfg_attr(feature = "axum", derive_unchecked(utoipa::ToSchema)),
+    derive(Debug, Clone, PartialEq, Eq, Hash, AsRef, Display, TryFrom, Into, Serialize, Deserialize),
+    derive_unchecked(sqlx::Type, utoipa::ToSchema),
 )]
-#[cfg_attr(feature = "postgres", sqlx(transparent))]
+#[sqlx(transparent)]
 pub struct Email(String);
 
 /// How many appointments fit at the same time; double booking is a capacity of 2.
@@ -46,7 +43,9 @@ pub struct Email(String);
     validate(greater_or_equal = 1),
     default = 1,
     derive(Debug, Clone, Copy, PartialEq, Eq, Default, TryFrom, Into, Serialize, Deserialize),
+    derive_unchecked(sqlx::Type),
 )]
+#[sqlx(transparent)]
 pub struct Capacity(i32);
 
 /// How many appointments may wait for a place.
@@ -54,13 +53,15 @@ pub struct Capacity(i32);
     validate(greater_or_equal = 0),
     default = 0,
     derive(Debug, Clone, Copy, PartialEq, Eq, Default, TryFrom, Into, Serialize, Deserialize),
+    derive_unchecked(sqlx::Type),
 )]
+#[sqlx(transparent)]
 pub struct Waitlist(i32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, crate::Column)]
-#[cfg_attr(feature = "postgres", derive(sqlx::Type))]
-#[cfg_attr(feature = "postgres", sqlx(type_name = "text", rename_all = "snake_case"))]
-#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(sqlx::Type)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[derive(utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Gender {
     Male,
@@ -69,25 +70,24 @@ pub enum Gender {
     Unknown,
 }
 
-crate::text_column!(Name, Phone, Email);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
+#[derive(utoipa::ToSchema)]
 pub struct Address {
     pub line_1: Name,
     pub line_2: Option<Name>,
     pub city: Name,
     pub region: Name,
     pub postal_code: Name,
-    #[cfg_attr(feature = "axum", schema(value_type = String, example = "US"))]
+    #[schema(value_type = String, example = "US")]
     pub country: Country,
 }
 
 /// Columns of a person's contact, flattened into the table of the entity that has them.
 #[crate::entity(keys = [])]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
-#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
+#[derive(sqlx::FromRow)]
+#[derive(utoipa::ToSchema)]
 pub struct Contact {
     pub email: Option<Email>,
     pub home_phone: Option<Phone>,
@@ -103,4 +103,3 @@ pub struct Person {
     pub birth_date: NaiveDate,
 }
 
-crate::newtype_column!(Capacity: i32, Waitlist: i32);

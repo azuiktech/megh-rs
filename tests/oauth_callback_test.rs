@@ -1,5 +1,8 @@
 //! The OAuth login and callback against a stub provider: state, PKCE, verified email, and the result page.
 
+#[macro_use]
+mod common;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +15,7 @@ use megh::auth::http::{auth_router, MeghAuthState};
 use megh::auth::{OAuthProviderConfig, PkceCodeChallenge, PkceCodeVerifier};
 use megh::Encryptor;
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
@@ -48,7 +51,7 @@ struct Fixture {
     requests: Arc<Mutex<Vec<HashMap<String, String>>>>,
 }
 
-async fn fixture(pool: PgPool, userinfo: Value, fail_token: bool, web_origin: Option<&str>) -> Fixture {
+async fn fixture(pool: Db, userinfo: Value, fail_token: bool, web_origin: Option<&str>) -> Fixture {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let base = spawn_stub(Stub { userinfo, fail_token, token_requests: requests.clone() }).await;
     let provider = OAuthProviderConfig {
@@ -93,12 +96,12 @@ async fn start_login(app: &Router) -> (String, String, String) {
     (cookie, param("state"), param("code_challenge"))
 }
 
-async fn users(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(pool).await.unwrap()
+async fn users(pool: &Db) -> i64 {
+    Db::query_scalar("SELECT count(*) FROM users").fetch_one(pool).await.unwrap()
 }
 
-#[sqlx::test]
-async fn the_provider_is_sent_a_random_state_and_a_pkce_challenge(pool: PgPool) {
+dual!(the_provider_is_sent_a_random_state_and_a_pkce_challenge);
+async fn the_provider_is_sent_a_random_state_and_a_pkce_challenge(pool: Db) {
     let Fixture { app, .. } = fixture(pool, ann(), false, None).await;
 
     let (_, first_state, challenge) = start_login(&app).await;
@@ -108,8 +111,8 @@ async fn the_provider_is_sent_a_random_state_and_a_pkce_challenge(pool: PgPool) 
     assert_ne!(first_state, second_state);
 }
 
-#[sqlx::test]
-async fn a_login_that_was_started_completes_with_its_pkce_verifier(pool: PgPool) {
+dual!(a_login_that_was_started_completes_with_its_pkce_verifier);
+async fn a_login_that_was_started_completes_with_its_pkce_verifier(pool: Db) {
     let Fixture { app, requests } = fixture(pool.clone(), ann(), false, None).await;
     let (cookie, state, challenge) = start_login(&app).await;
 
@@ -124,12 +127,12 @@ async fn a_login_that_was_started_completes_with_its_pkce_verifier(pool: PgPool)
     let me = get_page(&app, "/auth/me", &logged_in).await;
     assert_eq!(me.status(), StatusCode::OK);
     assert!(body(me).await.contains("ann@example.com"));
-    let saved: i64 = sqlx::query_scalar("SELECT count(*) FROM connected_accounts").fetch_one(&pool).await.unwrap();
+    let saved: i64 = Db::query_scalar("SELECT count(*) FROM connected_accounts").fetch_one(&pool).await.unwrap();
     assert_eq!(saved, 1);
 }
 
-#[sqlx::test]
-async fn a_wrong_state_is_rejected_before_the_provider_is_called(pool: PgPool) {
+dual!(a_wrong_state_is_rejected_before_the_provider_is_called);
+async fn a_wrong_state_is_rejected_before_the_provider_is_called(pool: Db) {
     let Fixture { app, requests } = fixture(pool.clone(), ann(), false, None).await;
     let (cookie, _, _) = start_login(&app).await;
 
@@ -140,8 +143,8 @@ async fn a_wrong_state_is_rejected_before_the_provider_is_called(pool: PgPool) {
     assert_eq!((get_page(&app, "/auth/me", &cookie).await.status(), users(&pool).await), (StatusCode::UNAUTHORIZED, 0));
 }
 
-#[sqlx::test]
-async fn a_callback_without_a_started_login_is_rejected(pool: PgPool) {
+dual!(a_callback_without_a_started_login_is_rejected);
+async fn a_callback_without_a_started_login_is_rejected(pool: Db) {
     let Fixture { app, requests } = fixture(pool, ann(), false, None).await;
 
     let no_session = get_page(&app, "/auth/stub/callback?code=abc&state=anything", "").await;
@@ -151,8 +154,8 @@ async fn a_callback_without_a_started_login_is_rejected(pool: PgPool) {
     assert!(requests.lock().unwrap().is_empty());
 }
 
-#[sqlx::test]
-async fn a_login_can_be_answered_only_once_even_by_a_wrong_state(pool: PgPool) {
+dual!(a_login_can_be_answered_only_once_even_by_a_wrong_state);
+async fn a_login_can_be_answered_only_once_even_by_a_wrong_state(pool: Db) {
     let Fixture { app, requests } = fixture(pool, ann(), false, None).await;
     let (cookie, state, _) = start_login(&app).await;
 
@@ -163,8 +166,8 @@ async fn a_login_can_be_answered_only_once_even_by_a_wrong_state(pool: PgPool) {
     assert!(requests.lock().unwrap().is_empty());
 }
 
-#[sqlx::test]
-async fn an_email_the_provider_did_not_verify_is_rejected(pool: PgPool) {
+dual!(an_email_the_provider_did_not_verify_is_rejected);
+async fn an_email_the_provider_did_not_verify_is_rejected(pool: Db) {
     for userinfo in [json!({"sub": "1", "email": "ann@example.com", "email_verified": false}), json!({"sub": "1", "email": "ann@example.com"})] {
         let Fixture { app, .. } = fixture(pool.clone(), userinfo, false, None).await;
         let (cookie, state, _) = start_login(&app).await;
@@ -176,8 +179,8 @@ async fn an_email_the_provider_did_not_verify_is_rejected(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
-async fn the_result_page_posts_to_the_web_origin_and_escapes_the_profile(pool: PgPool) {
+dual!(the_result_page_posts_to_the_web_origin_and_escapes_the_profile);
+async fn the_result_page_posts_to_the_web_origin_and_escapes_the_profile(pool: Db) {
     let hostile = json!({"sub": "1", "email": "ann@example.com", "email_verified": true, "name": "</script><script>alert(1)</script>"});
     let Fixture { app, .. } = fixture(pool, hostile, false, Some("https://web.example.com")).await;
     let (cookie, state, _) = start_login(&app).await;
@@ -188,8 +191,8 @@ async fn the_result_page_posts_to_the_web_origin_and_escapes_the_profile(pool: P
     assert!(!page.contains(r#","*")"#) && !page.contains("<script>alert"));
 }
 
-#[sqlx::test]
-async fn provider_failures_do_not_reach_the_client(pool: PgPool) {
+dual!(provider_failures_do_not_reach_the_client);
+async fn provider_failures_do_not_reach_the_client(pool: Db) {
     let Fixture { app, .. } = fixture(pool, ann(), true, None).await;
     let (cookie, state, _) = start_login(&app).await;
 
@@ -199,22 +202,22 @@ async fn provider_failures_do_not_reach_the_client(pool: PgPool) {
     assert!(!body(response).await.contains("secret-detail-xyz"));
 }
 
-#[sqlx::test]
-async fn a_configured_token_encryptor_encrypts_what_the_callback_saves(pool: PgPool) {
+dual!(a_configured_token_encryptor_encrypts_what_the_callback_saves);
+async fn a_configured_token_encryptor_encrypts_what_the_callback_saves(pool: Db) {
     let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
     let (cookie, state, _) = start_login(&app).await;
 
     let response = get_page(&app, &format!("/auth/stub/callback?code=abc&state={state}"), &cookie).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let stored: (String, String) = sqlx::query_as("SELECT access_token, refresh_token FROM connected_accounts").fetch_one(&pool).await.unwrap();
+    let stored: (String, String) = Db::query_as("SELECT access_token, refresh_token FROM connected_accounts").fetch_one(&pool).await.unwrap();
     assert!(stored.0 != "at" && Encryptor::new(&[5u8; 32]).decrypt(&stored.0).unwrap() == "at");
     assert_eq!(Encryptor::new(&[5u8; 32]).decrypt(&stored.1).unwrap(), "rt");
 }
 
-#[sqlx::test]
-async fn a_deleted_user_cannot_sign_in_through_the_provider(pool: PgPool) {
-    sqlx::query("INSERT INTO users (provider, account_id, email, deleted_at) VALUES ('stub', '1', 'ann@example.com', NOW())").execute(&pool).await.unwrap();
+dual!(a_deleted_user_cannot_sign_in_through_the_provider);
+async fn a_deleted_user_cannot_sign_in_through_the_provider(pool: Db) {
+    Db::query("INSERT INTO users (provider, account_id, email, deleted_at) VALUES ('stub', '1', 'ann@example.com', NOW())").sqlite("INSERT INTO users (provider, account_id, email, deleted_at) VALUES ('stub', '1', 'ann@example.com', strftime('%Y-%m-%dT%H:%M:%f+00:00'))").execute(&pool).await.unwrap();
     let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
     let (cookie, state, _) = start_login(&app).await;
 
@@ -224,8 +227,8 @@ async fn a_deleted_user_cannot_sign_in_through_the_provider(pool: PgPool) {
     assert_eq!(get_page(&app, "/auth/me", &cookie).await.status(), StatusCode::UNAUTHORIZED);
 }
 
-async fn tenants(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM tenants").fetch_one(pool).await.unwrap()
+async fn tenants(pool: &Db) -> i64 {
+    Db::query_scalar("SELECT count(*) FROM tenants").fetch_one(pool).await.unwrap()
 }
 
 async fn me(app: &Router, cookie: &str) -> Value {
@@ -240,8 +243,8 @@ async fn log_in(app: &Router) -> String {
     response.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_string()
 }
 
-#[sqlx::test]
-async fn a_first_login_creates_a_tenant_owned_by_the_user_with_every_grant(pool: PgPool) {
+dual!(a_first_login_creates_a_tenant_owned_by_the_user_with_every_grant);
+async fn a_first_login_creates_a_tenant_owned_by_the_user_with_every_grant(pool: Db) {
     let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
 
     let cookie = log_in(&app).await;
@@ -252,12 +255,12 @@ async fn a_first_login_creates_a_tenant_owned_by_the_user_with_every_grant(pool:
     assert_eq!(memberships.len(), 1);
     assert_eq!((memberships[0]["role"].as_str(), memberships[0]["grants"].clone()), (Some("owner"), json!(["*"])));
     assert_eq!(memberships[0]["user_id"], me["user"]["id"]);
-    let named: Option<String> = sqlx::query_scalar("SELECT name FROM tenants").fetch_one(&pool).await.unwrap();
+    let named: Option<String> = Db::query_scalar("SELECT name FROM tenants").fetch_one(&pool).await.unwrap();
     assert_eq!(named.as_deref(), Some("ann@example.com"));
 }
 
-#[sqlx::test]
-async fn a_later_login_keeps_the_users_tenant(pool: PgPool) {
+dual!(a_later_login_keeps_the_users_tenant);
+async fn a_later_login_keeps_the_users_tenant(pool: Db) {
     let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
     let first = log_in(&app).await;
     let tenant = me(&app, &first).await["memberships"][0]["tenant_id"].clone();
@@ -268,16 +271,16 @@ async fn a_later_login_keeps_the_users_tenant(pool: PgPool) {
     assert_eq!(me(&app, &second).await["memberships"][0]["tenant_id"], tenant);
 }
 
-#[sqlx::test]
-async fn a_user_who_already_has_a_membership_gets_no_new_tenant(pool: PgPool) {
+dual!(a_user_who_already_has_a_membership_gets_no_new_tenant);
+async fn a_user_who_already_has_a_membership_gets_no_new_tenant(pool: Db) {
     let Fixture { app, .. } = fixture(pool.clone(), ann(), false, None).await;
-    let user: uuid::Uuid = sqlx::query_scalar("INSERT INTO users (id, email) VALUES ($1, 'ann@example.com') RETURNING id")
+    let user: uuid::Uuid = Db::query_scalar("INSERT INTO users (id, email) VALUES ($1, 'ann@example.com') RETURNING id")
         .bind(uuid::Uuid::now_v7())
         .fetch_one(&pool)
         .await
         .unwrap();
-    let acme: uuid::Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tenant_members (id, tenant_id, user_id, grants) VALUES ($1, $2, $3, '[\"invoices:read\"]')")
+    let acme: uuid::Uuid = Db::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(&pool).await.unwrap();
+    Db::query("INSERT INTO tenant_members (id, tenant_id, user_id, grants) VALUES ($1, $2, $3, '[\"invoices:read\"]')")
         .bind(uuid::Uuid::now_v7())
         .bind(acme)
         .bind(user)

@@ -1,6 +1,9 @@
 //! Client identity (PRD 11.8): a token for a known client, a guest from the public route kept in the session, the
 //! guest's chat moved to the client it turns out to be, and the broker letting a client follow only its own topics.
 
+#[macro_use]
+mod common;
+
 use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
@@ -12,7 +15,7 @@ use megh::auth::{AccessToken, JWT_COOKIE, JwtSession, jwt_session};
 use megh::messaging::{File, Messaging, MessagingError, Notice, Party, Signal, Surface};
 use megh::{Broker, Topic, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tokio::sync::mpsc::{UnboundedReceiver as Receiver, unbounded_channel as channel};
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -21,12 +24,12 @@ use uuid::Uuid;
 const SECRET: &[u8] = b"identity-test-secret-of-32-bytes!";
 const BASE: &str = "https://app.example.com/api/v1";
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
-async fn client(pool: &PgPool, tenant: Uuid, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, $2, $3, $3, $3) RETURNING id")
+async fn client(pool: &Db, tenant: Uuid, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, $2, $3, $3, $3) RETURNING id")
         .bind(tenant)
         .bind(Uuid::now_v7())
         .bind(name)
@@ -35,11 +38,11 @@ async fn client(pool: &PgPool, tenant: Uuid, name: &str) -> Uuid {
         .unwrap()
 }
 
-fn jwt(pool: &PgPool) -> JwtSession {
+fn jwt(pool: &Db) -> JwtSession {
     JwtSession::new(SECRET, Duration::from_secs(300), pool.clone())
 }
 
-fn app(pool: PgPool, broker: Broker) -> Router {
+fn app(pool: Db, broker: Broker) -> Router {
     let jwt = jwt(&pool);
     let (guests, _) = megh::messaging::guests(jwt.clone()).split_for_parts();
     let (api, _) = megh::messaging::router(1 << 20, BASE).split_for_parts();
@@ -81,8 +84,8 @@ async fn say(app: &Router, tenant: Uuid, member: Uuid, cookie: &str, text: &str)
     call(app, &format!("/api/v1/tenants/{tenant}/members/{member}/messages"), cookie, None, json!({"body": {"text": text}})).await
 }
 
-async fn stored(pool: &PgPool, client: Uuid) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM messages WHERE client_id = $1").bind(client).fetch_one(pool).await.unwrap()
+async fn stored(pool: &Db, client: Uuid) -> i64 {
+    Db::query_scalar("SELECT count(*) FROM messages WHERE client_id = $1").bind(client).fetch_one(pool).await.unwrap()
 }
 
 fn notices(messaging: &Messaging, me: Party) -> Receiver<Notice> {
@@ -91,9 +94,8 @@ fn notices(messaging: &Messaging, me: Party) -> Receiver<Notice> {
     rx
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_known_client_gets_a_token_that_carries_only_the_client_routes(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_known_client_gets_a_token_that_carries_only_the_client_routes);
+async fn a_known_client_gets_a_token_that_carries_only_the_client_routes(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let ada = client(&pool, salon, "Ada").await;
     let app = app(pool.clone(), Broker::new());
@@ -107,9 +109,8 @@ async fn a_known_client_gets_a_token_that_carries_only_the_client_routes(pool: P
     assert_eq!(stored(&pool, ada).await, 1);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_known_clients_token_is_refused_in_another_tenant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_known_clients_token_is_refused_in_another_tenant);
+async fn a_known_clients_token_is_refused_in_another_tenant(pool: Db) {
     let (salon, spa) = (tenant(&pool, "Salon").await, tenant(&pool, "Spa").await);
     let ada = client(&pool, salon, "Ada").await;
     let app = app(pool.clone(), Broker::new());
@@ -120,15 +121,14 @@ async fn a_known_clients_token_is_refused_in_another_tenant(pool: PgPool) {
     assert_eq!(sent.status(), StatusCode::FORBIDDEN);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_first_visit_makes_a_guest_and_the_same_session_stays_that_guest(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_first_visit_makes_a_guest_and_the_same_session_stays_that_guest);
+async fn a_first_visit_makes_a_guest_and_the_same_session_stays_that_guest(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let app = app(pool.clone(), Broker::new());
 
     let (guest, session, token) = visit(&app, salon, "").await;
     let (again, _, _) = visit(&app, salon, &session).await;
-    let names: (String, String, String) = sqlx::query_as("SELECT first_name, last_name, name FROM clients WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL")
+    let names: (String, String, String) = Db::query_as("SELECT first_name, last_name, name FROM clients WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL")
         .bind(salon)
         .bind(guest)
         .fetch_one(&pool)
@@ -141,9 +141,8 @@ async fn a_first_visit_makes_a_guest_and_the_same_session_stays_that_guest(pool:
     assert_eq!(stored(&pool, guest).await, 1);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_guest_in_another_tenant_is_another_guest(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_guest_in_another_tenant_is_another_guest);
+async fn a_guest_in_another_tenant_is_another_guest(pool: Db) {
     let (salon, spa) = (tenant(&pool, "Salon").await, tenant(&pool, "Spa").await);
     let app = app(pool.clone(), Broker::new());
 
@@ -153,9 +152,8 @@ async fn a_guest_in_another_tenant_is_another_guest(pool: PgPool) {
     assert_ne!(at_spa, at_salon);
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_expired_guest_token_is_renewed_from_the_session(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_expired_guest_token_is_renewed_from_the_session);
+async fn an_expired_guest_token_is_renewed_from_the_session(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let app = app(pool.clone(), Broker::new());
 
@@ -167,9 +165,8 @@ async fn an_expired_guest_token_is_renewed_from_the_session(pool: PgPool) {
     assert_eq!(stored(&pool, guest).await, 1);
 }
 
-#[sqlx::test(migrations = false)]
-async fn identifying_moves_the_guests_chat_to_the_client_and_removes_the_guest(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(identifying_moves_the_guests_chat_to_the_client_and_removes_the_guest);
+async fn identifying_moves_the_guests_chat_to_the_client_and_removes_the_guest(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let ada = client(&pool, salon, "Ada").await;
     let broker = Broker::new();
@@ -186,17 +183,16 @@ async fn identifying_moves_the_guests_chat_to_the_client_and_removes_the_guest(p
 
     messaging.identify(guest, ada).await.unwrap();
 
-    let (deleted, moved_to): (bool, Option<Uuid>) = sqlx::query_as("SELECT deleted_at IS NOT NULL, moved_to FROM clients WHERE id = $1").bind(guest).fetch_one(&pool).await.unwrap();
-    let files: i64 = sqlx::query_scalar("SELECT count(*) FROM attachments WHERE client_id = $1").bind(ada).fetch_one(&pool).await.unwrap();
+    let (deleted, moved_to): (bool, Option<Uuid>) = Db::query_as("SELECT deleted_at IS NOT NULL, moved_to FROM clients WHERE id = $1").bind(guest).fetch_one(&pool).await.unwrap();
+    let files: i64 = Db::query_scalar("SELECT count(*) FROM attachments WHERE client_id = $1").bind(ada).fetch_one(&pool).await.unwrap();
     let notice = tokio::time::timeout(Duration::from_secs(2), widget.recv()).await.unwrap().unwrap();
     assert_eq!((stored(&pool, guest).await, stored(&pool, ada).await, files), (0, 2, 1));
     assert_eq!((deleted, moved_to), (true, Some(ada)));
     assert_eq!((notice.from, notice.to, notice.signal), (agent, Party::Client(guest), Signal::Moved(ada)));
 }
 
-#[sqlx::test(migrations = false)]
-async fn after_the_move_the_same_browser_is_the_client(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(after_the_move_the_same_browser_is_the_client);
+async fn after_the_move_the_same_browser_is_the_client(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let ada = client(&pool, salon, "Ada").await;
     let broker = Broker::new();
@@ -214,9 +210,8 @@ async fn after_the_move_the_same_browser_is_the_client(pool: PgPool) {
     assert_eq!((stored(&pool, ada).await, stored(&pool, guest).await), (2, 0));
 }
 
-#[sqlx::test(migrations = false)]
-async fn only_a_live_guest_is_identified(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(only_a_live_guest_is_identified);
+async fn only_a_live_guest_is_identified(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let (ada, bob) = (client(&pool, salon, "Ada").await, client(&pool, salon, "Bob").await);
     let messaging = Messaging::new(pool.clone(), Broker::new(), salon);
@@ -227,9 +222,8 @@ async fn only_a_live_guest_is_identified(pool: PgPool) {
     assert!(matches!(messaging.identify(bob, ada).await, Err(MessagingError::NotFound)));
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_client_follows_only_its_own_topics(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_client_follows_only_its_own_topics);
+async fn a_client_follows_only_its_own_topics(_pool: Db) {
     let (salon, spa, ada, bob) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let token = AccessToken { sub: ada, iss: "megh".into(), aud: vec![salon.to_string()], exp: u64::MAX, iat: 0, client_id: "megh".into(), scope: String::new() };
     let topic = |tenant: Uuid, client: Uuid| Topic::new(format!("tenants/{tenant}/clients/{client}/members/*"));
@@ -241,9 +235,8 @@ async fn a_client_follows_only_its_own_topics(pool: PgPool) {
     assert!(!megh::messaging::follows(None, &topic(salon, ada)));
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_member_follows_only_the_topics_it_is_on(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_member_follows_only_the_topics_it_is_on);
+async fn a_member_follows_only_the_topics_it_is_on(_pool: Db) {
     let (salon, spa, mia, sam, ada) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let token = AccessToken { sub: mia, iss: "megh".into(), aud: vec![salon.to_string()], exp: u64::MAX, iat: 0, client_id: "megh".into(), scope: String::new() };
     let topic = |tenant: Uuid, client: &str, member: Uuid| Topic::new(format!("tenants/{tenant}/clients/{client}/members/{member}"));
@@ -254,9 +247,8 @@ async fn a_member_follows_only_the_topics_it_is_on(pool: PgPool) {
     assert!(!megh::messaging::follows(Some(&token), &topic(spa, "*", mia)));
 }
 
-#[sqlx::test(migrations = false)]
-async fn both_sides_hear_each_other_on_a_broker_that_lets_each_follow_only_its_own(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(both_sides_hear_each_other_on_a_broker_that_lets_each_follow_only_its_own);
+async fn both_sides_hear_each_other_on_a_broker_that_lets_each_follow_only_its_own(pool: Db) {
     let salon = tenant(&pool, "Salon").await;
     let messaging = Messaging::new(pool.clone(), Broker::new().with_authorizer(megh::messaging::follows), salon);
     let (agent, ada) = (Party::Member(Uuid::now_v7()), Party::Client(Uuid::now_v7()));

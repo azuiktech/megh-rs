@@ -14,7 +14,6 @@ use oauth2::{EndpointMaybeSet, EndpointNotSet, EndpointSet, RevocationUrl};
 
 /// Lets a caller-configured `reqwest` client perform `oauth2` token requests.
 /// The client must not follow redirects (`redirect::Policy::none()`), as the `oauth2` crate requires.
-#[cfg(feature = "client")]
 pub fn oauth_http_client(
     client: reqwest::Client,
 ) -> impl Fn(oauth2::HttpRequest) -> std::pin::Pin<Box<dyn Future<Output = Result<oauth2::HttpResponse, oauth2::HttpClientError<reqwest::Error>>> + Send + Sync>> {
@@ -41,7 +40,6 @@ pub enum OAuthError {
     UrlParse(#[from] oauth2::url::ParseError),
 
     #[error("HTTP transport error: {0}")]
-    #[cfg(feature = "client")]
     Http(#[from] reqwest::Error),
 
     #[error("OAuth token exchange error: {0}")]
@@ -207,7 +205,6 @@ pub struct OAuthUserInfo {
 }
 
 /// Fetches user profile information from the provider's userinfo endpoint.
-#[cfg(feature = "client")]
 pub async fn fetch_user_info(
     http_client: &reqwest::Client,
     userinfo_url: &str,

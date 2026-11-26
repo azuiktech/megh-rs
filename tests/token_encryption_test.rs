@@ -1,6 +1,9 @@
 //! `Encryptor` wired into `ConnectedAccountRepo` and `Accounts`: tokens are ciphertext in the database and
 //! plaintext everywhere else.
 
+#[macro_use]
+mod common;
+
 use std::sync::Arc;
 
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
@@ -8,7 +11,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use megh::{Accounts, ConnectedAccount, ConnectedAccountRepo, Encryptor, OAuthProviderConfig};
 use serde_json::json;
-use sqlx::PgPool;
+use megh::Db;
 use std::collections::HashMap;
 
 const KEY: [u8; 32] = [3u8; 32];
@@ -28,15 +31,15 @@ fn account() -> ConnectedAccount {
     }
 }
 
-async fn stored_tokens(pool: &PgPool) -> (String, String) {
-    sqlx::query_as("SELECT access_token, refresh_token FROM connected_accounts WHERE account_id = 'acct'")
+async fn stored_tokens(pool: &Db) -> (String, String) {
+    Db::query_as("SELECT access_token, refresh_token FROM connected_accounts WHERE account_id = 'acct'")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-#[sqlx::test]
-async fn saved_tokens_are_ciphertext_in_the_database_and_plaintext_from_the_repo(pool: PgPool) {
+dual!(saved_tokens_are_ciphertext_in_the_database_and_plaintext_from_the_repo);
+async fn saved_tokens_are_ciphertext_in_the_database_and_plaintext_from_the_repo(pool: Db) {
     let repo = ConnectedAccountRepo::new(&pool).with_encryptor(Encryptor::new(&KEY));
 
     let saved = repo.save(&account()).await.unwrap();
@@ -47,8 +50,8 @@ async fn saved_tokens_are_ciphertext_in_the_database_and_plaintext_from_the_repo
     assert_ne!(stored_refresh, "plain-refresh");
 }
 
-#[sqlx::test]
-async fn get_find_and_list_decrypt(pool: PgPool) {
+dual!(get_find_and_list_decrypt);
+async fn get_find_and_list_decrypt(pool: Db) {
     let repo = ConnectedAccountRepo::new(&pool).with_encryptor(Encryptor::new(&KEY));
     repo.save(&account()).await.unwrap();
 
@@ -61,8 +64,8 @@ async fn get_find_and_list_decrypt(pool: PgPool) {
     assert_eq!(listed[0].access_token, "plain-access");
 }
 
-#[sqlx::test]
-async fn without_an_encryptor_tokens_stay_plaintext(pool: PgPool) {
+dual!(without_an_encryptor_tokens_stay_plaintext);
+async fn without_an_encryptor_tokens_stay_plaintext(pool: Db) {
     let repo = ConnectedAccountRepo::new(&pool);
 
     repo.save(&account()).await.unwrap();
@@ -81,10 +84,10 @@ async fn stub_provider(reply: serde_json::Value) -> String {
     base
 }
 
-#[sqlx::test]
-async fn a_refreshed_token_is_stored_encrypted_and_served_decrypted(pool: PgPool) {
+dual!(a_refreshed_token_is_stored_encrypted_and_served_decrypted);
+async fn a_refreshed_token_is_stored_encrypted_and_served_decrypted(pool: Db) {
     let base = stub_provider(json!({"access_token": "fresh-access", "token_type": "bearer", "expires_in": 3600, "refresh_token": "fresh-refresh"})).await;
-    sqlx::query("INSERT INTO connected_accounts (account_id, provider, access_token, refresh_token, expiry) VALUES ('acct', 'google', $1, $2, NOW() - INTERVAL '1 second')")
+    Db::query("INSERT INTO connected_accounts (account_id, provider, access_token, refresh_token, expiry) VALUES ('acct', 'google', $1, $2, NOW() - INTERVAL '1 second')").sqlite("INSERT INTO connected_accounts (account_id, provider, access_token, refresh_token, expiry) VALUES ('acct', 'google', $1, $2, strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', '-1 seconds'))")
         .bind(Encryptor::new(&KEY).encrypt("stale-access").unwrap())
         .bind(Encryptor::new(&KEY).encrypt("stale-refresh").unwrap())
         .execute(&pool)
@@ -105,8 +108,8 @@ async fn a_refreshed_token_is_stored_encrypted_and_served_decrypted(pool: PgPool
     assert_eq!(Encryptor::new(&KEY).decrypt(&stored_access).unwrap(), "fresh-access");
 }
 
-#[sqlx::test]
-async fn tokens_saved_before_encryption_was_on_are_encrypted_once(pool: PgPool) {
+dual!(tokens_saved_before_encryption_was_on_are_encrypted_once);
+async fn tokens_saved_before_encryption_was_on_are_encrypted_once(pool: Db) {
     ConnectedAccountRepo::new(&pool).save(&account()).await.unwrap();
     let repo = ConnectedAccountRepo::new(&pool).with_encryptor(Encryptor::new(&KEY));
 

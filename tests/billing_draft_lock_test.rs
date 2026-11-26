@@ -1,6 +1,9 @@
 //! Issue #211 (#4 of the code review): a change to a draft invoice or its lines and `:open` wait for each other, so a
 //! change that arrives while the invoice is being opened is refused once it is open, instead of landing on it.
 
+#[macro_use]
+mod common;
+
 use std::time::Duration;
 
 use axum::body::Body;
@@ -10,15 +13,15 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{authorizer, Grant};
 use serde_json::{json, Value};
-use sqlx::{PgPool, Postgres, Transaction};
+use megh::{Db, Tx};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let (api, _) = megh::billing::router().split_for_parts();
     let grants = [format!("tenants:read:{tenant}"), "invoices:*".into(), "invoiceLines:*".into()];
     Router::new()
@@ -48,7 +51,7 @@ fn line(invoice: &str) -> Value {
 }
 
 /// A draft invoice with one line: the invoice id, the line id and the app.
-async fn draft(pool: &PgPool) -> (String, String, Router, Uuid) {
+async fn draft(pool: &Db) -> (String, String, Router, Uuid) {
     let (mine, ada) = (tenant(pool, "Clinic").await, tenant(pool, "Ada").await);
     let app = app(pool.clone(), mine);
     let (_, created) = call(app.clone(), "POST", format!("/api/v1/tenants/{mine}/invoices"), invoice(ada)).await;
@@ -58,15 +61,15 @@ async fn draft(pool: &PgPool) -> (String, String, Router, Uuid) {
 }
 
 /// What `:open` does to the invoice, left uncommitted: it is locked and open, with a number.
-async fn opening(pool: &PgPool, id: &str) -> Transaction<'static, Postgres> {
+async fn opening(pool: &Db, id: &str) -> Tx {
     let mut transaction = pool.begin().await.unwrap();
-    sqlx::query("SELECT 1 FROM billing_invoices WHERE id = $1::uuid FOR UPDATE").bind(id).execute(&mut *transaction).await.unwrap();
-    sqlx::query("UPDATE billing_invoices SET status = 'open', number = 'INV-1' WHERE id = $1::uuid").bind(id).execute(&mut *transaction).await.unwrap();
+    Db::query("SELECT 1 FROM billing_invoices WHERE id = $1::uuid FOR UPDATE").sqlite("SELECT 1 FROM billing_invoices WHERE id = unhex(replace($1, '-', ''))").bind(id).execute(&mut transaction).await.unwrap();
+    Db::query("UPDATE billing_invoices SET status = 'open', number = 'INV-1' WHERE id = $1::uuid").sqlite("UPDATE billing_invoices SET status = 'open', number = 'INV-1' WHERE id = unhex(replace($1, '-', ''))").bind(id).execute(&mut transaction).await.unwrap();
     transaction
 }
 
 /// Sends the request while the invoice is being opened, then lets the opening commit.
-async fn while_opening(pool: &PgPool, id: &str, request: impl std::future::Future<Output = (StatusCode, Value)> + Send + 'static) -> StatusCode {
+async fn while_opening(pool: &Db, id: &str, request: impl std::future::Future<Output = (StatusCode, Value)> + Send + 'static) -> StatusCode {
     let transaction = opening(pool, id).await;
     let sent = tokio::spawn(request);
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -74,17 +77,16 @@ async fn while_opening(pool: &PgPool, id: &str, request: impl std::future::Futur
     sent.await.unwrap().0
 }
 
-async fn stored(pool: &PgPool, id: &str) -> (String, Option<String>, bool) {
-    sqlx::query_as("SELECT status, number, deleted_at IS NOT NULL FROM billing_invoices WHERE id = $1::uuid").bind(id).fetch_one(pool).await.unwrap()
+async fn stored(pool: &Db, id: &str) -> (String, Option<String>, bool) {
+    Db::query_as("SELECT status, number, deleted_at IS NOT NULL FROM billing_invoices WHERE id = $1::uuid").sqlite("SELECT status, number, deleted_at IS NOT NULL FROM billing_invoices WHERE id = unhex(replace($1, '-', ''))").bind(id).fetch_one(pool).await.unwrap()
 }
 
-async fn lines(pool: &PgPool, id: &str) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM billing_invoice_lines WHERE invoice_id = $1::uuid AND deleted_at IS NULL").bind(id).fetch_one(pool).await.unwrap()
+async fn lines(pool: &Db, id: &str) -> i64 {
+    Db::query_scalar("SELECT count(*) FROM billing_invoice_lines WHERE invoice_id = $1::uuid AND deleted_at IS NULL").sqlite("SELECT count(*) FROM billing_invoice_lines WHERE invoice_id = unhex(replace($1, '-', '')) AND deleted_at IS NULL").bind(id).fetch_one(pool).await.unwrap()
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_line_added_while_the_invoice_opens_is_refused(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_line_added_while_the_invoice_opens_is_refused);
+async fn a_line_added_while_the_invoice_opens_is_refused(pool: Db) {
     let (id, _, app, mine) = draft(&pool).await;
 
     let status = while_opening(&pool, &id, call(app, "POST", format!("/api/v1/tenants/{mine}/invoiceLines"), line(&id))).await;
@@ -92,9 +94,8 @@ async fn a_line_added_while_the_invoice_opens_is_refused(pool: PgPool) {
     assert_eq!((status, lines(&pool, &id).await), (StatusCode::CONFLICT, 1));
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_line_changed_while_the_invoice_opens_is_refused(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_line_changed_while_the_invoice_opens_is_refused);
+async fn a_line_changed_while_the_invoice_opens_is_refused(pool: Db) {
     let (id, line_id, app, mine) = draft(&pool).await;
 
     let status = while_opening(&pool, &id, call(app, "PATCH", format!("/api/v1/tenants/{mine}/invoiceLines/{line_id}"), json!({"quantity": "9"}))).await;
@@ -102,9 +103,8 @@ async fn a_line_changed_while_the_invoice_opens_is_refused(pool: PgPool) {
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_invoice_replaced_while_it_opens_is_refused_and_stays_open(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_invoice_replaced_while_it_opens_is_refused_and_stays_open);
+async fn an_invoice_replaced_while_it_opens_is_refused_and_stays_open(pool: Db) {
     let (id, _, app, mine) = draft(&pool).await;
     let customer = tenant(&pool, "Bea").await;
 
@@ -113,9 +113,8 @@ async fn an_invoice_replaced_while_it_opens_is_refused_and_stays_open(pool: PgPo
     assert_eq!((status, stored(&pool, &id).await), (StatusCode::CONFLICT, ("open".into(), Some("INV-1".into()), false)));
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_invoice_deleted_while_it_opens_is_refused_and_kept(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_invoice_deleted_while_it_opens_is_refused_and_kept);
+async fn an_invoice_deleted_while_it_opens_is_refused_and_kept(pool: Db) {
     let (id, _, app, mine) = draft(&pool).await;
 
     let status = while_opening(&pool, &id, call(app, "DELETE", format!("/api/v1/tenants/{mine}/invoices/{id}"), Value::Null)).await;

@@ -1,20 +1,18 @@
 //! PostgreSQL repository for ConnectedAccount persistence.
 
 use itertools::multiunzip;
-use sqlx::PgPool;
+use crate::{Db, Array};
 use super::encryption::Encryptor;
 use super::model::ConnectedAccount;
 
-#[cfg(feature = "postgres")]
 /// Repository for `connected_accounts` table operations in PostgreSQL.
 pub struct ConnectedAccountRepo<'a> {
-    pool: &'a PgPool,
+    pool: &'a Db,
     encryptor: Option<Encryptor>,
 }
 
-#[cfg(feature = "postgres")]
 impl<'a> ConnectedAccountRepo<'a> {
-    pub fn new(pool: &'a PgPool) -> Self {
+    pub fn new(pool: &'a Db) -> Self {
         Self { pool, encryptor: None }
     }
 
@@ -26,7 +24,7 @@ impl<'a> ConnectedAccountRepo<'a> {
 
     /// Fetches an account by exact compound primary key (account_id, provider).
     pub async fn get(&self, account_id: &str, provider: &str) -> Result<Option<ConnectedAccount>, sqlx::Error> {
-        let account = sqlx::query_as::<_, ConnectedAccount>(
+        let account = Db::query_as::<ConnectedAccount>(
             "SELECT * FROM connected_accounts WHERE account_id = $1 AND provider = $2"
         )
         .bind(account_id)
@@ -42,9 +40,10 @@ impl<'a> ConnectedAccountRepo<'a> {
         identifier: &str,
         provider: &str,
     ) -> Result<Option<ConnectedAccount>, sqlx::Error> {
-        let account = sqlx::query_as::<_, ConnectedAccount>(
+        let account = Db::query_as::<ConnectedAccount>(
             "SELECT * FROM connected_accounts WHERE (account_id = $1 OR email = $1::citext) AND provider = $2 AND disconnected_at IS NULL LIMIT 1"
         )
+        .sqlite("SELECT * FROM connected_accounts WHERE (account_id = $1 OR email = $1) AND provider = $2 AND disconnected_at IS NULL LIMIT 1")
         .bind(identifier)
         .bind(provider)
         .fetch_optional(self.pool)
@@ -55,7 +54,7 @@ impl<'a> ConnectedAccountRepo<'a> {
     /// Saves or updates a connected account. A missing refresh token keeps the stored one (providers only send it on first consent).
     pub async fn save(&self, account: &ConnectedAccount) -> Result<ConnectedAccount, sqlx::Error> {
         let account = self.encrypted(account.clone())?;
-        let saved = sqlx::query_as::<_, ConnectedAccount>(
+        let saved = Db::query_as::<ConnectedAccount>(
             "INSERT INTO connected_accounts (account_id, provider, email, access_token, refresh_token, token_type, expiry, disconnected_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (account_id, provider) DO UPDATE SET
@@ -68,6 +67,19 @@ impl<'a> ConnectedAccountRepo<'a> {
                  updated_at = NOW()
              RETURNING *",
         )
+        .sqlite(concat!(
+            "INSERT INTO connected_accounts (account_id, provider, email, access_token, refresh_token, token_type, expiry, disconnected_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (account_id, provider) DO UPDATE SET
+                 email = EXCLUDED.email,
+                 access_token = EXCLUDED.access_token,
+                 refresh_token = COALESCE(EXCLUDED.refresh_token, connected_accounts.refresh_token),
+                 token_type = EXCLUDED.token_type,
+                 expiry = EXCLUDED.expiry,
+                 disconnected_at = EXCLUDED.disconnected_at,
+                 updated_at = ", crate::sqlite_now!(), "
+             RETURNING *",
+        ))
         .bind(&account.account_id)
         .bind(&account.provider)
         .bind(&account.email)
@@ -83,9 +95,10 @@ impl<'a> ConnectedAccountRepo<'a> {
 
     /// Soft-disconnects an account by setting disconnected_at to NOW().
     pub async fn disconnect(&self, account_id: &str, provider: &str) -> Result<bool, sqlx::Error> {
-        let res = sqlx::query(
+        let res = Db::query(
             "UPDATE connected_accounts SET disconnected_at = NOW(), updated_at = NOW() WHERE account_id = $1 AND provider = $2"
         )
+        .sqlite(concat!("UPDATE connected_accounts SET disconnected_at = ", crate::sqlite_now!(), ", updated_at = ", crate::sqlite_now!(), " WHERE account_id = $1 AND provider = $2"))
         .bind(account_id)
         .bind(provider)
         .execute(self.pool)
@@ -96,9 +109,10 @@ impl<'a> ConnectedAccountRepo<'a> {
 
     /// Lists all active (non-disconnected) accounts associated with an email.
     pub async fn list_by_email(&self, email: &str) -> Result<Vec<ConnectedAccount>, sqlx::Error> {
-        let accounts = sqlx::query_as::<_, ConnectedAccount>(
+        let accounts = Db::query_as::<ConnectedAccount>(
             "SELECT * FROM connected_accounts WHERE email = $1::citext AND disconnected_at IS NULL ORDER BY created_at DESC"
         )
+        .sqlite("SELECT * FROM connected_accounts WHERE email = $1 AND disconnected_at IS NULL ORDER BY created_at DESC")
         .bind(email)
         .fetch_all(self.pool)
         .await?;
@@ -108,20 +122,26 @@ impl<'a> ConnectedAccountRepo<'a> {
     /// Encrypts the tokens that were stored before the encryptor was set: every token that does not decrypt is
     /// encrypted and saved. Run it once after turning encryption on; answers how many accounts changed.
     pub async fn encrypt_stored(&self) -> Result<u64, sqlx::Error> {
-        let stored = sqlx::query_as::<_, ConnectedAccount>("SELECT * FROM connected_accounts").fetch_all(self.pool).await?;
+        let stored = Db::query_as::<ConnectedAccount>("SELECT * FROM connected_accounts").fetch_all(self.pool).await?;
         let plaintext = stored.into_iter().filter(|account| self.decrypted(account.clone()).is_err());
         let encrypted = plaintext.map(|account| self.encrypted(account)).collect::<Result<Vec<_>, _>>()?;
         let (ids, providers, access, refresh): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) =
             multiunzip(encrypted.into_iter().map(|account| (account.account_id, account.provider, account.access_token, account.refresh_token)));
-        let updated = sqlx::query(
+        let updated = Db::query(
             "UPDATE connected_accounts c SET access_token = u.access_token, refresh_token = u.refresh_token, updated_at = NOW() \
              FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[]) AS u(account_id, provider, access_token, refresh_token) \
              WHERE c.account_id = u.account_id AND c.provider = u.provider",
         )
-        .bind(ids)
-        .bind(providers)
-        .bind(access)
-        .bind(refresh)
+        .sqlite(concat!(
+            "UPDATE connected_accounts AS c SET access_token = u.access_token, refresh_token = u.refresh_token, updated_at = ", crate::sqlite_now!(), " \
+             FROM (SELECT a.value AS account_id, p.value AS provider, t.value AS access_token, r.value AS refresh_token \
+                   FROM json_each($1) a JOIN json_each($2) p ON p.key = a.key JOIN json_each($3) t ON t.key = a.key JOIN json_each($4) r ON r.key = a.key) AS u \
+             WHERE c.account_id = u.account_id AND c.provider = u.provider",
+        ))
+        .bind(Array(ids))
+        .bind(Array(providers))
+        .bind(Array(access))
+        .bind(Array(refresh))
         .execute(self.pool)
         .await?;
         Ok(updated.rows_affected())

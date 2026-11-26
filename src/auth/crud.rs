@@ -1,275 +1,241 @@
-//! Create, read, list, replace, patch and delete rows of any `#[entity]`, on any database that is a `Backend`, with a
-//! pool, a transaction or a connection.
+//! Create, read, list, replace, patch and delete rows of any `#[entity]`, on a pool or in a transaction, on every driver.
 //!
 //! The system sets `created_at`, `updated_at` and `deleted_at`, and `create` generates the last key (the id): what an
-//! entity holds in them is never written. Every write is one statement (`UPDATE … RETURNING`); a row is read first only to
-//! audit it, when the entity is audited.
+//! entity holds in them is never written. Every write is one statement (`… RETURNING`); a row is read first only to
+//! audit it, when the entity is audited. Fields are bound and rows read through each field's own `sqlx::Type`.
 
+use chrono::{DateTime, Utc};
 use paginator_utils::{Cursor, CursorDirection, CursorValue};
-use sea_query::{Alias, Condition, Expr, OnConflict, Query, SelectStatement, SimpleExpr, Value};
-use sea_query_binder::SqlxBinder;
 use serde::Serialize;
-use sqlx::{Acquire, Transaction};
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::auth::audit::{self, AuditPolicy};
+use crate::auth::db::{Db, On, QueryAs, Tx, Value};
+use crate::auth::entity::{Table, Where};
 use crate::auth::rest::{ApiError, ApiResult, Changes, Key, ListRequest, Page};
-use crate::auth::column::{Column, Kind};
-use crate::auth::db::Backend;
-use crate::auth::entity::Table;
 use super::filter;
 
 /// An entity the CRUD can run on from a handler: what it needs, in one name.
-pub trait Row: Table + Validate + Serialize + Send + Sync + 'static {}
+pub trait Row: Table + Validate + Serialize + Send + Sync {}
 
-impl<T: Table + Validate + Serialize + Send + Sync + 'static> Row for T {}
+impl<T: Table + Validate + Serialize + Send + Sync> Row for T {}
 
 const SYSTEM: [&str; 3] = ["created_at", "updated_at", "deleted_at"];
 
-pub async fn get<'c, T, DB>(db: impl Acquire<'c, Database = DB>, key: &Key) -> ApiResult<T>
-where
-    T: Table,
-    DB: Backend,
-{
-    let mut connection = db.begin().await.map_err(failed)?;
-    one::<T, DB>(&mut connection, &base::<T>().cond_where(scope::<T>(key_values::<T>(key))).to_owned()).await
+pub async fn get<T: Table>(db: impl Into<On<'_>>, key: &Key) -> ApiResult<T> {
+    select_where::<T>(db, scope::<T>(key)).await?.into_iter().next().ok_or(ApiError::NotFound)
 }
 
-pub async fn list<'c, T, DB>(db: impl Acquire<'c, Database = DB>, request: &ListRequest) -> ApiResult<Page<T>>
-where
-    T: Table,
-    DB: Backend,
-{
+pub async fn list<T: Table + Serialize>(db: impl Into<On<'_>>, request: &ListRequest) -> ApiResult<Page<T>> {
     let order = *T::PRIMARY_KEY.last().expect("a table has a key");
     let size = request.page.size();
-    let filter = request.filter.as_ref().map(filter::condition::<T, DB>).transpose()?;
+    let filter = request.filter.as_ref().map(filter::condition::<T>).transpose()?;
     let last = request.page.page_token.as_deref().map(after).transpose()?;
-    let query = base::<T>()
-        .and_where(Expr::col(Alias::new(T::PRIMARY_KEY[0])).eq(Value::from(request.tenant_id)))
-        .cond_where(Condition::all().add_option(filter))
-        .and_where_option(last.map(|id| Expr::col(Alias::new(order)).gt(Value::from(id))))
-        .order_by(Alias::new(order), sea_query::Order::Asc)
-        .limit(u64::from(size) + 1)
-        .to_owned();
-
-    let mut connection = db.begin().await.map_err(failed)?;
-    let mut items = many::<T, DB>(&mut connection, &query).await?;
+    let tenant = Where::new(format!("\"{}\" = ?", T::PRIMARY_KEY[0]), vec![Box::new(request.tenant_id)]);
+    let after = last.map(|id| Where::new(format!("\"{order}\" > ?"), vec![Box::new(id)]));
+    let condition = [filter, after].into_iter().flatten().fold(tenant.and(live::<T>()), Where::and);
+    let tail = format!(" ORDER BY \"{order}\" LIMIT {}", u64::from(size) + 1);
+    let mut items: Vec<T> = statement(|condition| format!("{} WHERE {condition}{tail}", base::<T>()), condition).fetch_all(db).await.map_err(failed)?;
     let has_more = items.len() > usize::from(size);
     items.truncate(usize::from(size));
     let next_page_token = items.last().filter(|_| has_more).map(|last| cursor(order, last)).transpose()?;
     Ok(Page { items, next_page_token })
 }
 
-/// The rows of the entity's table that are not deleted, narrowed by what `build` adds to the query.
-pub async fn select<'c, T, DB>(db: impl Acquire<'c, Database = DB>, build: impl FnOnce(&mut SelectStatement)) -> ApiResult<Vec<T>>
-where
-    T: Table,
-    DB: Backend,
-{
-    let mut query = base::<T>();
-    build(&mut query);
-    let mut connection = db.begin().await.map_err(failed)?;
-    many::<T, DB>(&mut connection, &query).await
+/// The rows of the entity's table that are not deleted and match `filter`.
+pub async fn select<T: Table>(db: impl Into<On<'_>>, filter: Where) -> ApiResult<Vec<T>> {
+    select_where(db, live::<T>().and(filter)).await
 }
 
-pub async fn create<'c, T, DB>(db: impl Acquire<'c, Database = DB>, data: T, actor: Option<&str>) -> ApiResult<T>
-where
-    T: Table + Validate + Serialize + Send,
-    DB: Backend,
-{
+pub async fn create<T: Row>(db: impl Into<On<'_>>, data: T, actor: Option<&str>) -> ApiResult<T> {
     data.validate().map_err(bad)?;
-    let mut tx = db.begin().await.map_err(failed)?;
-    let now = DB::now();
-    let id: SimpleExpr = Expr::val(Uuid::now_v7()).into();
-    let not_deleted: SimpleExpr = Expr::val(Kind::Timestamp.null()).into();
-    let stamps = [("created_at", now.clone()), ("updated_at", now), ("deleted_at", not_deleted)];
-    let stamps: Vec<(&str, SimpleExpr)> = stamps.into_iter().chain(T::PRIMARY_KEY.last().map(|last| (*last, id))).collect();
-    let values: Vec<(&'static str, SimpleExpr)> = data
-        .values()
-        .into_iter()
-        .map(|(name, value)| (name, stamps.iter().find(|(stamp, _)| *stamp == name).map_or_else(|| expr::<T>(name, value), |(_, set)| set.clone())))
-        .collect();
-    let insert = Query::insert()
-        .into_table(Alias::new(T::TABLE_NAME))
-        .columns(values.iter().map(|(name, _)| Alias::new(*name)))
-        .values_panic(values.into_iter().map(|(_, value)| value))
-        .returning(returning::<T>())
-        .to_owned();
-    let created = one::<T, DB>(&mut tx, &insert).await?;
-    audit::record::<T, DB>(&mut tx, "INSERT", actor, None, Some(&created)).await.map_err(failed)?;
+    let now = Utc::now();
+    let id = T::PRIMARY_KEY.last().copied();
+    let params = T::COLUMNS.iter().zip(data.params()).map(|(column, param)| match *column {
+        "created_at" | "updated_at" => Box::new(now) as Value,
+        "deleted_at" => Box::new(None::<DateTime<Utc>>),
+        name if Some(name) == id => Box::new(Uuid::now_v7()),
+        _ => param,
+    });
+    let insert = format!("INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING {}", T::TABLE_NAME, columns(T::COLUMNS), marks(T::COLUMNS.len()), columns(T::COLUMNS));
+    let mut tx = db.into().transaction().await.map_err(failed)?;
+    let created: T = Db::query_as(insert).bind_all(params.collect()).fetch_one(&mut *tx).await.map_err(failed)?;
+    audit::record(&mut tx, "INSERT", actor, None, Some(&created)).await.map_err(failed)?;
     tx.commit().await.map_err(failed)?;
     Ok(created)
 }
 
 /// Inserts the row as it is, or, when the key exists and the row is not deleted, sets every other column to the entity's
 /// (`updated_at` to now): for a row whose id the caller decides.
-pub async fn upsert<'c, T, DB>(db: impl Acquire<'c, Database = DB>, data: T) -> ApiResult<T>
-where
-    T: Table + Send,
-    DB: Backend,
-{
-    let mut tx = db.begin().await.map_err(failed)?;
-    let now = DB::now();
-    let values: Vec<(&'static str, SimpleExpr)> = data
-        .values()
-        .into_iter()
-        .map(|(name, value)| (name, match name { "updated_at" => now.clone(), _ => expr::<T>(name, value) }))
-        .collect();
-    let updated = values.iter().map(|(name, _)| *name).filter(|name| !T::PRIMARY_KEY.contains(name) && *name != "created_at");
-    let alive = T::SOFT_DELETE.then(|| Expr::col((Alias::new(T::TABLE_NAME), Alias::new("deleted_at"))).is_null());
-    let mut conflict = OnConflict::columns(T::PRIMARY_KEY.iter().map(|key| Alias::new(*key)));
-    conflict.update_columns(updated.map(Alias::new));
-    alive.into_iter().for_each(|alive| {
-        conflict.action_and_where(alive);
+pub async fn upsert<T: Table>(db: impl Into<On<'_>>, data: T) -> ApiResult<T> {
+    let now = Utc::now();
+    let params = T::COLUMNS.iter().zip(data.params()).map(|(column, param)| match *column {
+        "updated_at" => Box::new(now) as Value,
+        _ => param,
     });
-    let conflict = conflict.to_owned();
-    let insert = Query::insert()
-        .into_table(Alias::new(T::TABLE_NAME))
-        .columns(values.iter().map(|(name, _)| Alias::new(*name)))
-        .values_panic(values.into_iter().map(|(_, value)| value))
-        .on_conflict(conflict)
-        .returning(returning::<T>())
-        .to_owned();
-    let saved = one::<T, DB>(&mut tx, &insert).await?;
-    tx.commit().await.map_err(failed)?;
-    Ok(saved)
+    let updated = T::COLUMNS.iter().filter(|name| !T::PRIMARY_KEY.contains(name) && **name != "created_at");
+    let sets = updated.map(|name| format!("\"{name}\" = excluded.\"{name}\"")).collect::<Vec<_>>().join(", ");
+    let alive = T::SOFT_DELETE.then(|| format!(" WHERE \"{}\".deleted_at IS NULL", T::TABLE_NAME)).unwrap_or_default();
+    let insert = format!(
+        "INSERT INTO \"{}\" ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {sets}{alive} RETURNING {}",
+        T::TABLE_NAME,
+        columns(T::COLUMNS),
+        marks(T::COLUMNS.len()),
+        columns(T::PRIMARY_KEY),
+        columns(T::COLUMNS),
+    );
+    Db::query_as(insert).bind_all(params.collect()).fetch_one(db).await.map_err(failed)
 }
 
-pub async fn replace<'c, T, DB>(db: impl Acquire<'c, Database = DB>, data: T, actor: Option<&str>) -> ApiResult<T>
-where
-    T: Table + Validate + Serialize + Send,
-    DB: Backend,
-{
+pub async fn replace<T: Row>(db: impl Into<On<'_>>, data: T, actor: Option<&str>) -> ApiResult<T> {
     data.validate().map_err(bad)?;
-    let mut tx = db.begin().await.map_err(failed)?;
-    let values = data.values();
-    let key: Vec<Value> = T::PRIMARY_KEY.iter().filter_map(|name| values.iter().find(|(column, _)| column == name)).map(|(_, value)| value.clone()).collect();
-    let old = before::<T, DB>(&mut tx, &key).await?;
-    let own = values.into_iter().filter(|(name, _)| !T::PRIMARY_KEY.contains(name) && !SYSTEM.contains(name));
-    let sets = own.map(|(name, value)| (name, expr::<T>(name, value))).chain(stamps::<T>(&["updated_at"], &DB::now())).collect();
-    let replaced = one::<T, DB>(&mut tx, &update::<T>(sets, key)).await?;
-    audit::record::<T, DB>(&mut tx, "UPDATE", actor, old.as_ref(), Some(&replaced)).await.map_err(failed)?;
+    let key = key_of(&data)?;
+    let own = T::COLUMNS.iter().zip(data.params()).filter(|(name, _)| !T::PRIMARY_KEY.contains(name) && !SYSTEM.contains(name));
+    let (names, params): (Vec<_>, Vec<_>) = own.map(|(name, param)| (format!("\"{name}\" = ?"), param)).unzip();
+    let mut tx = db.into().transaction().await.map_err(failed)?;
+    let old = before::<T>(&mut tx, &key).await?;
+    let replaced = update::<T>(&mut tx, Sets::new(names.join(", "), params), &key, Utc::now()).await?;
+    audit::record(&mut tx, "UPDATE", actor, old.as_ref(), Some(&replaced)).await.map_err(failed)?;
     tx.commit().await.map_err(failed)?;
     Ok(replaced)
 }
 
-/// `UPDATE … SET` exactly the columns the patch names, each replaced whole, and nothing else but `updated_at`.
-pub async fn patch<'c, T, DB>(db: impl Acquire<'c, Database = DB>, body: Changes, actor: Option<&str>) -> ApiResult<T>
-where
-    T: Table + Validate + Serialize + Send,
-    DB: Backend,
-{
-    let key = key_values::<T>(&body.key);
-    let sets = body
-        .changes
-        .iter()
-        .filter(|(name, _)| !SYSTEM.contains(&name.as_str()))
-        .map(|(name, json)| {
-            let column = T::COLUMNS.iter().find(|column| column.name == name).ok_or_else(|| ApiError::BadRequest(format!("unknown field {name}")))?;
-            let value = match json {
-                serde_json::Value::Null => DB::reset(),
-                _ => expr::<T>(column.name, T::from_json(name, json).map_err(bad)?),
-            };
-            Ok((column.name, value))
-        })
-        .collect::<ApiResult<Vec<_>>>()?;
-    let mut tx = db.begin().await.map_err(failed)?;
-    let old = before::<T, DB>(&mut tx, &key).await?;
-    let sets = sets.into_iter().chain(stamps::<T>(&["updated_at"], &DB::now())).collect();
-    let patched = one::<T, DB>(&mut tx, &update::<T>(sets, key)).await?;
+/// `UPDATE … SET` exactly the columns the patch names, each replaced whole, and nothing else but `updated_at`. `null`
+/// sets the column's default where the driver can say so (PostgreSQL), else `NULL`.
+pub async fn patch<T: Row>(db: impl Into<On<'_>>, body: Changes, actor: Option<&str>) -> ApiResult<T> {
+    let changes = body.changes.iter().filter(|(name, _)| !SYSTEM.contains(&name.as_str()));
+    let sets = changes.map(|(name, json)| change::<T>(name, json)).collect::<ApiResult<Vec<_>>>()?;
+    let sets = sets.into_iter().fold(Sets::default(), Sets::and);
+    let mut tx = db.into().transaction().await.map_err(failed)?;
+    let old = before::<T>(&mut tx, &body.key).await?;
+    let patched = update::<T>(&mut tx, sets, &body.key, Utc::now()).await?;
     patched.validate().map_err(bad)?;
-    audit::record::<T, DB>(&mut tx, "UPDATE", actor, old.as_ref(), Some(&patched)).await.map_err(failed)?;
+    audit::record(&mut tx, "UPDATE", actor, old.as_ref(), Some(&patched)).await.map_err(failed)?;
     tx.commit().await.map_err(failed)?;
     Ok(patched)
 }
 
 /// Marks the row deleted, or removes it when the entity has no soft delete; answers with the row as it was left.
-pub async fn delete<'c, T, DB>(db: impl Acquire<'c, Database = DB>, key: &Key, actor: Option<&str>) -> ApiResult<T>
-where
-    T: Table + Serialize + Send,
-    DB: Backend,
-{
-    let key = key_values::<T>(key);
-    let mut tx = db.begin().await.map_err(failed)?;
-    let old = before::<T, DB>(&mut tx, &key).await?;
+pub async fn delete<T: Row>(db: impl Into<On<'_>>, key: &Key, actor: Option<&str>) -> ApiResult<T> {
+    let mut tx = db.into().transaction().await.map_err(failed)?;
+    let old = before::<T>(&mut tx, key).await?;
     let deleted = match T::SOFT_DELETE {
-        true => {
-            let sets = stamps::<T>(&["deleted_at", "updated_at"], &DB::now());
-            let deleted = one::<T, DB>(&mut tx, &update::<T>(sets, key)).await?;
-            DB::cascade(&mut tx, T::TABLE_NAME).await.map_err(failed)?;
-            deleted
-        }
+        true => soft_delete::<T>(&mut tx, key).await?,
         false => {
-            let remove = Query::delete().from_table(Alias::new(T::TABLE_NAME)).cond_where(scope::<T>(key)).returning(returning::<T>()).to_owned();
-            one::<T, DB>(&mut tx, &remove).await?
+            let remove = format!("DELETE FROM \"{}\" WHERE {{condition}} RETURNING {}", T::TABLE_NAME, columns(T::COLUMNS));
+            statement(|condition| remove.replace("{condition}", condition), scope::<T>(key)).fetch_optional(&mut tx).await.map_err(failed)?.ok_or(ApiError::NotFound)?
         }
     };
-    audit::record::<T, DB>(&mut tx, "DELETE", actor, old.as_ref(), None::<&T>).await.map_err(failed)?;
+    audit::record(&mut tx, "DELETE", actor, old.as_ref(), None::<&T>).await.map_err(failed)?;
     tx.commit().await.map_err(failed)?;
     Ok(deleted)
 }
 
+async fn soft_delete<T: Table>(tx: &mut Tx, key: &Key) -> ApiResult<T> {
+    let now = Utc::now();
+    let sets = Sets::new("\"deleted_at\" = ?".into(), vec![Box::new(now)]);
+    let deleted = update::<T>(tx, sets, key, now).await?;
+    crate::soft_delete::cascade(tx, T::TABLE_NAME, now).await.map_err(failed)?;
+    Ok(deleted)
+}
+
+/// Assignments of an `UPDATE`: the text of each driver and the values bound to them.
+#[derive(Default)]
+struct Sets {
+    standard: Vec<String>,
+    postgres: Vec<String>,
+    params: Vec<Value>,
+}
+
+impl Sets {
+    fn new(text: String, params: Vec<Value>) -> Self {
+        Sets { standard: vec![text.clone()], postgres: vec![text], params }
+    }
+
+    fn and(mut self, other: Sets) -> Sets {
+        self.standard.extend(other.standard);
+        self.postgres.extend(other.postgres);
+        self.params.extend(other.params);
+        self
+    }
+}
+
+/// The assignment a patch makes to `name`: its value as the field's type takes it, or its default for `null`.
+fn change<T: Table>(name: &str, json: &serde_json::Value) -> ApiResult<Sets> {
+    let column = T::COLUMNS.iter().find(|column| **column == name).ok_or_else(|| ApiError::BadRequest(format!("unknown field {name}")))?;
+    match json {
+        serde_json::Value::Null => Ok(Sets { standard: vec![format!("\"{column}\" = NULL")], postgres: vec![format!("\"{column}\" = DEFAULT")], params: vec![] }),
+        _ => Ok(Sets::new(format!("\"{column}\" = ?"), vec![T::param(column, json).map_err(bad)?])),
+    }
+}
+
+/// `UPDATE` the row of `key` with `sets` and `updated_at` set to now.
+async fn update<T: Table>(tx: &mut Tx, sets: Sets, key: &Key, now: DateTime<Utc>) -> ApiResult<T> {
+    let stamp = T::COLUMNS.contains(&"updated_at").then(|| Sets::new("\"updated_at\" = ?".into(), vec![Box::new(now)]));
+    let Sets { standard, postgres, params } = stamp.into_iter().fold(sets, Sets::and);
+    let Where { standard: condition, postgres: pg_condition, sqlite: sqlite_condition, params: key_params } = scope::<T>(key);
+    let text = |sets: &[String], condition: &str| format!("UPDATE \"{}\" SET {} WHERE {condition} RETURNING {}", T::TABLE_NAME, sets.join(", "), columns(T::COLUMNS));
+    Db::query_as(text(&standard, &condition))
+        .postgres(text(&postgres, &pg_condition))
+        .sqlite(text(&standard, &sqlite_condition))
+        .bind_all(params)
+        .bind_all(key_params)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(failed)?
+        .ok_or(ApiError::NotFound)
+}
+
 /// The row as it is, read only to be audited.
-async fn before<T: Table, DB: Backend>(tx: &mut Transaction<'_, DB>, key: &[Value]) -> ApiResult<Option<T>> {
+async fn before<T: Table>(tx: &mut Tx, key: &Key) -> ApiResult<Option<T>> {
     match T::AUDIT {
         AuditPolicy::Disabled => Ok(None),
-        _ => one::<T, DB>(tx, &base::<T>().cond_where(scope::<T>(key.to_vec())).to_owned()).await.map(Some),
+        _ => select_where::<T>(&mut *tx, scope::<T>(key)).await.map(|rows| rows.into_iter().next()),
     }
 }
 
-fn base<T: Table>() -> SelectStatement {
-    Query::select().columns(T::COLUMNS.iter().map(|column| Alias::new(column.name))).from(Alias::new(T::TABLE_NAME)).cond_where(live::<T>()).to_owned()
+async fn select_where<T: Table>(db: impl Into<On<'_>>, condition: Where) -> ApiResult<Vec<T>> {
+    statement(|condition| format!("{} WHERE {condition}", base::<T>()), condition).fetch_all(db).await.map_err(failed)
 }
 
-fn returning<T: Table>() -> sea_query::ReturningClause {
-    Query::returning().columns(T::COLUMNS.iter().map(|column| Alias::new(column.name)))
+/// A statement around `condition`, for each driver's text of it.
+fn statement<T>(text: impl Fn(&str) -> String, condition: Where) -> QueryAs<'static, T> {
+    let Where { standard, postgres, sqlite, params } = condition;
+    Db::query_as(text(&standard)).postgres(text(&postgres)).sqlite(text(&sqlite)).bind_all(params)
 }
 
-fn update<T: Table>(sets: Vec<(&'static str, SimpleExpr)>, key: Vec<Value>) -> sea_query::UpdateStatement {
-    Query::update()
-        .table(Alias::new(T::TABLE_NAME))
-        .values(sets.into_iter().map(|(name, value)| (Alias::new(name), value)))
-        .cond_where(scope::<T>(key))
-        .returning(returning::<T>())
-        .to_owned()
+fn base<T: Table>() -> String {
+    format!("SELECT {} FROM \"{}\"", columns(T::COLUMNS), T::TABLE_NAME)
 }
 
-/// A value as the column takes it.
-fn expr<T: Table>(name: &str, value: Value) -> SimpleExpr {
-    match T::COLUMNS.iter().find(|column| column.name == name) {
-        Some(column) => column.expr(value),
-        None => Expr::val(value).into(),
-    }
+fn columns(names: &[&str]) -> String {
+    names.iter().map(|name| format!("\"{name}\"")).collect::<Vec<_>>().join(", ")
+}
+
+fn marks(count: usize) -> String {
+    vec!["?"; count].join(", ")
 }
 
 /// Rows that exist: not deleted, when the entity has a soft delete.
-fn live<T: Table>() -> Condition {
-    Condition::all().add_option(T::SOFT_DELETE.then(|| Expr::col(Alias::new("deleted_at")).is_null()))
+fn live<T: Table>() -> Where {
+    T::SOFT_DELETE.then(|| Where::new("deleted_at IS NULL", vec![])).unwrap_or_else(Where::all)
 }
 
-fn scope<T: Table>(key: Vec<Value>) -> Condition {
-    T::PRIMARY_KEY.iter().zip(key).fold(live::<T>(), |condition, (column, value)| condition.add(Expr::col(Alias::new(*column)).eq(value)))
+/// The row of `key`, if it exists: (tenant, id), or the id alone for a table keyed by it.
+fn scope<T: Table>(key: &Key) -> Where {
+    let values: [Value; 2] = [Box::new(key.tenant_id), Box::new(key.id)];
+    let skip = 2usize.saturating_sub(T::PRIMARY_KEY.len());
+    T::PRIMARY_KEY.iter().zip(values.into_iter().skip(skip)).fold(live::<T>(), |condition, (column, value)| condition.and(Where::new(format!("\"{column}\" = ?"), vec![value])))
 }
 
-/// The key's values for the table's key columns: (tenant, id), or the id alone for a table keyed by it.
-fn key_values<T: Table>(key: &Key) -> Vec<Value> {
-    let both: [Value; 2] = [key.tenant_id.into(), key.id.into()];
-    both.into_iter().skip(2usize.saturating_sub(T::PRIMARY_KEY.len())).collect()
-}
-
-/// `names` of the entity's columns, each set to `value`.
-fn stamps<T: Table>(names: &[&'static str], value: &SimpleExpr) -> Vec<(&'static str, SimpleExpr)> {
-    names.iter().filter(|name| T::COLUMNS.iter().any(|column| column.name == **name)).map(|name| (*name, value.clone())).collect()
-}
-
-async fn many<T: Table, DB: Backend>(connection: &mut DB::Connection, statement: &impl SqlxBinder) -> ApiResult<Vec<T>> {
-    let rows = DB::fetch(connection, DB::build(statement), T::COLUMNS).await.map_err(failed)?;
-    rows.into_iter().map(|row| T::from_values(row).map_err(bad)).collect()
-}
-
-async fn one<T: Table, DB: Backend>(connection: &mut DB::Connection, statement: &impl SqlxBinder) -> ApiResult<T> {
-    many::<T, DB>(connection, statement).await?.into_iter().next().ok_or(ApiError::NotFound)
+/// The key of an entity: its tenant and the last key column, both uuids.
+fn key_of<T: Table + Serialize>(data: &T) -> ApiResult<Key> {
+    let json = serde_json::to_value(data).map_err(bad)?;
+    let uuid = |name: &str| json.get(name).and_then(|value| value.as_str()).and_then(|text| text.parse::<Uuid>().ok());
+    let id = T::PRIMARY_KEY.last().and_then(|name| uuid(name)).ok_or_else(|| ApiError::BadRequest("the key is not a uuid".into()))?;
+    let tenant_id = T::PRIMARY_KEY.first().filter(|_| T::PRIMARY_KEY.len() > 1).and_then(|name| uuid(name)).unwrap_or(id);
+    Ok(Key { tenant_id, id })
 }
 
 fn after(token: &str) -> ApiResult<Uuid> {
@@ -280,8 +246,9 @@ fn after(token: &str) -> ApiResult<Uuid> {
     }
 }
 
-fn cursor<T: Table>(order: &str, last: &T) -> ApiResult<String> {
-    let id = last.values().into_iter().find(|(name, _)| *name == order).and_then(|(_, value)| Uuid::from_value(value).ok());
+fn cursor<T: Serialize>(order: &str, last: &T) -> ApiResult<String> {
+    let json = serde_json::to_value(last).map_err(bad)?;
+    let id = json.get(order).and_then(|value| value.as_str()).and_then(|text| text.parse::<Uuid>().ok());
     let id = id.ok_or_else(|| ApiError::BadRequest("the last key is not a uuid".into()))?;
     Cursor { field: order.to_string(), direction: CursorDirection::After, value: CursorValue::Uuid(id.to_string()) }.encode().map_err(ApiError::BadRequest)
 }
@@ -299,4 +266,3 @@ fn failed(error: sqlx::Error) -> ApiError {
         _ => error.into(),
     }
 }
-

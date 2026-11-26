@@ -6,7 +6,6 @@ pub mod model;
 pub mod ring;
 pub mod topic;
 
-#[cfg(feature = "axum")]
 pub mod sse;
 
 pub use broker::Broker;
@@ -15,5 +14,4 @@ pub use model::{Event, EventSource, HistoryOptions, SubscriptionRequest, Subscri
 pub use ring::RingBuffer;
 pub use topic::Topic;
 
-#[cfg(feature = "axum")]
 pub use sse::{events_router, events_router_with_csrf};

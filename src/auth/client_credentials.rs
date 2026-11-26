@@ -12,7 +12,7 @@ use axum_extra::TypedHeader;
 use oauth2::basic::{BasicErrorResponseType, BasicTokenResponse, BasicTokenType};
 use oauth2::{AccessToken, EmptyExtraTokenFields, Scope, StandardErrorResponse};
 use serde::Deserialize;
-use sqlx::PgPool;
+use crate::Db;
 
 use super::grant::Grant;
 use super::http::MeghAuthState;
@@ -33,7 +33,7 @@ pub fn token_router(state: MeghAuthState, jwt: JwtSession) -> Router {
 }
 
 async fn token(
-    State((pool, jwt)): State<(PgPool, JwtSession)>,
+    State((pool, jwt)): State<(Db, JwtSession)>,
     credentials: Result<TypedHeader<Authorization<Basic>>, TypedHeaderRejection>,
     request: Result<Form<TokenRequest>, FormRejection>,
 ) -> Result<Response, TokenError> {
@@ -51,7 +51,7 @@ async fn token(
 }
 
 /// The membership of the machine whose client id and secret these are.
-async fn authenticate(pool: &PgPool, client_id: &str, secret: &str) -> Result<Member, TokenError> {
+async fn authenticate(pool: &Db, client_id: &str, secret: &str) -> Result<Member, TokenError> {
     let user = UserRepo::new(pool).verify_password(client_id, secret).await.map_err(|error| match error {
         PasswordError::UserNotFound | PasswordError::NoPassword | PasswordError::WrongPassword => TokenError::CLIENT,
         other => internal(other),

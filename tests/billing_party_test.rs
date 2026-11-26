@@ -1,6 +1,9 @@
 //! S6c (docs/TPD-billing.md section 7, #227): an invoice is receivable (the tenant bills a party) or payable (a bill
 //! to the tenant; a PO while it is a draft). The other party is a client of the tenant or a tenant.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -9,23 +12,23 @@ use megh::auth::rest::AppContext;
 use megh::billing::ids::{Formats, Middle, Numbering};
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id")
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id")
         .bind(name)
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-async fn client(pool: &PgPool, tenant: Uuid, name: &str, role: Option<&str>) -> Uuid {
-    sqlx::query_scalar(
+async fn client(pool: &Db, tenant: Uuid, name: &str, role: Option<&str>) -> Uuid {
+    Db::query_scalar(
         "INSERT INTO clients (tenant_id, id, first_name, last_name, name, role) VALUES ($1, uuidv7(), $2, 'X', $2, $3) RETURNING id",
-    )
+    ).sqlite("INSERT INTO clients (tenant_id, id, first_name, last_name, name, role) VALUES ($1, (unhex(printf('%012x', CAST(unixepoch('subsec') * 1000 AS INTEGER)) || '7' || substr(hex(randomblob(2)), 2, 3) || substr('89ab', 1 + abs(random()) % 4, 1) || substr(hex(randomblob(2)), 2, 3) || hex(randomblob(6)))), $2, 'X', $2, $3) RETURNING id",)
     .bind(tenant)
     .bind(name)
     .bind(role)
@@ -34,7 +37,7 @@ async fn client(pool: &PgPool, tenant: Uuid, name: &str, role: Option<&str>) -> 
     .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let formats = Formats::new(
         Numbering::new("INV", "-", Middle::Year, 4).unwrap(),
         Numbering::new("PAY", "-", Middle::None, 4).unwrap(),
@@ -75,9 +78,8 @@ fn draft(party_kind: &str, party: Uuid) -> Value {
     json!({"party_kind": party_kind, "party_id": party, "status": "draft", "date": "2026-10-27", "due_date": "2026-11-26", "currency": "USD"})
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_invoice_bills_a_client_or_a_tenant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_invoice_bills_a_client_or_a_tenant);
+async fn an_invoice_bills_a_client_or_a_tenant(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let other = tenant(&pool, "Other salon").await;
     let ada = client(&pool, mine, "Ada", None).await;
@@ -134,9 +136,8 @@ async fn an_invoice_bills_a_client_or_a_tenant(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_payable_draft_is_a_purchase_order(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_payable_draft_is_a_purchase_order);
+async fn a_payable_draft_is_a_purchase_order(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let wholesaler = client(&pool, mine, "Colour Wholesale", Some("supplier")).await;
     let app = app(pool, mine);
@@ -182,20 +183,19 @@ async fn a_payable_draft_is_a_purchase_order(pool: PgPool) {
     assert_eq!(page["items"].as_array().unwrap().len(), 1, "{page}");
 }
 
-#[sqlx::test(migrations = false)]
-async fn invoices_stored_before_parties_bill_their_tenant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+postgres!(invoices_stored_before_parties_bill_their_tenant);
+async fn invoices_stored_before_parties_bill_their_tenant(pool: Db) {
     let mine = tenant(&pool, "Salon").await;
     let customer = tenant(&pool, "Customer").await;
-    sqlx::raw_sql(
+    common::raw(
+        &pool,
         "ALTER TABLE billing_invoices RENAME COLUMN party_id TO customer_id;
          ALTER TABLE billing_invoices DROP COLUMN party_kind, DROP COLUMN kind, DROP COLUMN reference,
              DROP COLUMN delivery_date, DROP COLUMN deliver_to",
     )
-    .execute(&pool)
     .await
     .unwrap();
-    let id: Uuid = sqlx::query_scalar(
+    let id: Uuid = Db::query_scalar(
         "INSERT INTO billing_invoices (tenant_id, id, customer_id, status, date, due_date, currency)
          VALUES ($1, uuidv7(), $2, 'draft', '2026-10-22', '2026-11-21', 'USD') RETURNING id",
     )
@@ -204,8 +204,8 @@ async fn invoices_stored_before_parties_bill_their_tenant(pool: PgPool) {
     .fetch_one(&pool)
     .await
     .unwrap();
+    pool.migrate().await.unwrap();
 
-    megh::migrate(&pool).await.unwrap();
     let (status, old) = call(
         &app(pool, mine),
         "GET",

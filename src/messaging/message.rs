@@ -10,7 +10,7 @@ use futures_util::StreamExt;
 use futures_util::future::ready;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use crate::Db;
 use sqlx::types::Json as Column;
 use tokio_stream::wrappers::ReceiverStream;
 use utoipa::ToSchema;
@@ -195,7 +195,7 @@ impl Row {
 
 #[derive(Clone)]
 pub struct Messaging {
-    pub(super) pool: PgPool,
+    pub(super) pool: Db,
     broker: Broker,
     pub(super) tenant_id: Uuid,
     pub(super) files_at: String,
@@ -206,7 +206,7 @@ pub struct Messaging {
 
 impl Messaging {
     /// Messaging within one tenant: nothing it sends or hears belongs to another.
-    pub fn new(pool: PgPool, broker: Broker, tenant_id: Uuid) -> Self {
+    pub fn new(pool: Db, broker: Broker, tenant_id: Uuid) -> Self {
         Self { pool, broker, tenant_id, files_at: String::new(), avatar: None, timestamp: None, read_mark: None }
     }
 
@@ -272,7 +272,7 @@ impl Messaging {
 
     async fn store(&self, body: Value, from: Party, to: Party) -> Result<Message, MessagingError> {
         let (client, member, sender) = pair(from, to)?;
-        let row: Row = sqlx::query_as(
+        let row: Row = Db::query_as(
             "INSERT INTO messages (tenant_id, id, client_id, member_id, sender, body) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
         )
         .bind(self.tenant_id)
@@ -294,12 +294,19 @@ impl Messaging {
             Party::Client(_) => "member",
             Party::Member(_) => "client",
         };
-        let marked: Vec<(Option<String>, Option<Column<Value>>)> = sqlx::query_as(
+        let marked: Vec<(Option<String>, Option<Column<Value>>)> = Db::query_as(
             "UPDATE messages SET read_at = now(),
                     body = COALESCE(jsonb_set(body, '{0,createSurface,dataModel,meta,mark}', body #> '{0,createSurface,dataModel,meta,read}'), body)
              WHERE tenant_id = $1 AND client_id = $2 AND member_id = $3 AND sender = $4 AND id <= $5 AND read_at IS NULL
              RETURNING body #>> '{0,createSurface,surfaceId}', body #> '{0,createSurface,dataModel,meta,read}'",
         )
+        .sqlite(concat!(
+            "UPDATE messages SET read_at = ", crate::sqlite_now!(), ",
+                    body = CASE WHEN body -> '$[0].createSurface.dataModel.meta.read' IS NULL THEN body
+                                ELSE json_set(body, '$[0].createSurface.dataModel.meta.mark', json(body -> '$[0].createSurface.dataModel.meta.read')) END
+             WHERE tenant_id = $1 AND client_id = $2 AND member_id = $3 AND sender = $4 AND id <= $5 AND read_at IS NULL
+             RETURNING body ->> '$[0].createSurface.surfaceId', body -> '$[0].createSurface.dataModel.meta.read'",
+        ))
         .bind(self.tenant_id)
         .bind(client)
         .bind(member)
@@ -368,21 +375,26 @@ struct Window {
 /// The broker's `HistoryProvider` for messaging topics, read from the stored messages; other topics have none.
 #[derive(Clone)]
 pub struct History {
-    pool: PgPool,
+    pool: Db,
 }
 
 impl History {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: Db) -> Self {
         Self { pool }
     }
 
     async fn events(&self, topic: &Topic, window: Window) -> Result<Vec<Event>, HistoryError> {
         let Some((tenant_id, client, member)) = scope(topic) else { return Ok(Vec::new()) };
         let latest = matches!(window.end, End::Latest);
-        let rows: Vec<Row> = sqlx::query_as(
+        let rows: Vec<Row> = Db::query_as(
             "SELECT * FROM (SELECT * FROM messages WHERE tenant_id = $1 AND ($2::uuid IS NULL OR client_id = $2) AND ($3::uuid IS NULL OR member_id = $3)
                AND ($4::uuid IS NULL OR id > $4) AND ($5::timestamptz IS NULL OR created_at > $5)
              ORDER BY CASE WHEN $7 THEN id END DESC, id LIMIT $6) kept ORDER BY id",
+        )
+        .sqlite(
+            "SELECT * FROM (SELECT * FROM messages WHERE tenant_id = $1 AND ($2 IS NULL OR client_id = $2) AND ($3 IS NULL OR member_id = $3)
+               AND ($4 IS NULL OR id > $4) AND ($5 IS NULL OR created_at > $5)
+             ORDER BY CASE WHEN $7 THEN id END DESC, id LIMIT COALESCE($6, -1)) kept ORDER BY id",
         )
         .bind(tenant_id)
         .bind(client)

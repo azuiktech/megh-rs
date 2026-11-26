@@ -18,7 +18,7 @@ use megh::{Broker, UserRepo, authorizer, events_router};
 use reqwest::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
 use serde::Serialize;
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tower::Layer;
@@ -65,9 +65,9 @@ impl Salon {
     /// A new salon in its own tenant, served on a free local port.
     pub async fn open() -> Fallible<Self> {
         dotenvy::dotenv().ok();
-        let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-        megh::migrate(&pool).await?;
-        let tenant: Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Salon') RETURNING id").fetch_one(&pool).await?;
+        let pool = megh::Db::connect(&std::env::var("DATABASE_URL")?).await?;
+        pool.migrate().await?;
+        let tenant: Uuid = Db::query_scalar("INSERT INTO tenants (name) VALUES ('Salon') RETURNING id").fetch_one(&pool).await?;
         let agent = UserRepo::new(&pool).machine(tenant, &format!("agent-{tenant}"), vec!["*".into()]).await?;
         let jwt = JwtSession::new(b"identity-example-secret-32-bytes", Duration::from_secs(900), pool.clone());
         let broker = Broker::new().with_authorizer(megh::messaging::follows).with_history_provider(History::new(pool.clone()));
@@ -200,8 +200,8 @@ impl Salon {
 
     /// How many messages the client has, as the database holds them.
     pub async fn messages_of(&self, client: Uuid) -> Fallible<i64> {
-        let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-        Ok(sqlx::query_scalar("SELECT count(*) FROM messages WHERE tenant_id = $1 AND client_id = $2").bind(self.tenant).bind(client).fetch_one(&pool).await?)
+        let pool = megh::Db::connect(&std::env::var("DATABASE_URL")?).await?;
+        Ok(Db::query_scalar("SELECT count(*) FROM messages WHERE tenant_id = $1 AND client_id = $2").bind(self.tenant).bind(client).fetch_one(&pool).await?)
     }
 }
 
@@ -216,7 +216,7 @@ fn next_weekday() -> NaiveDate {
 }
 
 /// The host app: the public guest route, the messaging and booking routes signed in by token, and the event stream.
-fn app(pool: PgPool, broker: Broker, jwt: JwtSession, url: &str) -> Router {
+fn app(pool: Db, broker: Broker, jwt: JwtSession, url: &str) -> Router {
     let (guests, _) = megh::messaging::guests(jwt.clone()).split_for_parts();
     let (api, _) = megh::messaging::router(5 << 20, &format!("{url}/api/v1")).merge(megh::booking::router()).split_for_parts();
     let signed = Router::new()

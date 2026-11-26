@@ -1,5 +1,8 @@
 //! Adding, disconnecting and revoking an account of a signed-in user, against a stub provider.
 
+#[macro_use]
+mod common;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -11,7 +14,7 @@ use axum::{Json, Router};
 use megh::auth::http::{auth_router, MeghAuthState};
 use megh::auth::OAuthProviderConfig;
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 
@@ -32,7 +35,7 @@ fn person(sub: &str, email: &str) -> Value {
     json!({"sub": sub, "email": email, "email_verified": true, "name": "N"})
 }
 
-async fn fixture(pool: PgPool) -> (Router, Stub) {
+async fn fixture(pool: Db) -> (Router, Stub) {
     let stub = Stub { userinfo: Arc::new(Mutex::new(person("1", "ann@example.com"))) };
     let routes = Router::new().route("/token", post(token)).route("/userinfo", get(userinfo)).with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -96,19 +99,19 @@ async fn post_json(app: &Router, uri: &str, cookie: &str, body: Value) -> Respon
     send(app, request).await
 }
 
-async fn active_accounts(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM connected_accounts WHERE disconnected_at IS NULL").fetch_one(pool).await.unwrap()
+async fn active_accounts(pool: &Db) -> i64 {
+    Db::query_scalar("SELECT count(*) FROM connected_accounts WHERE disconnected_at IS NULL").fetch_one(pool).await.unwrap()
 }
 
-#[sqlx::test]
-async fn connecting_needs_a_signed_in_user(pool: PgPool) {
+dual!(connecting_needs_a_signed_in_user);
+async fn connecting_needs_a_signed_in_user(pool: Db) {
     let (app, _) = fixture(pool).await;
 
     assert_eq!(get_page(&app, "/auth/stub/connect", "").await.status(), StatusCode::UNAUTHORIZED);
 }
 
-#[sqlx::test]
-async fn connecting_adds_an_account_and_leaves_the_session_alone(pool: PgPool) {
+dual!(connecting_adds_an_account_and_leaves_the_session_alone);
+async fn connecting_adds_an_account_and_leaves_the_session_alone(pool: Db) {
     let (app, stub) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
     *stub.userinfo.lock().unwrap() = person("2", "ann@example.com");
@@ -126,8 +129,8 @@ async fn connecting_adds_an_account_and_leaves_the_session_alone(pool: PgPool) {
     assert_eq!(get_page(&app, "/auth/me", &cookie).await.status(), StatusCode::OK);
 }
 
-#[sqlx::test]
-async fn an_account_with_someone_elses_email_is_refused(pool: PgPool) {
+dual!(an_account_with_someone_elses_email_is_refused);
+async fn an_account_with_someone_elses_email_is_refused(pool: Db) {
     let (app, stub) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
     *stub.userinfo.lock().unwrap() = person("2", "bob@example.com");
@@ -136,11 +139,11 @@ async fn an_account_with_someone_elses_email_is_refused(pool: PgPool) {
     assert_eq!(active_accounts(&pool).await, 1);
 }
 
-#[sqlx::test]
-async fn disconnecting_marks_the_account_and_only_your_own(pool: PgPool) {
+dual!(disconnecting_marks_the_account_and_only_your_own);
+async fn disconnecting_marks_the_account_and_only_your_own(pool: Db) {
     let (app, _) = fixture(pool.clone()).await;
     let cookie = sign_in(&app).await;
-    sqlx::query("INSERT INTO connected_accounts (account_id, provider, email, access_token) VALUES ('9', 'stub', 'bob@example.com', 'bobs')")
+    Db::query("INSERT INTO connected_accounts (account_id, provider, email, access_token) VALUES ('9', 'stub', 'bob@example.com', 'bobs')")
         .execute(&pool)
         .await
         .unwrap();
@@ -152,8 +155,8 @@ async fn disconnecting_marks_the_account_and_only_your_own(pool: PgPool) {
     assert_eq!(active_accounts(&pool).await, 1, "bob's account is still connected");
 }
 
-#[sqlx::test]
-async fn a_sign_in_that_is_not_in_a_popup_returns_only_to_a_page_of_ours(pool: PgPool) {
+dual!(a_sign_in_that_is_not_in_a_popup_returns_only_to_a_page_of_ours);
+async fn a_sign_in_that_is_not_in_a_popup_returns_only_to_a_page_of_ours(pool: Db) {
     let (app, _) = fixture(pool).await;
 
     for (return_to, lands_on) in [("http%3A%2F%2Fapi.test%2Ftimetable", "http://api.test/timetable"), ("http%3A%2F%2Fevil.test%2Fx", "/")] {

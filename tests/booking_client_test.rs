@@ -1,5 +1,8 @@
 //! B5 (docs/TPD-booking.md): Client CRUD over HTTP: gender, optional birth date, optional complete address.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -7,18 +10,18 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid) -> Router {
+fn app(pool: Db, tenant: Uuid) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = vec![
         Grant::new(format!("tenants:read:{tenant}")),
@@ -49,9 +52,8 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
     )
 }
 
-#[sqlx::test(migrations = false)]
-async fn client_with_gender_birth_date_and_address(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(client_with_gender_birth_date_and_address);
+async fn client_with_gender_birth_date_and_address(pool: Db) {
     let mine = tenant(&pool).await;
     let app = app(pool, mine);
     let collection = format!("/api/v1/tenants/{mine}/clients");

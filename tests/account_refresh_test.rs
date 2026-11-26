@@ -1,4 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[macro_use]
+mod common;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -9,7 +12,7 @@ use axum::{Json, Router};
 use megh::{AccountError, Accounts, ConnectedAccount, ConnectedAccountRepo, OAuthProviderConfig};
 use reqwest_middleware::ClientWithMiddleware;
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 
 #[derive(Clone)]
 struct Provider {
@@ -40,15 +43,15 @@ fn fresh_token() -> (StatusCode, Value) {
     (StatusCode::OK, json!({"access_token": "fresh", "token_type": "bearer", "expires_in": 3600}))
 }
 
-async fn account(pool: &PgPool, expires_in_secs: i64) {
-    sqlx::query("INSERT INTO connected_accounts (account_id, provider, access_token, refresh_token, expiry) VALUES ('acct', 'google', 'stored', 'old-refresh', NOW() + $1 * INTERVAL '1 second')")
+async fn account(pool: &Db, expires_in_secs: i64) {
+    Db::query("INSERT INTO connected_accounts (account_id, provider, access_token, refresh_token, expiry) VALUES ('acct', 'google', 'stored', 'old-refresh', NOW() + $1 * INTERVAL '1 second')").sqlite("INSERT INTO connected_accounts (account_id, provider, access_token, refresh_token, expiry) VALUES ('acct', 'google', 'stored', 'old-refresh', strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', $1 || ' seconds'))")
         .bind(expires_in_secs)
         .execute(pool)
         .await
         .unwrap();
 }
 
-fn client(pool: &PgPool, stub: &Provider) -> ClientWithMiddleware {
+fn client(pool: &Db, stub: &Provider) -> ClientWithMiddleware {
     let mut google = OAuthProviderConfig::google("client-id", Some("secret".into()));
     google.token_url = format!("{}/token", stub.base);
     let accounts = Accounts::new(pool.clone(), Arc::new([("google".to_string(), google)].into()));
@@ -59,12 +62,12 @@ async fn call_api(client: &ClientWithMiddleware, stub: &Provider) -> reqwest_mid
     Ok(client.get(format!("{}/api", stub.base)).send().await?.text().await?)
 }
 
-async fn stored(pool: &PgPool) -> (String, Option<String>) {
-    sqlx::query_as("SELECT access_token, refresh_token FROM connected_accounts WHERE account_id = 'acct'").fetch_one(pool).await.unwrap()
+async fn stored(pool: &Db) -> (String, Option<String>) {
+    Db::query_as("SELECT access_token, refresh_token FROM connected_accounts WHERE account_id = 'acct'").fetch_one(pool).await.unwrap()
 }
 
-#[sqlx::test]
-async fn valid_token_is_used_without_calling_the_provider(pool: PgPool) {
+dual!(valid_token_is_used_without_calling_the_provider);
+async fn valid_token_is_used_without_calling_the_provider(pool: Db) {
     let stub = provider(fresh_token(), Duration::ZERO).await;
     account(&pool, 3600).await;
 
@@ -73,8 +76,8 @@ async fn valid_token_is_used_without_calling_the_provider(pool: PgPool) {
     assert_eq!((body.as_str(), stub.token_calls.load(Ordering::SeqCst)), ("Bearer stored", 0));
 }
 
-#[sqlx::test]
-async fn expired_token_is_refreshed_once_and_stored(pool: PgPool) {
+dual!(expired_token_is_refreshed_once_and_stored);
+async fn expired_token_is_refreshed_once_and_stored(pool: Db) {
     let stub = provider(fresh_token(), Duration::ZERO).await;
     account(&pool, -3600).await;
     let api = client(&pool, &stub);
@@ -86,8 +89,8 @@ async fn expired_token_is_refreshed_once_and_stored(pool: PgPool) {
     assert_eq!(stored(&pool).await, ("fresh".to_string(), Some("old-refresh".to_string())));
 }
 
-#[sqlx::test]
-async fn a_rotated_refresh_token_is_stored(pool: PgPool) {
+dual!(a_rotated_refresh_token_is_stored);
+async fn a_rotated_refresh_token_is_stored(pool: Db) {
     let stub = provider((StatusCode::OK, json!({"access_token": "fresh", "token_type": "bearer", "expires_in": 3600, "refresh_token": "rotated"})), Duration::ZERO).await;
     account(&pool, -3600).await;
 
@@ -96,8 +99,8 @@ async fn a_rotated_refresh_token_is_stored(pool: PgPool) {
     assert_eq!(stored(&pool).await.1.as_deref(), Some("rotated"));
 }
 
-#[sqlx::test]
-async fn concurrent_requests_refresh_once(pool: PgPool) {
+dual!(concurrent_requests_refresh_once);
+async fn concurrent_requests_refresh_once(pool: Db) {
     let stub = provider(fresh_token(), Duration::from_millis(300)).await;
     account(&pool, -3600).await;
     let api = client(&pool, &stub);
@@ -108,8 +111,8 @@ async fn concurrent_requests_refresh_once(pool: PgPool) {
     assert!((1..=2).contains(&stub.token_calls.load(Ordering::SeqCst)), "last update wins: each request may refresh");
 }
 
-#[sqlx::test]
-async fn the_account_is_not_locked_while_the_provider_answers(pool: PgPool) {
+dual!(the_account_is_not_locked_while_the_provider_answers);
+async fn the_account_is_not_locked_while_the_provider_answers(pool: Db) {
     let stub = provider(fresh_token(), Duration::from_millis(500)).await;
     account(&pool, -3600).await;
     let api = client(&pool, &stub);
@@ -117,15 +120,19 @@ async fn the_account_is_not_locked_while_the_provider_answers(pool: PgPool) {
     let refreshing = tokio::spawn(async move { call_api(&api, &stub).await });
     tokio::time::sleep(Duration::from_millis(200)).await;
     let mut transaction = pool.begin().await.unwrap();
-    let locked = sqlx::query("SELECT 1 FROM connected_accounts WHERE account_id = 'acct' FOR UPDATE NOWAIT").execute(&mut *transaction).await;
+    let locked = Db::query("SELECT 1 FROM connected_accounts WHERE account_id = 'acct' FOR UPDATE NOWAIT")
+        .sqlite("SELECT 1 FROM connected_accounts WHERE account_id = 'acct'")
+        .execute(&mut transaction)
+        .await
+        .map(|done| done.rows_affected());
     transaction.rollback().await.unwrap();
 
     assert!(locked.is_ok(), "the row is free during the provider call: {locked:?}");
     assert_eq!(refreshing.await.unwrap().unwrap(), "Bearer fresh");
 }
 
-#[sqlx::test]
-async fn a_revoked_refresh_token_disconnects_the_account(pool: PgPool) {
+dual!(a_revoked_refresh_token_disconnects_the_account);
+async fn a_revoked_refresh_token_disconnects_the_account(pool: Db) {
     let stub = provider((StatusCode::BAD_REQUEST, json!({"error": "invalid_grant", "error_description": "revoked"})), Duration::ZERO).await;
     account(&pool, -3600).await;
     let api = client(&pool, &stub);
@@ -135,12 +142,12 @@ async fn a_revoked_refresh_token_disconnects_the_account(pool: PgPool) {
 
     assert!(matches!(&refused, reqwest_middleware::Error::Middleware(e) if matches!(e.downcast_ref::<AccountError>(), Some(AccountError::InvalidGrant(_)))));
     assert!(matches!(&again, reqwest_middleware::Error::Middleware(e) if matches!(e.downcast_ref::<AccountError>(), Some(AccountError::Disconnected))));
-    let disconnected: bool = sqlx::query_scalar("SELECT disconnected_at IS NOT NULL FROM connected_accounts WHERE account_id = 'acct'").fetch_one(&pool).await.unwrap();
+    let disconnected: bool = Db::query_scalar("SELECT disconnected_at IS NOT NULL FROM connected_accounts WHERE account_id = 'acct'").fetch_one(&pool).await.unwrap();
     assert_eq!((disconnected, stub.token_calls.load(Ordering::SeqCst)), (true, 1));
 }
 
-#[sqlx::test]
-async fn saving_a_login_without_a_refresh_token_keeps_the_stored_one(pool: PgPool) {
+dual!(saving_a_login_without_a_refresh_token_keeps_the_stored_one);
+async fn saving_a_login_without_a_refresh_token_keeps_the_stored_one(pool: Db) {
     account(&pool, 3600).await;
     let repo = ConnectedAccountRepo::new(&pool);
     let login = ConnectedAccount {

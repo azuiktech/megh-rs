@@ -1,5 +1,8 @@
 //! B4 (docs/TPD-billing.md): the billing tables store and return every entity, and refuse what the types say cannot be.
 
+#[macro_use]
+mod common;
+
 use chrono::{NaiveDate, Utc};
 use megh::billing::invoice::{Invoice, InvoiceKind, InvoiceStatus, PartyKind};
 use megh::billing::invoice_line::InvoiceLine;
@@ -10,15 +13,15 @@ use megh::booking::value::{Address, Attributes, Name};
 use megh::auth::rest::{ApiResult, Key};
 use megh::auth::crud::{self, Row};
 use rust_decimal::Decimal;
-use sqlx::PgPool;
+use megh::Db;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
-async fn service(pool: &PgPool, tenant: Uuid) -> Uuid {
-    sqlx::query_scalar(r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
+async fn service(pool: &Db, tenant: Uuid) -> Uuid {
+    Db::query_scalar(r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
         .bind(tenant)
         .bind(Uuid::now_v7())
         .fetch_one(pool)
@@ -34,7 +37,7 @@ fn day() -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 10, 22).unwrap()
 }
 
-async fn store<T: Row>(pool: &PgPool, data: T) -> ApiResult<T> {
+async fn store<T: Row>(pool: &Db, data: T) -> ApiResult<T> {
     crud::create(pool, data, None).await
 }
 
@@ -107,9 +110,8 @@ fn payment(tenant: Uuid, invoice_id: Uuid) -> Payment {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn every_entity_is_stored_and_read_back(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(every_entity_is_stored_and_read_back);
+async fn every_entity_is_stored_and_read_back(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
 
     let tax = Tax { id: Uuid::nil(), created_at: Utc::now(), updated_at: None, deleted_at: None, tenant_id: mine, name: name("Sales tax"), rate: Percent::try_new(Decimal::new(75, 1)).unwrap(), description: String::new(), attributes: Attributes::new() };
@@ -139,9 +141,8 @@ async fn every_entity_is_stored_and_read_back(pool: PgPool) {
     assert_eq!(receipt, Payment { id: receipt.id, created_at: receipt.created_at, updated_at: receipt.updated_at, ..paid });
 }
 
-#[sqlx::test(migrations = false)]
-async fn the_database_refuses_what_the_types_cannot_be(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(the_database_refuses_what_the_types_cannot_be);
+async fn the_database_refuses_what_the_types_cannot_be(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let owed = store(&pool, invoice(mine, customer)).await.unwrap();
 
@@ -154,9 +155,8 @@ async fn the_database_refuses_what_the_types_cannot_be(pool: PgPool) {
     assert!(store(&pool, Payment { refunded: Micros::new(-1), ..payment(mine, owed.id) }).await.is_err());
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_number_is_used_once_per_tenant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_number_is_used_once_per_tenant);
+async fn a_number_is_used_once_per_tenant(pool: Db) {
     let (mine, other, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     let numbered = |tenant: Uuid| Invoice { number: Some(name("INV-0001")), ..invoice(tenant, customer) };
     let first = store(&pool, numbered(mine)).await.unwrap();
@@ -168,18 +168,17 @@ async fn a_number_is_used_once_per_tenant(pool: PgPool) {
     assert!(store(&pool, receipt("PAY-1")).await.is_err());
 }
 
-#[sqlx::test(migrations = false)]
-async fn deleting_an_invoice_deletes_its_lines_and_payments(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(deleting_an_invoice_deletes_its_lines_and_payments);
+async fn deleting_an_invoice_deletes_its_lines_and_payments(pool: Db) {
     let (mine, customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let owed = store(&pool, invoice(mine, customer)).await.unwrap();
     let billed = store(&pool, line(mine, owed.id)).await.unwrap();
     let paid = store(&pool, payment(mine, owed.id)).await.unwrap();
-    crud::delete::<Invoice, _>(&pool, &Key { tenant_id: mine, id: owed.id }, None).await.unwrap();
+    crud::delete::<Invoice>(&pool, &Key { tenant_id: mine, id: owed.id }, None).await.unwrap();
     for (table, id) in [("billing_invoice_lines", billed.id), ("billing_payments", paid.id)] {
-        let deleted: bool = sqlx::query_scalar(&format!("SELECT deleted_at IS NOT NULL FROM {table} WHERE id = $1")).bind(id).fetch_one(&pool).await.unwrap();
+        let deleted: bool = Db::query_scalar(&format!("SELECT deleted_at IS NOT NULL FROM {table} WHERE id = $1")).bind(id).fetch_one(&pool).await.unwrap();
         assert!(deleted, "{table}");
     }
-    let kept: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1)").bind(customer).fetch_one(&pool).await.unwrap();
+    let kept: bool = Db::query_scalar("SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1)").bind(customer).fetch_one(&pool).await.unwrap();
     assert!(kept, "the customer tenant stays");
 }

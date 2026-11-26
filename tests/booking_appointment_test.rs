@@ -2,6 +2,9 @@
 //! custom methods `:book`, `:confirm`, `:complete` and DELETE (cancel); PATCH changes note, payment and
 //! attributes, ignores `status` and `booked_at`.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -9,19 +12,19 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{Grant, authorizer};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use megh::Db;
 use tower::util::MapRequestLayer;
 use tower::{Layer, ServiceExt};
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id")
         .fetch_one(pool)
         .await
         .unwrap()
 }
 
-fn app(pool: PgPool, tenant: Uuid, grants: &[&str]) -> Router {
+fn app(pool: Db, tenant: Uuid, grants: &[&str]) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     let grants = [format!("tenants:read:{tenant}")]
         .into_iter()
@@ -52,8 +55,8 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
 }
 
 /// A client, a service and a room of the tenant, and an appointment in `status` stored as booking would store it.
-async fn appointment(pool: &PgPool, tenant: Uuid, status: &str) -> Uuid {
-    let client: Uuid = sqlx::query_scalar(
+async fn appointment(pool: &Db, tenant: Uuid, status: &str) -> Uuid {
+    let client: Uuid = Db::query_scalar(
         "INSERT INTO clients (tenant_id, id, first_name, last_name, name) VALUES ($1, $2, 'Ada', 'L', 'Ada') RETURNING id",
     )
     .bind(tenant)
@@ -61,7 +64,7 @@ async fn appointment(pool: &PgPool, tenant: Uuid, status: &str) -> Uuid {
     .fetch_one(pool)
     .await
     .unwrap();
-    let service: Uuid = sqlx::query_scalar(
+    let service: Uuid = Db::query_scalar(
         r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#,
     )
     .bind(tenant)
@@ -69,13 +72,13 @@ async fn appointment(pool: &PgPool, tenant: Uuid, status: &str) -> Uuid {
     .fetch_one(pool)
     .await
     .unwrap();
-    let room: Uuid = sqlx::query_scalar("INSERT INTO resources (tenant_id, id, name) VALUES ($1, $2, 'Room 1') RETURNING id")
+    let room: Uuid = Db::query_scalar("INSERT INTO resources (tenant_id, id, name) VALUES ($1, $2, 'Room 1') RETURNING id")
         .bind(tenant)
         .bind(Uuid::now_v7())
         .fetch_one(pool)
         .await
         .unwrap();
-    sqlx::query_scalar(
+    Db::query_scalar(
         "INSERT INTO appointments (tenant_id, id, client_id, service_id, resource_id, starts_at, ends_at, status, payment) \
          VALUES ($1, $2, $3, $4, $5, '2026-10-26T09:30:00Z', '2026-10-26T10:00:00Z', $6, $7) RETURNING id",
     )
@@ -91,13 +94,12 @@ async fn appointment(pool: &PgPool, tenant: Uuid, status: &str) -> Uuid {
     .unwrap()
 }
 
-#[sqlx::test(migrations = false)]
-async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(status_moves_only_along_the_allowed_transitions);
+async fn status_moves_only_along_the_allowed_transitions(pool: Db) {
     let mine = tenant(&pool).await;
     let waiting = appointment(&pool, mine, "waitlist").await;
     let booked = appointment(&pool, mine, "booked").await;
-    sqlx::query(
+    Db::query(
         r#"INSERT INTO schedules (tenant_id, id, name, recurrence, starts_at, ends_at)
            VALUES ($1, $2, 'Open', '"DTSTART:20261026T000000Z\nRRULE:FREQ=DAILY;COUNT=1"', '00:00', '23:00')"#,
     )
@@ -147,9 +149,8 @@ async fn status_moves_only_along_the_allowed_transitions(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn patch_changes_note_payment_and_attributes_only(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(patch_changes_note_payment_and_attributes_only);
+async fn patch_changes_note_payment_and_attributes_only(pool: Db) {
     let mine = tenant(&pool).await;
     let booked = appointment(&pool, mine, "booked").await;
     let app = app(pool, mine, &["appointments:*"]);
@@ -184,9 +185,8 @@ async fn patch_changes_note_payment_and_attributes_only(pool: PgPool) {
     assert_eq!(page["items"].as_array().unwrap().len(), 1);
 }
 
-#[sqlx::test(migrations = false)]
-async fn each_custom_method_needs_its_own_grant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(each_custom_method_needs_its_own_grant);
+async fn each_custom_method_needs_its_own_grant(pool: Db) {
     let mine = tenant(&pool).await;
     let booked = appointment(&pool, mine, "booked").await;
     let crud_only = app(pool.clone(), mine, &["appointments:read", "appointments:create", "appointments:update"]);

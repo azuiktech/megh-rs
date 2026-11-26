@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::extract::Path;
 use axum::http::{header, Request, Response, StatusCode};
@@ -10,7 +13,7 @@ use jsonwebtoken::{encode, get_current_timestamp, EncodingKey, Header};
 use megh::auth::http::{auth_router, MeghAuthState};
 use megh::auth::{jwt_session, AccessToken, JwtSession, JWT_COOKIE};
 use megh::{Member, UpsertUserInput, UserRepo};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, Session, SessionManagerLayer};
 use uuid::Uuid;
@@ -21,7 +24,7 @@ async fn login(session: Session, Path(user_id): Path<Uuid>) {
     session.insert("user_id", user_id).await.unwrap();
 }
 
-fn app(pool: PgPool) -> Router {
+fn app(pool: Db) -> Router {
     let jwt = JwtSession::new(SECRET, Duration::from_secs(300), pool);
     let api = Router::new()
         .route("/invoices", get(|| async { "ok" }).post(|| async { "ok" }))
@@ -31,12 +34,12 @@ fn app(pool: PgPool) -> Router {
 }
 
 /// A user who is a member of one tenant with the `invoices:read` grant.
-async fn reader(pool: &PgPool) -> (Uuid, Member) {
+async fn reader(pool: &Db) -> (Uuid, Member) {
     let login = UpsertUserInput { provider: "google".into(), account_id: "1".into(), email: "ann@example.com".into(), display_name: None, photo_url: None };
     let user = UserRepo::new(pool).upsert(&login).await.unwrap();
     let tenant = Uuid::now_v7();
-    sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, 'Acme')").bind(tenant).execute(pool).await.unwrap();
-    let member: Member = sqlx::query_as(
+    Db::query("INSERT INTO tenants (id, name) VALUES ($1, 'Acme')").bind(tenant).execute(pool).await.unwrap();
+    let member: Member = Db::query_as(
         "INSERT INTO tenant_members (tenant_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]') RETURNING *",
     )
     .bind(tenant)
@@ -67,8 +70,8 @@ fn jwt_cookie(response: &Response<Body>) -> String {
     set.split(';').next().unwrap().to_string()
 }
 
-#[sqlx::test]
-async fn a_session_is_renewed_into_a_token_that_then_answers_alone(pool: PgPool) {
+dual!(a_session_is_renewed_into_a_token_that_then_answers_alone);
+async fn a_session_is_renewed_into_a_token_that_then_answers_alone(pool: Db) {
     let (user_id, _) = reader(&pool).await;
     let app = app(pool.clone());
     let session = session_cookie(&app, user_id).await;
@@ -81,8 +84,8 @@ async fn a_session_is_renewed_into_a_token_that_then_answers_alone(pool: PgPool)
     assert_eq!(send(&app, "GET", "/invoices", &token).await.status(), StatusCode::OK);
 }
 
-#[sqlx::test]
-async fn the_grants_in_the_token_decide(pool: PgPool) {
+dual!(the_grants_in_the_token_decide);
+async fn the_grants_in_the_token_decide(pool: Db) {
     let (_, member) = reader(&pool).await;
     let app = app(pool);
     let token = signed(&AccessToken::new(&member, Duration::from_secs(60)), SECRET);
@@ -91,8 +94,8 @@ async fn the_grants_in_the_token_decide(pool: PgPool) {
     assert_eq!(send(&app, "POST", "/invoices", &token).await.status(), StatusCode::FORBIDDEN);
 }
 
-#[sqlx::test]
-async fn an_expired_token_is_renewed_from_the_session_or_rejected(pool: PgPool) {
+dual!(an_expired_token_is_renewed_from_the_session_or_rejected);
+async fn an_expired_token_is_renewed_from_the_session_or_rejected(pool: Db) {
     let (user_id, member) = reader(&pool).await;
     let app = app(pool);
     let mut expired = AccessToken::new(&member, Duration::from_secs(60));
@@ -107,8 +110,8 @@ async fn an_expired_token_is_renewed_from_the_session_or_rejected(pool: PgPool) 
     assert_eq!(send(&app, "GET", "/invoices", "").await.status(), StatusCode::UNAUTHORIZED);
 }
 
-#[sqlx::test]
-async fn a_token_signed_with_another_secret_is_rejected_even_with_a_session(pool: PgPool) {
+dual!(a_token_signed_with_another_secret_is_rejected_even_with_a_session);
+async fn a_token_signed_with_another_secret_is_rejected_even_with_a_session(pool: Db) {
     let (user_id, member) = reader(&pool).await;
     let app = app(pool);
     let forged = signed(&AccessToken::new(&member, Duration::from_secs(60)), b"another-secret-another-secret-32b!");
@@ -119,7 +122,7 @@ async fn a_token_signed_with_another_secret_is_rejected_even_with_a_session(pool
 
 #[tokio::test]
 async fn logout_clears_the_token_cookie() {
-    let state = MeghAuthState::new(PgPool::connect_lazy("postgres://localhost/test").unwrap());
+    let state = MeghAuthState::new(Db::Postgres(sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap()));
     let app = auth_router(state).layer(SessionManagerLayer::new(MemoryStore::default()));
 
     let request = Request::post("/auth/logout").header(header::COOKIE, format!("{JWT_COOKIE}=issued-earlier"));
@@ -129,13 +132,13 @@ async fn logout_clears_the_token_cookie() {
     assert!(cleared.starts_with(&format!("{JWT_COOKIE}=;")) && cleared.contains("Max-Age=0") && cleared.contains("Path=/"), "{cleared}");
 }
 
-#[sqlx::test]
-async fn a_deleted_users_session_cannot_renew_a_token(pool: PgPool) {
+dual!(a_deleted_users_session_cannot_renew_a_token);
+async fn a_deleted_users_session_cannot_renew_a_token(pool: Db) {
     let (user_id, _) = reader(&pool).await;
     let app = app(pool.clone());
     let session = session_cookie(&app, user_id).await;
     assert_eq!(send(&app, "GET", "/invoices", &session).await.status(), StatusCode::OK);
-    sqlx::query("UPDATE users SET deleted_at = NOW() WHERE id = $1").bind(user_id).execute(&pool).await.unwrap();
+    Db::query("UPDATE users SET deleted_at = NOW() WHERE id = $1").sqlite("UPDATE users SET deleted_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') WHERE id = $1").bind(user_id).execute(&pool).await.unwrap();
 
     assert_eq!(send(&app, "GET", "/invoices", &session).await.status(), StatusCode::UNAUTHORIZED);
 }
@@ -149,8 +152,8 @@ fn bearer(token: &AccessToken, secret: &[u8]) -> (header::HeaderName, String) {
     (header::AUTHORIZATION, format!("Bearer {}", signed(token, secret).trim_start_matches(&format!("{JWT_COOKIE}="))))
 }
 
-#[sqlx::test]
-async fn a_bearer_token_answers_alone_with_no_cookie_set(pool: PgPool) {
+dual!(a_bearer_token_answers_alone_with_no_cookie_set);
+async fn a_bearer_token_answers_alone_with_no_cookie_set(pool: Db) {
     let (_, member) = reader(&pool).await;
     let app = app(pool);
     let token = AccessToken::new(&member, Duration::from_secs(60));
@@ -163,8 +166,8 @@ async fn a_bearer_token_answers_alone_with_no_cookie_set(pool: PgPool) {
     assert_eq!(write.status(), StatusCode::FORBIDDEN, "the grants in the bearer token decide");
 }
 
-#[sqlx::test]
-async fn a_bad_or_expired_bearer_token_is_rejected_even_with_a_valid_session_and_cookie(pool: PgPool) {
+dual!(a_bad_or_expired_bearer_token_is_rejected_even_with_a_valid_session_and_cookie);
+async fn a_bad_or_expired_bearer_token_is_rejected_even_with_a_valid_session_and_cookie(pool: Db) {
     let (user_id, member) = reader(&pool).await;
     let app = app(pool);
     let session = session_cookie(&app, user_id).await;
@@ -180,8 +183,8 @@ async fn a_bad_or_expired_bearer_token_is_rejected_even_with_a_valid_session_and
     }
 }
 
-#[sqlx::test]
-async fn an_authorization_header_that_is_not_bearer_is_ignored(pool: PgPool) {
+dual!(an_authorization_header_that_is_not_bearer_is_ignored);
+async fn an_authorization_header_that_is_not_bearer_is_ignored(pool: Db) {
     let (_, member) = reader(&pool).await;
     let app = app(pool);
     let cookie = (header::COOKIE, signed(&AccessToken::new(&member, Duration::from_secs(60)), SECRET));

@@ -1,35 +1,21 @@
 //! Generic booking: values and entities for appointments across domains (docs/TPD-booking.md).
 
 pub mod value;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod appointment;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod availability;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod blockout;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod client;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod price;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod product;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod provider;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod reservation;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod resource;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod schedule;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod service;
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub mod stock;
 
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub use api::{openapi, rewrite_aip_136, router};
 
-#[cfg(all(feature = "axum", feature = "postgres"))]
 mod api {
     use axum::extract::{OriginalUri, Request};
     use axum::http::Uri;

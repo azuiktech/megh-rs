@@ -1,6 +1,9 @@
 //! B5d (docs/TPD-billing.md): invoices and invoiceLines over HTTP. An invoice is created as a draft for a customer tenant
 //! and changed only while a draft; its lines are locked with it.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -8,16 +11,16 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{authorizer, Grant};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool, name: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db, name: &str) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ($1) RETURNING id").bind(name).fetch_one(pool).await.unwrap()
 }
 
-async fn service(pool: &PgPool, tenant: Uuid) -> Uuid {
-    sqlx::query_scalar(r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
+async fn service(pool: &Db, tenant: Uuid) -> Uuid {
+    Db::query_scalar(r#"INSERT INTO services (tenant_id, id, name, steps) VALUES ($1, $2, 'Cleaning', '[{"duration": "PT30M"}]') RETURNING id"#)
         .bind(tenant)
         .bind(Uuid::now_v7())
         .fetch_one(pool)
@@ -25,7 +28,7 @@ async fn service(pool: &PgPool, tenant: Uuid) -> Uuid {
         .unwrap()
 }
 
-fn app(pool: PgPool, grants: &[String]) -> Router {
+fn app(pool: Db, grants: &[String]) -> Router {
     let (api, _) = megh::billing::router().split_for_parts();
     Router::new()
         .nest("/api/v1", api.layer(from_fn(authorizer)))
@@ -62,13 +65,12 @@ fn line(invoice: Uuid) -> Value {
     json!({"invoice_id": invoice, "position": 1, "description": "Tooth cleaning", "quantity": "1.5", "unit_price": 80000000})
 }
 
-async fn open(pool: &PgPool, id: impl ToString) {
-    sqlx::query("UPDATE billing_invoices SET status = 'open' WHERE id = $1::uuid").bind(id.to_string()).execute(pool).await.unwrap();
+async fn open(pool: &Db, id: impl ToString) {
+    Db::query("UPDATE billing_invoices SET status = 'open' WHERE id = $1::uuid").sqlite("UPDATE billing_invoices SET status = 'open' WHERE id = unhex(replace($1, '-', ''))").bind(id.to_string()).execute(pool).await.unwrap();
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_invoice_is_created_as_a_draft_for_a_customer_tenant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_invoice_is_created_as_a_draft_for_a_customer_tenant);
+async fn an_invoice_is_created_as_a_draft_for_a_customer_tenant(pool: Db) {
     let (mine, other, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), &grants(mine));
     let invoices = format!("/api/v1/tenants/{mine}/invoices");
@@ -97,9 +99,8 @@ async fn an_invoice_is_created_as_a_draft_for_a_customer_tenant(pool: PgPool) {
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_invoice_is_changed_only_while_it_is_a_draft);
+async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: Db) {
     let (mine, other, ada, bea) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await, tenant(&pool, "Bea").await);
     let (mine_app, other_app) = (app(pool.clone(), &grants(mine)), app(pool.clone(), &grants(other)));
     let (_, created) = call(&mine_app, "POST", &format!("/api/v1/tenants/{mine}/invoices"), invoice(ada)).await;
@@ -124,13 +125,12 @@ async fn an_invoice_is_changed_only_while_it_is_a_draft(pool: PgPool) {
     assert_eq!(call(&mine_app, "PUT", &item, invoice(ada)).await.0, StatusCode::CONFLICT);
     assert_eq!(call(&mine_app, "PATCH", &item, json!({"comments": "late"})).await.0, StatusCode::CONFLICT);
     assert_eq!(call(&mine_app, "DELETE", &item, Value::Null).await.0, StatusCode::CONFLICT);
-    sqlx::query("UPDATE billing_invoices SET status = 'void' WHERE id = $1::uuid").bind(&id).execute(&pool).await.unwrap();
+    Db::query("UPDATE billing_invoices SET status = 'void' WHERE id = $1::uuid").sqlite("UPDATE billing_invoices SET status = 'void' WHERE id = unhex(replace($1, '-', ''))").bind(&id).execute(&pool).await.unwrap();
     assert_eq!(call(&mine_app, "DELETE", &item, Value::Null).await.0, StatusCode::CONFLICT, "a void invoice stays");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_draft_invoice_is_deleted_with_its_lines(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_draft_invoice_is_deleted_with_its_lines);
+async fn a_draft_invoice_is_deleted_with_its_lines(pool: Db) {
     let (mine, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), &grants(mine));
     let (_, created) = call(&app, "POST", &format!("/api/v1/tenants/{mine}/invoices"), invoice(ada)).await;
@@ -140,9 +140,8 @@ async fn a_draft_invoice_is_deleted_with_its_lines(pool: PgPool) {
     assert_eq!(call(&app, "GET", &format!("/api/v1/tenants/{mine}/invoiceLines/{}", row["id"].as_str().unwrap()), Value::Null).await.0, StatusCode::NOT_FOUND);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_line_belongs_to_a_draft_invoice_of_the_tenant(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_line_belongs_to_a_draft_invoice_of_the_tenant);
+async fn a_line_belongs_to_a_draft_invoice_of_the_tenant(pool: Db) {
     let (mine, other, ada, theirs_customer) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await, tenant(&pool, "Cy").await);
     let app = app(pool.clone(), &[grants(mine), grants(other)].concat());
     let new = |tenant: Uuid, customer: Uuid| {
@@ -191,9 +190,8 @@ async fn a_line_belongs_to_a_draft_invoice_of_the_tenant(pool: PgPool) {
     assert_eq!(call(&app, "GET", &item, Value::Null).await.1["quantity"], "3", "locked lines are still read");
 }
 
-#[sqlx::test(migrations = false)]
-async fn authorizer_guards_invoices_and_lines(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(authorizer_guards_invoices_and_lines);
+async fn authorizer_guards_invoices_and_lines(pool: Db) {
     let (mine, other, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Other").await, tenant(&pool, "Ada").await);
     for (segment, body) in [("invoices", invoice(ada)), ("invoiceLines", line(Uuid::now_v7()))] {
         let collection = format!("/api/v1/tenants/{mine}/{segment}");
@@ -218,9 +216,8 @@ fn invoices_and_lines_are_documented_with_their_grants() {
     assert!(tags.contains(&"invoices".to_string()) && tags.contains(&"invoiceLines".to_string()));
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_line_never_moves_to_another_invoice(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_line_never_moves_to_another_invoice);
+async fn a_line_never_moves_to_another_invoice(pool: Db) {
     let (mine, ada) = (tenant(&pool, "Clinic").await, tenant(&pool, "Ada").await);
     let app = app(pool.clone(), &grants(mine));
     let invoices = format!("/api/v1/tenants/{mine}/invoices");

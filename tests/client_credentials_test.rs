@@ -1,5 +1,8 @@
 //! A machine trades its client id and secret for the access token that the API then accepts as a bearer token.
 
+#[macro_use]
+mod common;
+
 use std::time::Duration;
 
 use axum::body::Body;
@@ -15,7 +18,7 @@ use megh::auth::oauth::{ClientId, ClientSecret, TokenUrl};
 use megh::auth::{jwt_session, oauth_http_client, BasicClient, JwtSession, Registered, Scope, TokenResponse, UserRepo};
 use megh::UpsertUserInput;
 use serde_json::Value;
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use uuid::Uuid;
@@ -23,7 +26,7 @@ use uuid::Uuid;
 const SECRET: &[u8] = b"client-credentials-test-secret-32";
 const FORM: &str = "application/x-www-form-urlencoded";
 
-fn app(pool: PgPool) -> Router {
+fn app(pool: Db) -> Router {
     let jwt = JwtSession::new(SECRET, Duration::from_secs(300), pool.clone());
     let api = Router::new()
         .route("/invoices", get(|| async { "ok" }).post(|| async { "ok" }))
@@ -32,8 +35,8 @@ fn app(pool: PgPool) -> Router {
     api.merge(token_router(MeghAuthState::new(pool), jwt)).layer(SessionManagerLayer::new(MemoryStore::default()))
 }
 
-async fn machine(pool: &PgPool, grants: &[&str]) -> (Registered, Uuid) {
-    let tenant: Uuid = sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(pool).await.unwrap();
+async fn machine(pool: &Db, grants: &[&str]) -> (Registered, Uuid) {
+    let tenant: Uuid = Db::query_scalar("INSERT INTO tenants (name) VALUES ('Acme') RETURNING id").fetch_one(pool).await.unwrap();
     let grants = grants.iter().map(|grant| grant.to_string()).collect();
     (UserRepo::new(pool).register_machine(tenant, "ci", grants).await.unwrap(), tenant)
 }
@@ -56,21 +59,21 @@ async fn call(app: &Router, method: &str, token: &str) -> StatusCode {
     app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap().status()
 }
 
-#[sqlx::test]
-async fn registering_makes_a_machine_user_with_one_membership_and_a_hashed_secret(pool: PgPool) {
+dual!(registering_makes_a_machine_user_with_one_membership_and_a_hashed_secret);
+async fn registering_makes_a_machine_user_with_one_membership_and_a_hashed_secret(pool: Db) {
     let (registered, tenant) = machine(&pool, &["invoices:read"]).await;
 
     let (provider, account_id, email, hash): (String, String, String, String) =
-        sqlx::query_as("SELECT provider, account_id, email, password_hash FROM users").fetch_one(&pool).await.unwrap();
+        Db::query_as("SELECT provider, account_id, email, password_hash FROM users").fetch_one(&pool).await.unwrap();
     assert_eq!((provider.as_str(), account_id.as_str(), email.as_str()), ("megh", registered.client_id.as_str(), registered.client_id.as_str()));
     assert!(hash.starts_with("$2") && !hash.contains(&registered.secret));
     let (member_tenant, role, grants): (Uuid, String, String) =
-        sqlx::query_as("SELECT tenant_id, role, grants FROM tenant_members").fetch_one(&pool).await.unwrap();
+        Db::query_as("SELECT tenant_id, role, grants FROM tenant_members").fetch_one(&pool).await.unwrap();
     assert_eq!((member_tenant, role.as_str(), grants.as_str()), (tenant, "machine", r#"["invoices:read"]"#));
 }
 
-#[sqlx::test]
-async fn the_secret_is_traded_for_an_access_token_the_api_accepts_as_a_bearer_token(pool: PgPool) {
+dual!(the_secret_is_traded_for_an_access_token_the_api_accepts_as_a_bearer_token);
+async fn the_secret_is_traded_for_an_access_token_the_api_accepts_as_a_bearer_token(pool: Db) {
     let (registered, _) = machine(&pool, &["invoices:read"]).await;
     let app = app(pool);
 
@@ -87,8 +90,8 @@ async fn the_secret_is_traded_for_an_access_token_the_api_accepts_as_a_bearer_to
     assert_eq!(call(&app, "POST", token).await, StatusCode::FORBIDDEN, "the grants in the token decide");
 }
 
-#[sqlx::test]
-async fn a_requested_scope_only_narrows_the_grants(pool: PgPool) {
+dual!(a_requested_scope_only_narrows_the_grants);
+async fn a_requested_scope_only_narrows_the_grants(pool: Db) {
     let (registered, _) = machine(&pool, &["invoices:*"]).await;
     let app = app(pool);
     let credentials = Some((registered.client_id.as_str(), registered.secret.as_str()));
@@ -103,8 +106,8 @@ async fn a_requested_scope_only_narrows_the_grants(pool: PgPool) {
     assert_eq!(json(widened).await["error"], "invalid_scope");
 }
 
-#[sqlx::test]
-async fn bad_client_credentials_are_invalid_client(pool: PgPool) {
+dual!(bad_client_credentials_are_invalid_client);
+async fn bad_client_credentials_are_invalid_client(pool: Db) {
     let (registered, _) = machine(&pool, &["invoices:read"]).await;
     let app = app(pool.clone());
     let human = UserRepo::new(&pool)
@@ -128,19 +131,19 @@ async fn bad_client_credentials_are_invalid_client(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
-async fn a_deleted_machine_gets_no_token(pool: PgPool) {
+dual!(a_deleted_machine_gets_no_token);
+async fn a_deleted_machine_gets_no_token(pool: Db) {
     let (registered, _) = machine(&pool, &["invoices:read"]).await;
     let app = app(pool.clone());
-    sqlx::query("UPDATE users SET deleted_at = NOW()").execute(&pool).await.unwrap();
+    Db::query("UPDATE users SET deleted_at = NOW()").sqlite("UPDATE users SET deleted_at = strftime('%Y-%m-%dT%H:%M:%f+00:00')").execute(&pool).await.unwrap();
 
     let response = exchange(&app, Some((&registered.client_id, &registered.secret)), "grant_type=client_credentials").await;
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-#[sqlx::test]
-async fn other_grant_types_and_malformed_requests_are_refused(pool: PgPool) {
+dual!(other_grant_types_and_malformed_requests_are_refused);
+async fn other_grant_types_and_malformed_requests_are_refused(pool: Db) {
     let (registered, _) = machine(&pool, &["invoices:read"]).await;
     let app = app(pool);
     let credentials = Some((registered.client_id.as_str(), registered.secret.as_str()));
@@ -152,8 +155,8 @@ async fn other_grant_types_and_malformed_requests_are_refused(pool: PgPool) {
     assert_eq!((missing.status(), json(missing).await["error"].clone()), (StatusCode::BAD_REQUEST, "invalid_request".into()));
 }
 
-#[sqlx::test]
-async fn the_oauth2_client_library_gets_a_token_from_the_endpoint(pool: PgPool) {
+dual!(the_oauth2_client_library_gets_a_token_from_the_endpoint);
+async fn the_oauth2_client_library_gets_a_token_from_the_endpoint(pool: Db) {
     let (registered, _) = machine(&pool, &["invoices:read"]).await;
     let app = app(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -177,8 +180,8 @@ async fn the_oauth2_client_library_gets_a_token_from_the_endpoint(pool: PgPool) 
     assert_eq!(call(&app, "GET", response.access_token().secret()).await, StatusCode::OK);
 }
 
-#[sqlx::test]
-async fn an_authorization_header_that_is_not_basic_is_invalid_client(pool: PgPool) {
+dual!(an_authorization_header_that_is_not_basic_is_invalid_client);
+async fn an_authorization_header_that_is_not_basic_is_invalid_client(pool: Db) {
     let app = app(pool);
     let request = Request::post("/auth/megh/token").header(header::CONTENT_TYPE, FORM).header(header::AUTHORIZATION, "Bearer abc");
 
@@ -188,11 +191,11 @@ async fn an_authorization_header_that_is_not_basic_is_invalid_client(pool: PgPoo
     assert_eq!(json(response).await["error"], "invalid_client");
 }
 
-#[sqlx::test]
-async fn registering_in_a_tenant_that_does_not_exist_leaves_no_user(pool: PgPool) {
+dual!(registering_in_a_tenant_that_does_not_exist_leaves_no_user);
+async fn registering_in_a_tenant_that_does_not_exist_leaves_no_user(pool: Db) {
     let result = UserRepo::new(&pool).register_machine(Uuid::now_v7(), "ci", vec![]).await;
 
     assert!(result.is_err());
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&pool).await.unwrap();
+    let users: i64 = Db::query_scalar("SELECT count(*) FROM users").fetch_one(&pool).await.unwrap();
     assert_eq!(users, 0);
 }

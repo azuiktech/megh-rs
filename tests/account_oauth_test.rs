@@ -10,9 +10,9 @@ use megh::Table;
 fn test_connected_account_table_metadata() {
     assert_eq!(ConnectedAccount::TABLE_NAME, "connected_accounts");
     assert_eq!(ConnectedAccount::PRIMARY_KEY, &["account_id", "provider"]);
-    assert!(ConnectedAccount::COLUMNS.iter().any(|c| c.name == "account_id"));
-    assert!(ConnectedAccount::COLUMNS.iter().any(|c| c.name == "provider"));
-    assert!(ConnectedAccount::COLUMNS.iter().any(|c| c.name == "access_token"));
+    assert!(ConnectedAccount::COLUMNS.contains(&"account_id"));
+    assert!(ConnectedAccount::COLUMNS.contains(&"provider"));
+    assert!(ConnectedAccount::COLUMNS.contains(&"access_token"));
 }
 
 #[test]
@@ -210,7 +210,7 @@ async fn test_connected_account_repo_persistence() {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://kyrios:kyrios@localhost:5432/kyrios".to_string());
 
-    let Ok(pool) = sqlx::PgPool::connect(&database_url).await else {
+    let Ok(pool) = megh::Db::connect(&database_url).await else {
         eprintln!("Database not reachable, skipping repo persistence test");
         return;
     };
@@ -252,7 +252,7 @@ async fn test_connected_account_repo_persistence() {
     assert!(after_disconnect.is_none());
 
     // Cleanup
-    let _ = sqlx::query("DELETE FROM connected_accounts WHERE account_id = $1")
+    let _ = megh::Db::query("DELETE FROM connected_accounts WHERE account_id = $1")
         .bind(&account_id)
         .execute(&pool)
         .await;

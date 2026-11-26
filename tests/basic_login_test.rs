@@ -1,16 +1,19 @@
 use axum::body::Body;
+#[macro_use]
+mod common;
+
 use axum::http::{header, Request, StatusCode};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use megh::auth::http::{auth_router, basic_login_router, MeghAuthState};
 use megh::{Tenant, UserRepo};
 use serde_json::Value;
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use uuid::Uuid;
 
-fn app(pool: PgPool) -> axum::Router {
+fn app(pool: Db) -> axum::Router {
     let state = MeghAuthState::new(pool);
     auth_router(state.clone()).merge(basic_login_router(state, "/auth/login")).layer(SessionManagerLayer::new(MemoryStore::default()))
 }
@@ -31,7 +34,7 @@ async fn login(app: &axum::Router, auth: Option<&str>) -> axum::http::Response<B
     login_from(app, "same-origin", auth).await
 }
 
-async fn ann_with_password(pool: &PgPool) -> Uuid {
+async fn ann_with_password(pool: &Db) -> Uuid {
     let repo = UserRepo::new(pool);
     let user = repo
         .upsert(&megh::UpsertUserInput { provider: "google".into(), account_id: "1".into(), email: "ann@example.com".into(), display_name: None, photo_url: None })
@@ -41,11 +44,11 @@ async fn ann_with_password(pool: &PgPool) -> Uuid {
     user.id
 }
 
-#[sqlx::test]
-async fn correct_credentials_log_in_and_return_memberships(pool: PgPool) {
+dual!(correct_credentials_log_in_and_return_memberships);
+async fn correct_credentials_log_in_and_return_memberships(pool: Db) {
     let user_id = ann_with_password(&pool).await;
-    let tenant: Tenant = sqlx::query_as("INSERT INTO tenants (name) VALUES ('Acme') RETURNING *").fetch_one(&pool).await.unwrap();
-    sqlx::query("INSERT INTO tenant_members (tenant_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]')").bind(tenant.id).bind(user_id).execute(&pool).await.unwrap();
+    let tenant: Tenant = Db::query_as("INSERT INTO tenants (name) VALUES ('Acme') RETURNING *").fetch_one(&pool).await.unwrap();
+    Db::query("INSERT INTO tenant_members (tenant_id, user_id, grants) VALUES ($1, $2, '[\"invoices:read\"]')").bind(tenant.id).bind(user_id).execute(&pool).await.unwrap();
     let app = app(pool);
 
     let response = login(&app, Some(&basic("ann@example.com", "s3cret-pass"))).await;
@@ -56,10 +59,10 @@ async fn correct_credentials_log_in_and_return_memberships(pool: PgPool) {
     assert_eq!(body["memberships"][0]["tenant_id"], tenant.id.to_string());
 }
 
-#[sqlx::test]
-async fn wrong_password_unknown_email_and_no_password_set_all_get_the_same_401(pool: PgPool) {
+dual!(wrong_password_unknown_email_and_no_password_set_all_get_the_same_401);
+async fn wrong_password_unknown_email_and_no_password_set_all_get_the_same_401(pool: Db) {
     ann_with_password(&pool).await;
-    sqlx::query("UPDATE users SET email = 'oauth-only@example.com' WHERE email <> 'ann@example.com'").execute(&pool).await.ok();
+    Db::query("UPDATE users SET email = 'oauth-only@example.com' WHERE email <> 'ann@example.com'").execute(&pool).await.ok();
     let app = app(pool.clone());
     let expected = serde_json::json!({"error": "invalid credentials"});
 
@@ -71,18 +74,18 @@ async fn wrong_password_unknown_email_and_no_password_set_all_get_the_same_401(p
     }
 }
 
-#[sqlx::test]
-async fn login_never_creates_an_account(pool: PgPool) {
+dual!(login_never_creates_an_account);
+async fn login_never_creates_an_account(pool: Db) {
     let app = app(pool.clone());
 
     login(&app, Some(&basic("nobody@example.com", "x"))).await;
 
-    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM users").fetch_one(&pool).await.unwrap();
+    let users: i64 = Db::query_scalar("SELECT count(*) FROM users").fetch_one(&pool).await.unwrap();
     assert_eq!(users, 0);
 }
 
-#[sqlx::test]
-async fn the_route_is_csrf_protected(pool: PgPool) {
+dual!(the_route_is_csrf_protected);
+async fn the_route_is_csrf_protected(pool: Db) {
     ann_with_password(&pool).await;
     let app = app(pool);
 
@@ -91,8 +94,8 @@ async fn the_route_is_csrf_protected(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-#[sqlx::test]
-async fn a_successful_login_starts_a_working_session(pool: PgPool) {
+dual!(a_successful_login_starts_a_working_session);
+async fn a_successful_login_starts_a_working_session(pool: Db) {
     ann_with_password(&pool).await;
     let app = app(pool);
 

@@ -12,7 +12,7 @@ pub struct File {
 
 /// A file as a model takes it (`fileData`): where it is, its media type and its name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "axum", derive(utoipa::ToSchema))]
+#[derive(utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FileData {
     pub file_uri: String,
@@ -20,10 +20,8 @@ pub struct FileData {
     pub display_name: String,
 }
 
-#[cfg(all(feature = "axum", feature = "postgres"))]
 pub(super) use stored::routes;
 
-#[cfg(all(feature = "axum", feature = "postgres"))]
 mod stored {
     use std::collections::HashMap;
 
@@ -42,6 +40,7 @@ mod stored {
 
     use super::{File, FileData};
     use crate::auth::AccessToken;
+    use crate::Db;
     use crate::auth::rest::AppContext;
     use crate::event::Broker;
     use crate::messaging::message::{Messaging, MessagingError, Party, pair};
@@ -64,7 +63,7 @@ mod stored {
         pub async fn attach(&self, file: File, from: Party, to: Party) -> Result<FileData, MessagingError> {
             let (client, member, _) = pair(from, to)?;
             let id = Uuid::now_v7();
-            sqlx::query("INSERT INTO attachments (tenant_id, id, client_id, member_id, name, mime_type, bytes) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+            Db::query("INSERT INTO attachments (tenant_id, id, client_id, member_id, name, mime_type, bytes) VALUES ($1, $2, $3, $4, $5, $6, $7)")
                 .bind(self.tenant_id)
                 .bind(id)
                 .bind(client)
@@ -80,7 +79,7 @@ mod stored {
         /// The file the data refers to, within this tenant.
         pub async fn file(&self, data: &FileData) -> Result<File, MessagingError> {
             let id = data.file_uri.rsplit('/').next().and_then(|id| id.parse::<Uuid>().ok()).ok_or(MessagingError::NotFound)?;
-            let stored: Option<Stored> = sqlx::query_as("SELECT name, mime_type, bytes FROM attachments WHERE tenant_id = $1 AND id = $2")
+            let stored: Option<Stored> = Db::query_as("SELECT name, mime_type, bytes FROM attachments WHERE tenant_id = $1 AND id = $2")
                 .bind(self.tenant_id)
                 .bind(id)
                 .fetch_optional(&self.pool)
@@ -147,7 +146,7 @@ mod stored {
         Path((tenant_id, id)): Path<(Uuid, Uuid)>,
         Query(query): Query<HashMap<String, String>>,
     ) -> Result<Response, MessagingError> {
-        let stored: Option<Stored> = sqlx::query_as("SELECT name, mime_type, bytes FROM attachments WHERE tenant_id = $1 AND id = $2 AND client_id = $3")
+        let stored: Option<Stored> = Db::query_as("SELECT name, mime_type, bytes FROM attachments WHERE tenant_id = $1 AND id = $2 AND client_id = $3")
             .bind(tenant_id)
             .bind(id)
             .bind(token.sub)

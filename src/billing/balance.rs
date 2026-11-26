@@ -5,7 +5,7 @@
 //! Stock follows too: while an invoice has a succeeded payment not refunded in full, its product lines are out of the
 //! tenant's stock (receivable) or in it (payable). Selling more than is held is a 409.
 
-use sqlx::{PgConnection, PgPool};
+use crate::{Db, Tx};
 use uuid::Uuid;
 
 use super::draft::refuse_changes;
@@ -19,7 +19,7 @@ use crate::Table;
 
 /// A new payment for an open invoice (409 if it is not open, or if the payment is more than is owed): it takes its
 /// number from the app's payment `Ids` (the scope is the payment's date), and the invoice is refreshed.
-pub async fn record(pool: &PgPool, formats: &Formats, payment: Payment) -> ApiResult<Payment> {
+pub async fn record(pool: &Db, formats: &Formats, payment: Payment) -> ApiResult<Payment> {
     (payment.number.is_none()).then_some(()).ok_or_else(|| bad("the number is made when the payment is recorded"))?;
     let mut transaction = pool.begin().await?;
     let status = lock_invoice(&mut transaction, payment.tenant_id, payment.invoice_id).await?;
@@ -27,7 +27,7 @@ pub async fn record(pool: &PgPool, formats: &Formats, payment: Payment) -> ApiRe
     let before = settled(&mut transaction, payment.tenant_id, payment.invoice_id).await?;
     let number = issue(&mut transaction, payment.tenant_id, Numbered::Payment, payment.date, formats.payment.as_ref()).await?;
     let numbered = Payment { number: Some(number), ..payment };
-    let stored = crud::create(&mut *transaction, numbered, None).await?;
+    let stored = crud::create(&mut transaction, numbered, None).await?;
     refresh(&mut transaction, stored.tenant_id, stored.invoice_id).await?;
     restock(&mut transaction, stored.tenant_id, stored.invoice_id, before).await?;
     transaction.commit().await?;
@@ -36,33 +36,33 @@ pub async fn record(pool: &PgPool, formats: &Formats, payment: Payment) -> ApiRe
 
 /// A payment replaced; the invoice is refreshed (409 if the payment is now more than is owed). Its number and its
 /// invoice stay.
-pub async fn replace(pool: &PgPool, data: Payment) -> ApiResult<Payment> {
+pub async fn replace(pool: &Db, data: Payment) -> ApiResult<Payment> {
     let mut transaction = pool.begin().await?;
     let current = lock_payment(&mut transaction, &Key { tenant_id: data.tenant_id, id: data.id }).await?;
     let before = settled(&mut transaction, current.tenant_id, current.invoice_id).await?;
     (data.number.is_none()).then_some(()).ok_or_else(|| bad("number cannot be changed"))?;
     (data.invoice_id == current.invoice_id).then_some(()).ok_or_else(|| bad("a payment stays with its invoice"))?;
-    let saved = crud::replace(&mut *transaction, Payment { number: current.number.clone(), ..data }, None).await?;
+    let saved = crud::replace(&mut transaction, Payment { number: current.number.clone(), ..data }, None).await?;
     finish(transaction, saved, before).await
 }
 
 /// A payment patched (its amount, status or `refunded`, say); the invoice is refreshed the same way.
-pub async fn patch(pool: &PgPool, body: Changes) -> ApiResult<Payment> {
+pub async fn patch(pool: &Db, body: Changes) -> ApiResult<Payment> {
     let mut transaction = pool.begin().await?;
     let current = lock_payment(&mut transaction, &body.key).await?;
     let before = settled(&mut transaction, current.tenant_id, current.invoice_id).await?;
     refuse_changes(&body, &["number", "invoice_id"])?;
-    let saved = crud::patch(&mut *transaction, body, None).await?;
+    let saved = crud::patch(&mut transaction, body, None).await?;
     finish(transaction, saved, before).await
 }
 
 /// A payment deleted; the invoice is refreshed.
-pub async fn remove(pool: &PgPool, key: &Key) -> ApiResult<Payment> {
+pub async fn remove(pool: &Db, key: &Key) -> ApiResult<Payment> {
     let mut transaction = pool.begin().await?;
     let current = lock_payment(&mut transaction, key).await?;
     let before = settled(&mut transaction, current.tenant_id, current.invoice_id).await?;
     let query = format!("UPDATE {} SET deleted_at = now(), updated_at = now() WHERE tenant_id = $1 AND id = $2 RETURNING *", Payment::TABLE_NAME);
-    let deleted: Payment = sqlx::query_as(&query).bind(key.tenant_id).bind(key.id).fetch_one(&mut *transaction).await?;
+    let deleted: Payment = Db::query_as(&query).sqlite(query.replace("now()", crate::sqlite_now!())).bind(key.tenant_id).bind(key.id).fetch_one(&mut transaction).await?;
     refresh(&mut transaction, deleted.tenant_id, deleted.invoice_id).await?;
     restock(&mut transaction, deleted.tenant_id, deleted.invoice_id, before).await?;
     transaction.commit().await?;
@@ -78,22 +78,22 @@ fn open(status: InvoiceStatus) -> ApiResult<()> {
 }
 
 /// Locks the invoice row and tells its status; `None` when the tenant has no such invoice.
-async fn lock_invoice(connection: &mut PgConnection, tenant_id: Uuid, invoice_id: Uuid) -> ApiResult<Option<InvoiceStatus>> {
+async fn lock_invoice(connection: &mut Tx, tenant_id: Uuid, invoice_id: Uuid) -> ApiResult<Option<InvoiceStatus>> {
     let query = format!("SELECT status FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE", Invoice::TABLE_NAME);
-    Ok(sqlx::query_scalar(&query).bind(tenant_id).bind(invoice_id).fetch_optional(connection).await?)
+    Ok(Db::query_scalar(&query).sqlite(query.replace(" FOR UPDATE", "")).bind(tenant_id).bind(invoice_id).fetch_optional(connection).await?)
 }
 
 /// The payment, after its open invoice is locked (always in this order, so changes at once cannot deadlock).
-async fn lock_payment(connection: &mut PgConnection, key: &Key) -> ApiResult<Payment> {
+async fn lock_payment(connection: &mut Tx, key: &Key) -> ApiResult<Payment> {
     let find = format!("SELECT invoice_id FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL", Payment::TABLE_NAME);
-    let invoice_id: Uuid = sqlx::query_scalar(&find).bind(key.tenant_id).bind(key.id).fetch_optional(&mut *connection).await?.ok_or(ApiError::NotFound)?;
+    let invoice_id: Uuid = Db::query_scalar(&find).bind(key.tenant_id).bind(key.id).fetch_optional(&mut *connection).await?.ok_or(ApiError::NotFound)?;
     open(lock_invoice(connection, key.tenant_id, invoice_id).await?.ok_or(ApiError::NotFound)?)?;
     let read = format!("SELECT * FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE", Payment::TABLE_NAME);
-    sqlx::query_as(&read).bind(key.tenant_id).bind(key.id).fetch_optional(connection).await?.ok_or(ApiError::NotFound)
+    Db::query_as(&read).sqlite(read.replace(" FOR UPDATE", "")).bind(key.tenant_id).bind(key.id).fetch_optional(connection).await?.ok_or(ApiError::NotFound)
 }
 
 /// What follows a payment saved: the invoice refreshed and the stock moved, then the transaction committed.
-async fn finish(mut transaction: sqlx::Transaction<'_, sqlx::Postgres>, saved: Payment, before: bool) -> ApiResult<Payment> {
+async fn finish(mut transaction: Tx, saved: Payment, before: bool) -> ApiResult<Payment> {
     refresh(&mut transaction, saved.tenant_id, saved.invoice_id).await?;
     restock(&mut transaction, saved.tenant_id, saved.invoice_id, before).await?;
     transaction.commit().await?;
@@ -102,7 +102,7 @@ async fn finish(mut transaction: sqlx::Transaction<'_, sqlx::Postgres>, saved: P
 
 /// The invoice's `amount_paid` and `balance_due` from its payments, in the caller's transaction; a conflict when
 /// the payments come to more than the invoice's total.
-async fn refresh(connection: &mut PgConnection, tenant_id: Uuid, invoice_id: Uuid) -> ApiResult<Invoice> {
+async fn refresh(connection: &mut Tx, tenant_id: Uuid, invoice_id: Uuid) -> ApiResult<Invoice> {
     let query = format!(
         "UPDATE {invoices} i SET amount_paid = p.paid, balance_due = i.total - p.paid, updated_at = now() \
          FROM (SELECT COALESCE(SUM(amount - refunded), 0)::bigint AS paid FROM {payments} \
@@ -111,23 +111,32 @@ async fn refresh(connection: &mut PgConnection, tenant_id: Uuid, invoice_id: Uui
         invoices = Invoice::TABLE_NAME,
         payments = Payment::TABLE_NAME,
     );
-    let invoice: Invoice = sqlx::query_as(&query).bind(tenant_id).bind(invoice_id).fetch_one(connection).await?;
+    let sqlite = format!(
+        "UPDATE {invoices} AS i SET amount_paid = p.paid, balance_due = i.total - p.paid, updated_at = {now} \
+         FROM (SELECT CAST(COALESCE(SUM(amount - refunded), 0) AS BIGINT) AS paid FROM {payments} \
+               WHERE tenant_id = $1 AND invoice_id = $2 AND deleted_at IS NULL AND status IN ('processing', 'succeeded')) p \
+         WHERE i.tenant_id = $1 AND i.id = $2 RETURNING *",
+        invoices = Invoice::TABLE_NAME,
+        payments = Payment::TABLE_NAME,
+        now = crate::sqlite_now!(),
+    );
+    let invoice: Invoice = Db::query_as(&query).sqlite(sqlite).bind(tenant_id).bind(invoice_id).fetch_one(connection).await?;
     (i64::from(invoice.balance_due) >= 0).then_some(invoice).ok_or_else(|| ApiError::Conflict("the payments would come to more than is owed".into()))
 }
 
 /// Whether the invoice has a succeeded payment not refunded in full, so its products have moved.
-async fn settled(connection: &mut PgConnection, tenant_id: Uuid, invoice_id: Uuid) -> ApiResult<bool> {
+async fn settled(connection: &mut Tx, tenant_id: Uuid, invoice_id: Uuid) -> ApiResult<bool> {
     let query = format!(
         "SELECT EXISTS (SELECT 1 FROM {} WHERE tenant_id = $1 AND invoice_id = $2 AND deleted_at IS NULL \
          AND status = 'succeeded' AND refunded < amount)",
         Payment::TABLE_NAME
     );
-    Ok(sqlx::query_scalar(&query).bind(tenant_id).bind(invoice_id).fetch_one(connection).await?)
+    Ok(Db::query_scalar(&query).bind(tenant_id).bind(invoice_id).fetch_one(connection).await?)
 }
 
 /// Moves the invoice's product lines in or out of the tenant's stock when the payments settle or unsettle it:
 /// a receivable invoice takes them out, a payable one puts them in, and undoing does the opposite.
-async fn restock(connection: &mut PgConnection, tenant_id: Uuid, invoice_id: Uuid, before: bool) -> ApiResult<()> {
+async fn restock(connection: &mut Tx, tenant_id: Uuid, invoice_id: Uuid, before: bool) -> ApiResult<()> {
     let after = settled(connection, tenant_id, invoice_id).await?;
     let direction: i32 = match (before, after) {
         (false, true) => 1,
@@ -144,6 +153,17 @@ async fn restock(connection: &mut PgConnection, tenant_id: Uuid, invoice_id: Uui
         invoices = Invoice::TABLE_NAME,
         lines = InvoiceLine::TABLE_NAME,
     );
-    let short: Vec<bool> = sqlx::query_scalar(&query).bind(tenant_id).bind(invoice_id).bind(direction).fetch_all(connection).await?;
+    let sqlite = format!(
+        "WITH sold AS (SELECT CASE kind WHEN 'payable' THEN $3 ELSE -$3 END AS sign FROM {invoices} WHERE tenant_id = $1 AND id = $2), \
+              used AS (SELECT product_id, SUM(quantity) AS quantity FROM {lines} \
+                       WHERE tenant_id = $1 AND invoice_id = $2 AND product_id IS NOT NULL AND deleted_at IS NULL GROUP BY product_id) \
+         INSERT INTO stocks (tenant_id, product_id, on_hand) SELECT $1, product_id, quantity * sign FROM used, sold WHERE true \
+         ON CONFLICT (tenant_id, product_id) DO UPDATE SET on_hand = stocks.on_hand + EXCLUDED.on_hand, updated_at = {now} \
+         RETURNING CAST(on_hand AS REAL) < 0",
+        invoices = Invoice::TABLE_NAME,
+        lines = InvoiceLine::TABLE_NAME,
+        now = crate::sqlite_now!(),
+    );
+    let short: Vec<bool> = Db::query_scalar(&query).sqlite(sqlite).bind(tenant_id).bind(invoice_id).bind(direction).fetch_all(connection).await?;
     (!short.contains(&true)).then_some(()).ok_or_else(|| ApiError::Conflict("not enough of a product on hand".into()))
 }

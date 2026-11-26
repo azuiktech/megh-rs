@@ -1,10 +1,13 @@
 use chrono::{Duration, Utc};
+#[macro_use]
+mod common;
+
 use megh::billing::{AddOn, AddOnType, BillingInterval, Plan, PlanPrice, Subscription, SubscriptionStatus};
 use megh::money::{from_micros, iso, to_micros, Money, MoneyError};
 use megh::auth::crud;
 use megh::JsonText;
 use rust_decimal::Decimal;
-use sqlx::PgPool;
+use megh::Db;
 use uuid::Uuid;
 
 const KYRIOS_PLAN: &str = "INSERT INTO plans (id, sku, name, description, features, active, created_at) VALUES
@@ -28,13 +31,13 @@ fn conversion_reports_what_cannot_be_represented() {
     assert!(matches!(to_micros(&Money::from_decimal(Decimal::MAX, iso::USD)), Err(MoneyError::Overflow)));
 }
 
-#[sqlx::test]
-async fn entities_read_rows_written_by_megh_go(pool: PgPool) {
-    sqlx::raw_sql(KYRIOS_PLAN).execute(&pool).await.unwrap();
-    sqlx::raw_sql(KYRIOS_PRICE).execute(&pool).await.unwrap();
+postgres!(entities_read_rows_written_by_megh_go);
+async fn entities_read_rows_written_by_megh_go(pool: Db) {
+    common::raw(&pool, KYRIOS_PLAN).await.unwrap();
+    common::raw(&pool, KYRIOS_PRICE).await.unwrap();
 
-    let plan: Plan = sqlx::query_as("SELECT * FROM plans").fetch_one(&pool).await.unwrap();
-    let price: PlanPrice = sqlx::query_as("SELECT * FROM plan_prices").fetch_one(&pool).await.unwrap();
+    let plan: Plan = Db::query_as("SELECT * FROM plans").fetch_one(&pool).await.unwrap();
+    let price: PlanPrice = Db::query_as("SELECT * FROM plan_prices").fetch_one(&pool).await.unwrap();
 
     assert_eq!(plan.features.0, ["interactive_episodes", "ai_tutoring"]);
     assert!(plan.limits.0.is_empty() && plan.metadata.0.is_null());
@@ -44,8 +47,8 @@ async fn entities_read_rows_written_by_megh_go(pool: PgPool) {
     assert_eq!(price.trial(), Some(Duration::days(30)));
 }
 
-#[sqlx::test]
-async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
+dual!(entities_write_the_columns_megh_go_reads);
+async fn entities_write_the_columns_megh_go_reads(pool: Db) {
     let plan = Plan {
         id: Uuid::now_v7(),
         sku: "pro".into(),
@@ -73,8 +76,8 @@ async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
     };
     let add_on = crud::create(&pool, add_on, None).await.unwrap();
 
-    let (features, limits): (String, String) = sqlx::query_as("SELECT features, limits FROM plans").fetch_one(&pool).await.unwrap();
-    let (kind, price): (String, i64) = sqlx::query_as("SELECT type, price FROM add_ons").fetch_one(&pool).await.unwrap();
+    let (features, limits): (String, String) = Db::query_as("SELECT features, limits FROM plans").fetch_one(&pool).await.unwrap();
+    let (kind, price): (String, i64) = Db::query_as("SELECT type, price FROM add_ons").fetch_one(&pool).await.unwrap();
     assert_eq!(serde_json::from_str::<serde_json::Value>(&features).unwrap(), serde_json::json!(["a"]));
     assert_eq!(serde_json::from_str::<serde_json::Value>(&limits).unwrap(), serde_json::json!({"seats": 5}));
     assert_eq!((kind.as_str(), price), ("recurring", 1_500_000));
@@ -82,9 +85,9 @@ async fn entities_write_the_columns_megh_go_reads(pool: PgPool) {
     assert_eq!(crud::replace(&pool, add_on, None).await.unwrap().kind, AddOnType::Recurring);
 }
 
-#[sqlx::test]
-async fn subscription_status_reads_megh_go_text(pool: PgPool) {
-    sqlx::query("INSERT INTO subscriptions (id, tenant_id, plan_id, price_id, status, seats) VALUES ($1, $2, $3, $4, 'past_due', 3)")
+dual!(subscription_status_reads_megh_go_text);
+async fn subscription_status_reads_megh_go_text(pool: Db) {
+    Db::query("INSERT INTO subscriptions (id, tenant_id, plan_id, price_id, status, seats) VALUES ($1, $2, $3, $4, 'past_due', 3)")
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
         .bind(Uuid::now_v7())
@@ -93,7 +96,7 @@ async fn subscription_status_reads_megh_go_text(pool: PgPool) {
         .await
         .unwrap();
 
-    let subscription: Subscription = sqlx::query_as("SELECT * FROM subscriptions").fetch_one(&pool).await.unwrap();
+    let subscription: Subscription = Db::query_as("SELECT * FROM subscriptions").fetch_one(&pool).await.unwrap();
 
     assert_eq!((subscription.status, subscription.seats), (SubscriptionStatus::PastDue, Some(3)));
 }

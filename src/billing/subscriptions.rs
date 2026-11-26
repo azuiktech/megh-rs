@@ -2,7 +2,7 @@
 
 use chrono::{Months, Utc};
 use serde_json::Value;
-use sqlx::PgPool;
+use crate::Db;
 use uuid::Uuid;
 
 use super::{AddOn, BillingInterval, Plan, PlanPrice, Subscription, SubscriptionItem, SubscriptionStatus};
@@ -45,12 +45,12 @@ pub enum CancelWhen {
 /// Plans, prices, add-ons and each tenant's subscription; holds the injected pool.
 #[derive(Clone)]
 pub struct Subscriptions {
-    pool: PgPool,
+    pool: Db,
     lifecycle: Option<Lifecycle>,
 }
 
 impl Subscriptions {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: Db) -> Self {
         Self { pool, lifecycle: None }
     }
 
@@ -65,15 +65,15 @@ impl Subscriptions {
 
     /// The active plans.
     pub async fn list_plans(&self) -> Result<Vec<Plan>, BillingError> {
-        Ok(sqlx::query_as("SELECT * FROM plans WHERE active = true ORDER BY sku").fetch_all(&self.pool).await?)
+        Ok(Db::query_as("SELECT * FROM plans WHERE active = true ORDER BY sku").fetch_all(&self.pool).await?)
     }
 
     pub async fn plan(&self, id: Uuid) -> Result<Plan, BillingError> {
-        found(sqlx::query_as("SELECT * FROM plans WHERE id = $1").bind(id).fetch_optional(&self.pool).await?)
+        found(Db::query_as("SELECT * FROM plans WHERE id = $1").bind(id).fetch_optional(&self.pool).await?)
     }
 
     pub async fn plan_by_sku(&self, sku: &str) -> Result<Plan, BillingError> {
-        found(sqlx::query_as("SELECT * FROM plans WHERE sku = $1").bind(sku).fetch_optional(&self.pool).await?)
+        found(Db::query_as("SELECT * FROM plans WHERE sku = $1").bind(sku).fetch_optional(&self.pool).await?)
     }
 
     pub async fn add_price(&self, price: &PlanPrice) -> Result<PlanPrice, BillingError> {
@@ -85,7 +85,7 @@ impl Subscriptions {
     }
 
     pub async fn attach_plan_add_on(&self, plan_id: Uuid, add_on_id: Uuid) -> Result<(), BillingError> {
-        sqlx::query("INSERT INTO plan_add_ons (plan_id, add_on_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        Db::query("INSERT INTO plan_add_ons (plan_id, add_on_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
             .bind(plan_id)
             .bind(add_on_id)
             .execute(&self.pool)
@@ -101,7 +101,7 @@ impl Subscriptions {
     /// price's included seats.
     pub async fn subscribe(&self, tenant_id: Uuid, price_id: Uuid, seats: i64, metadata: Value) -> Result<Subscription, BillingError> {
         (seats >= 1).then_some(()).ok_or(BillingError::InvalidSeats)?;
-        let price: PlanPrice = found(sqlx::query_as("SELECT * FROM plan_prices WHERE id = $1").bind(price_id).fetch_optional(&self.pool).await?)?;
+        let price: PlanPrice = found(Db::query_as("SELECT * FROM plan_prices WHERE id = $1").bind(price_id).fetch_optional(&self.pool).await?)?;
         let fresh = new_subscription(tenant_id, &price, seats, metadata);
         let subscription = match self.find_subscription(tenant_id).await? {
             Some(existing) => Subscription { id: existing.id, created_at: existing.created_at, ..fresh },
@@ -113,7 +113,7 @@ impl Subscriptions {
     pub async fn change_seats(&self, tenant_id: Uuid, seats: i64) -> Result<Subscription, BillingError> {
         (seats >= 1).then_some(()).ok_or(BillingError::InvalidSeats)?;
         let changed = found(
-            sqlx::query_as("UPDATE subscriptions SET seats = $2, updated_at = NOW() WHERE tenant_id = $1 RETURNING *")
+            Db::query_as("UPDATE subscriptions SET seats = $2, updated_at = NOW() WHERE tenant_id = $1 RETURNING *").sqlite("UPDATE subscriptions SET seats = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') WHERE tenant_id = $1 RETURNING *")
                 .bind(tenant_id)
                 .bind(seats)
                 .fetch_optional(&self.pool)
@@ -128,7 +128,7 @@ impl Subscriptions {
             CancelWhen::AtPeriodEnd => (None, true),
         };
         let cancelled = found(
-            sqlx::query_as("UPDATE subscriptions SET status = COALESCE($2, status), cancel_at_period_end = $3, updated_at = NOW() WHERE tenant_id = $1 RETURNING *")
+            Db::query_as("UPDATE subscriptions SET status = COALESCE($2, status), cancel_at_period_end = $3, updated_at = NOW() WHERE tenant_id = $1 RETURNING *").sqlite("UPDATE subscriptions SET status = COALESCE($2, status), cancel_at_period_end = $3, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') WHERE tenant_id = $1 RETURNING *")
                 .bind(tenant_id)
                 .bind(status)
                 .bind(at_period_end)
@@ -143,7 +143,7 @@ impl Subscriptions {
         let subscription = self.subscription(tenant_id).await?;
         let quantity = quantity.max(1);
         let text = (!metadata.is_null()).then(|| metadata.to_string());
-        let updated = sqlx::query("UPDATE subscription_items SET quantity = $3, metadata = $4 WHERE subscription_id = $1 AND add_on_id = $2")
+        let updated = Db::query("UPDATE subscription_items SET quantity = $3, metadata = $4 WHERE subscription_id = $1 AND add_on_id = $2")
             .bind(subscription.id)
             .bind(add_on_id)
             .bind(quantity)
@@ -159,7 +159,7 @@ impl Subscriptions {
 
     pub async fn detach_add_on(&self, tenant_id: Uuid, add_on_id: Uuid) -> Result<Subscription, BillingError> {
         let subscription = self.subscription(tenant_id).await?;
-        let deleted = sqlx::query("DELETE FROM subscription_items WHERE subscription_id = $1 AND add_on_id = $2")
+        let deleted = Db::query("DELETE FROM subscription_items WHERE subscription_id = $1 AND add_on_id = $2")
             .bind(subscription.id)
             .bind(add_on_id)
             .execute(&self.pool)
@@ -175,7 +175,7 @@ impl Subscriptions {
     }
 
     async fn find_subscription(&self, tenant_id: Uuid) -> Result<Option<Subscription>, sqlx::Error> {
-        sqlx::query_as("SELECT * FROM subscriptions WHERE tenant_id = $1").bind(tenant_id).fetch_optional(&self.pool).await
+        Db::query_as("SELECT * FROM subscriptions WHERE tenant_id = $1").bind(tenant_id).fetch_optional(&self.pool).await
     }
 }
 

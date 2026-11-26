@@ -22,16 +22,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| format!("http://localhost:{port}"));
 
     tracing::info!("Connecting to database: {db_url}");
-    let pool = sqlx::PgPool::connect(&db_url).await?;
+    let sessions_pool = sqlx::PgPool::connect(&db_url).await?;
+    let pool = megh::Db::Postgres(sessions_pool.clone());
 
     // Run migrations
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    pool.migrate().await?;
     tracing::info!("Database migrations applied");
 
     let google_client_id = std::env::var("GOOGLE_CLIENT_ID").unwrap_or_default();
     let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET").unwrap_or_default();
 
-    let sessions = PostgresStore::new(pool.clone());
+    let sessions = PostgresStore::new(sessions_pool);
     sessions.migrate().await?;
 
     let mut megh_state = megh::MeghAuthState::new(pool)

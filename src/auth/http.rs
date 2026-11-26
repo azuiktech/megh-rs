@@ -30,11 +30,12 @@ use crate::auth::oauth::{
 use crate::auth::token::JWT_COOKIE;
 use crate::auth::user::{PasswordError, UpsertUserInput, User, UserRepo};
 use crate::tenant::Tenants;
+use crate::Db;
 
 /// Shared state required by the Megh authentication HTTP router.
 #[derive(Clone)]
 pub struct MeghAuthState {
-    pub pool: sqlx::PgPool,
+    pub pool: crate::Db,
     pub redirect_after_login: String,
     pub app_origin: String,
     pub providers: Arc<HashMap<String, OAuthProviderConfig>>,
@@ -48,7 +49,7 @@ pub struct MeghAuthState {
 }
 
 impl MeghAuthState {
-    pub fn new(pool: sqlx::PgPool) -> Self {
+    pub fn new(pool: crate::Db) -> Self {
         Self {
             pool,
             redirect_after_login: "/".to_string(),
@@ -163,7 +164,7 @@ where
 }
 
 /// The user signed in to `session`.
-async fn current_user(session: &Session, pool: &sqlx::PgPool) -> Result<User, AuthError> {
+async fn current_user(session: &Session, pool: &crate::Db) -> Result<User, AuthError> {
     let id: Uuid = session.get(USER_ID).await?.ok_or(AuthError(StatusCode::UNAUTHORIZED, "Not logged in"))?;
     UserRepo::new(pool).get_by_id(id).await?.ok_or(AuthError(StatusCode::UNAUTHORIZED, "User not found"))
 }
@@ -416,7 +417,7 @@ async fn save_own_account(state: &MeghAuthState, session: &Session, provider: &s
 
 /// Saves any account as `tenant`'s, unless another tenant has it (`409`).
 async fn save_tenant_account(state: &MeghAuthState, provider: &str, tenant: Uuid, info: OAuthUserInfo, tokens: &BasicTokenResponse) -> Result<ConnectedAccount, AuthError> {
-    let owner: Option<Option<Uuid>> = sqlx::query_scalar("SELECT tenant_id FROM connected_accounts WHERE account_id = $1 AND provider = $2 AND deleted_at IS NULL")
+    let owner: Option<Option<Uuid>> = Db::query_scalar("SELECT tenant_id FROM connected_accounts WHERE account_id = $1 AND provider = $2 AND deleted_at IS NULL")
         .bind(&info.subject)
         .bind(provider)
         .fetch_optional(&state.pool)
@@ -425,7 +426,7 @@ async fn save_tenant_account(state: &MeghAuthState, provider: &str, tenant: Uuid
         return Err(AuthError(StatusCode::CONFLICT, "another tenant has connected that account"));
     }
     let account = save_account(state, provider, info, tokens).await?;
-    sqlx::query("UPDATE connected_accounts SET tenant_id = $3, auth = 'oauth', deleted_at = NULL WHERE account_id = $1 AND provider = $2")
+    Db::query("UPDATE connected_accounts SET tenant_id = $3, auth = 'oauth', deleted_at = NULL WHERE account_id = $1 AND provider = $2")
         .bind(&account.account_id)
         .bind(provider)
         .bind(tenant)

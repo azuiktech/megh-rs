@@ -22,7 +22,6 @@ pub struct Schema(Value);
 
 impl Schema {
     /// The schema of an entity, as its `ToSchema` gives it, with every reference resolved.
-    #[cfg(feature = "axum")]
     pub fn of<T: utoipa::ToSchema>() -> Self {
         let mut named = Vec::new();
         T::schemas(&mut named);
@@ -428,7 +427,6 @@ impl Surface {
     }
 
     /// The client's own schema as a form, without what the server sets.
-    #[cfg(feature = "axum")]
     pub fn intake() -> Self {
         let client = Schema::of::<crate::booking::client::Client>().without(&["tenant_id", "id", "attributes", "created_at", "updated_at", "deleted_at"]);
         Self::new().inputs(client).button("Send", "submit")

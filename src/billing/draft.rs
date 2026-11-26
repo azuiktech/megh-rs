@@ -1,7 +1,7 @@
 //! An invoice that is no longer a draft is not changed; a mistake is corrected by voiding it and issuing another.
 //! The tables are those named by the entities' `#[table]`.
 
-use sqlx::PgConnection;
+use crate::{Db, Tx};
 use uuid::Uuid;
 
 use crate::auth::rest::{ApiError, ApiResult, Changes};
@@ -40,13 +40,13 @@ impl Lock {
 
 /// `Ok` when the document is a draft, locked as `lock` says; not found when it is missing, a conflict when it is
 /// anything else.
-pub async fn ensure_draft<T: Table>(connection: &mut PgConnection, tenant_id: Uuid, id: Uuid, lock: Lock) -> ApiResult<()> {
+pub async fn ensure_draft<T: Table>(connection: &mut Tx, tenant_id: Uuid, id: Uuid, lock: Lock) -> ApiResult<()> {
     let query = format!("SELECT status FROM {} WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL {}", T::TABLE_NAME, lock.sql());
-    draft(sqlx::query_scalar(&query).bind(tenant_id).bind(id).fetch_optional(connection).await?)
+    draft(Db::query_scalar(&query).sqlite(query.replace(lock.sql(), "")).bind(tenant_id).bind(id).fetch_optional(connection).await?)
 }
 
 /// The same for the document of a line, shared.
-pub async fn ensure_line_draft<L: Line>(connection: &mut PgConnection, tenant_id: Uuid, line_id: Uuid) -> ApiResult<()> {
+pub async fn ensure_line_draft<L: Line>(connection: &mut Tx, tenant_id: Uuid, line_id: Uuid) -> ApiResult<()> {
     let query = format!(
         "SELECT d.status FROM {line} l JOIN {document} d ON d.tenant_id = l.tenant_id AND d.id = l.{parent} \
          WHERE l.tenant_id = $1 AND l.id = $2 AND l.deleted_at IS NULL AND d.deleted_at IS NULL FOR SHARE OF d",
@@ -54,7 +54,7 @@ pub async fn ensure_line_draft<L: Line>(connection: &mut PgConnection, tenant_id
         document = <L::Parent as Table>::TABLE_NAME,
         parent = L::PARENT_ID,
     );
-    draft(sqlx::query_scalar(&query).bind(tenant_id).bind(line_id).fetch_optional(connection).await?)
+    draft(Db::query_scalar(&query).sqlite(query.replace(" FOR SHARE OF d", "")).bind(tenant_id).bind(line_id).fetch_optional(connection).await?)
 }
 
 /// A bad request when a patch sets any of `fields`, which only a verb of the document may change.

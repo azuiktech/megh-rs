@@ -8,16 +8,16 @@ use crate::booking::value::{Address, Contact};
 
 /// Tenant stored in table `tenants`: the partition every other row belongs to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
+#[derive(sqlx::FromRow)]
 pub struct Tenant {
     pub id: Uuid,
     pub name: Option<String>,
     pub description: Option<String>,
     #[serde(flatten)]
-    #[cfg_attr(feature = "postgres", sqlx(flatten))]
+    #[sqlx(flatten)]
     pub contact: Contact,
     #[serde(default)]
-    #[cfg_attr(feature = "postgres", sqlx(json(nullable)))]
+    #[sqlx(json(nullable))]
     pub address: Option<Address>,
     pub timezone: String,
     pub sub_status: String,

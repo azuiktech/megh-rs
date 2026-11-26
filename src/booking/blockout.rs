@@ -8,6 +8,8 @@ use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use uuid::Uuid;
+
+use crate::Array;
 use validator::{Validate, ValidationError};
 
 use super::value::{Attributes, Name};
@@ -32,6 +34,7 @@ pub struct Blockout {
     pub resource_id: Option<Uuid>,
     /// Empty: any service.
     #[serde(default)]
+    #[sqlx(try_from = "Array<Uuid>")]
     pub service_ids: Vec<Uuid>,
     /// DTSTART is when the rule starts, UNTIL or COUNT when it ends.
     #[sqlx(json)]

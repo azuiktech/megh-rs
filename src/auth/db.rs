@@ -1,206 +1,509 @@
-//! What differs between databases, and nothing else: a `Backend` is a query builder, a few converters (how a list or a
-//! decimal is held) and the time of a write. The statements and the CRUD are the same for all of them.
+//! The database megh runs on, chosen at start-up from its URL: PostgreSQL or SQLite.
+//!
+//! Statements are built as sqlx builds them (`Db::query`, `Db::query_as`, `Db::query_scalar`, `.bind`, `.fetch_one(&pool)`)
+//! and written once in standard SQL; a driver whose SQL differs gets its own text (`.postgres(…)`, `.sqlite(…)`). Values
+//! are bound and rows read through each type's own `sqlx::Type`.
 
-use std::future::Future;
+use std::marker::PhantomData;
 
-use chrono::Utc;
-use sea_query::{Expr, PostgresQueryBuilder, SimpleExpr, Value, Values};
-#[cfg(feature = "sqlite")]
-use sea_query::SqliteQueryBuilder;
-use sea_query_binder::{SqlxBinder, SqlxValues};
-use sqlx::types::Json;
-use sqlx::{Database, Postgres, Row};
-#[cfg(feature = "sqlite")]
-use sqlx::Sqlite;
-use uuid::Uuid;
+use sqlx::error::BoxDynError;
 
-use crate::auth::column::{Elem, Kind};
-use crate::auth::entity::ColumnMeta;
+use crate::auth::crud;
+use crate::auth::entity::{Table, Where};
+use crate::auth::rest::{ApiResult, Changes, Key, ListRequest, Page};
 
-pub type Statement = (String, SqlxValues);
-
-pub trait Backend: Database + Sized {
-    fn build(statement: &impl SqlxBinder) -> Statement;
-    /// The time of a write.
-    fn now() -> SimpleExpr;
-    /// What a patch sets a column to when it gives `null`: the column's default where the database can say so.
-    fn reset() -> SimpleExpr;
-    /// `value` is an element of the list column `list`.
-    fn has(list: SimpleExpr, value: Value) -> SimpleExpr;
-    /// `value` is an element of the JSON array `list`.
-    fn has_json(list: SimpleExpr, value: Value) -> SimpleExpr;
-    fn fetch(connection: &mut Self::Connection, statement: Statement, columns: &[ColumnMeta]) -> impl Future<Output = Result<Vec<Vec<Value>>, sqlx::Error>> + Send;
-    fn execute(connection: &mut Self::Connection, statement: Statement) -> impl Future<Output = Result<u64, sqlx::Error>> + Send;
-    /// Marks the rows a physical delete of `table` would remove through `ON DELETE CASCADE`.
-    fn cascade(connection: &mut Self::Connection, table: &str) -> impl Future<Output = Result<(), sqlx::Error>> + Send;
+/// The current time in SQLite SQL, written as sqlx writes a `DateTime<Utc>` (RFC 3339), so the two compare as text:
+/// `concat!("UPDATE … SET updated_at = ", sqlite_now!(), " …")`.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! sqlite_now {
+    () => {
+        "strftime('%Y-%m-%dT%H:%M:%f+00:00')"
+    };
 }
 
-/// One database: its query builder, how it holds a list (`array`, `bind_value`) and a decimal, the time of a write, and
-/// the soft-delete cascade. The row reader is written once and expanded for each.
-macro_rules! backend {
-    ($module:ident, $db:ty, builder: $builder:ty, now: $now:expr, reset: $reset:expr, has: $has:expr, has_json: $has_json:expr, decimal: $decimal:expr, array: $array:expr, bind_value: $bind:expr, cascade: $cascade:expr) => {
-        mod $module {
-            use super::*;
+/// A pool of connections to one database.
+#[derive(Debug, Clone)]
+pub enum Db {
+    #[cfg(feature = "postgres")]
+    Postgres(sqlx::PgPool),
+    #[cfg(feature = "sqlite")]
+    Sqlite(sqlx::SqlitePool),
+}
 
-            fn read(row: &<$db as Database>::Row, columns: &[ColumnMeta]) -> Result<Vec<Value>, sqlx::Error> {
-                columns
-                    .iter()
-                    .map(|column| {
-                        let name = column.name;
-                        Ok(match column.kind {
-                            Kind::Text => Value::String(row.try_get_unchecked::<Option<String>, _>(name)?.map(Box::new)),
-                            Kind::Uuid => Value::Uuid(row.try_get::<Option<Uuid>, _>(name)?.map(Box::new)),
-                            Kind::Date => Value::ChronoDate(row.try_get::<Option<chrono::NaiveDate>, _>(name)?.map(Box::new)),
-                            Kind::Time => Value::ChronoTime(row.try_get::<Option<chrono::NaiveTime>, _>(name)?.map(Box::new)),
-                            Kind::Timestamp => Value::ChronoDateTimeUtc(row.try_get::<Option<chrono::DateTime<Utc>>, _>(name)?.map(Box::new)),
-                            Kind::Bool => Value::Bool(row.try_get::<Option<bool>, _>(name)?),
-                            Kind::Int => Value::BigInt(match row.try_get::<Option<i64>, _>(name) {
-                                Ok(number) => number,
-                                Err(_) => row.try_get::<Option<i32>, _>(name)?.map(i64::from),
-                            }),
-                            Kind::Float => Value::Double(row.try_get::<Option<f64>, _>(name)?),
-                            Kind::Decimal => Value::Decimal(($decimal)(row, name)?.map(Box::new)),
-                            Kind::Bytes => Value::Bytes(row.try_get::<Option<Vec<u8>>, _>(name)?.map(Box::new)),
-                            Kind::Json => Value::Json(row.try_get::<Option<Json<serde_json::Value>>, _>(name)?.map(|json| Box::new(json.0))),
-                            Kind::Array(elem) => ($array)(row, name, elem)?,
-                        })
-                    })
-                    .collect()
+/// A transaction.
+#[derive(Debug)]
+pub enum Tx {
+    #[cfg(feature = "postgres")]
+    Postgres(sqlx::Transaction<'static, sqlx::Postgres>),
+    #[cfg(feature = "sqlite")]
+    Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>),
+}
+
+/// The transaction a group of statements runs in: one of its own, committed with them, or the caller's, which the
+/// caller commits.
+pub enum Scope<'e> {
+    Own(Tx),
+    Within(&'e mut Tx),
+}
+
+impl std::ops::Deref for Scope<'_> {
+    type Target = Tx;
+    fn deref(&self) -> &Tx {
+        match self {
+            Scope::Own(tx) => tx,
+            Scope::Within(tx) => tx,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Scope<'_> {
+    fn deref_mut(&mut self) -> &mut Tx {
+        match self {
+            Scope::Own(tx) => tx,
+            Scope::Within(tx) => tx,
+        }
+    }
+}
+
+impl Scope<'_> {
+    /// Commits a transaction of its own; the caller's is left to the caller.
+    pub async fn commit(self) -> Result<(), sqlx::Error> {
+        match self {
+            Scope::Own(tx) => tx.commit().await,
+            Scope::Within(_) => Ok(()),
+        }
+    }
+}
+
+impl Db {
+    /// The driver is picked from the URL's scheme: `postgres://` or `postgresql://`, `sqlite:`.
+    pub async fn connect(url: &str) -> Result<Db, sqlx::Error> {
+        match url.split(':').next() {
+            #[cfg(feature = "postgres")]
+            Some("postgres" | "postgresql") => sqlx::PgPool::connect(url).await.map(Db::Postgres),
+            #[cfg(feature = "sqlite")]
+            Some("sqlite") => sqlx::SqlitePool::connect(url).await.map(Db::Sqlite),
+            _ => Err(sqlx::Error::Configuration(format!("no driver for {url}").into())),
+        }
+    }
+
+    /// megh's tables, from the migration set of the driver (`migrations/postgres`, `migrations/sqlite`). Each script is
+    /// idempotent, so a database shared with megh-go keeps its tables.
+    pub async fn migrate(&self) -> Result<(), sqlx::Error> {
+        match self {
+            #[cfg(feature = "postgres")]
+            Db::Postgres(pool) => run_scripts(pool, &migrations!("postgres")).await,
+            #[cfg(feature = "sqlite")]
+            Db::Sqlite(pool) => run_scripts(pool, &migrations!("sqlite")).await,
+        }
+    }
+
+    /// Closes every connection; later statements fail.
+    pub async fn close(&self) {
+        match self {
+            #[cfg(feature = "postgres")]
+            Db::Postgres(pool) => pool.close().await,
+            #[cfg(feature = "sqlite")]
+            Db::Sqlite(pool) => pool.close().await,
+        }
+    }
+
+    /// A transaction. On SQLite it takes the write lock when it starts, so the rows it reads stay as read until it ends.
+    pub async fn begin(&self) -> Result<Tx, sqlx::Error> {
+        match self {
+            #[cfg(feature = "postgres")]
+            Db::Postgres(pool) => pool.begin().await.map(Tx::Postgres),
+            #[cfg(feature = "sqlite")]
+            Db::Sqlite(pool) => pool.begin_with("BEGIN IMMEDIATE").await.map(Tx::Sqlite),
+        }
+    }
+}
+
+/// The scripts of one driver's migration set, in order.
+macro_rules! migrations {
+    ($driver:literal) => {
+        [
+            include_str!(concat!("../../migrations/", $driver, "/0001_auth.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0002_audit.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0003_tenant.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0004_booking.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0005_billing.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0006_products.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0007_connections.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0008_connection_spec.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0009_messages.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0010_attachments.sql")),
+            include_str!(concat!("../../migrations/", $driver, "/0011_client_moved.sql")),
+        ]
+    };
+}
+use migrations;
+
+/// Runs each script on `pool`, one after the other.
+async fn run_scripts<DB: sqlx::Database>(pool: &sqlx::Pool<DB>, scripts: &[&'static str]) -> Result<(), sqlx::Error>
+where
+    for<'p> &'p sqlx::Pool<DB>: sqlx::Executor<'p, Database = DB>,
+{
+    use futures_util::{StreamExt, TryStreamExt};
+    futures_util::stream::iter(scripts).then(|script| sqlx::raw_sql(script).execute(pool)).try_for_each(|_| async { Ok(()) }).await
+}
+
+impl Tx {
+    pub async fn rollback(self) -> Result<(), sqlx::Error> {
+        match self {
+            #[cfg(feature = "postgres")]
+            Tx::Postgres(tx) => tx.rollback().await,
+            #[cfg(feature = "sqlite")]
+            Tx::Sqlite(tx) => tx.rollback().await,
+        }
+    }
+
+    pub async fn commit(self) -> Result<(), sqlx::Error> {
+        match self {
+            #[cfg(feature = "postgres")]
+            Tx::Postgres(tx) => tx.commit().await,
+            #[cfg(feature = "sqlite")]
+            Tx::Sqlite(tx) => tx.commit().await,
+        }
+    }
+}
+
+/// A value bound on PostgreSQL: `sqlx::Type` there, or anything when megh is built without PostgreSQL.
+#[cfg(feature = "postgres")]
+pub trait OnPostgres<'q>: sqlx::Encode<'q, sqlx::Postgres> + sqlx::Type<sqlx::Postgres> {}
+#[cfg(feature = "postgres")]
+impl<'q, T: sqlx::Encode<'q, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>> OnPostgres<'q> for T {}
+#[cfg(not(feature = "postgres"))]
+pub trait OnPostgres<'q> {}
+#[cfg(not(feature = "postgres"))]
+impl<T> OnPostgres<'_> for T {}
+
+/// A value bound on SQLite: `sqlx::Type` there, or anything when megh is built without SQLite.
+#[cfg(feature = "sqlite")]
+pub trait OnSqlite<'q>: sqlx::Encode<'q, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> {}
+#[cfg(feature = "sqlite")]
+impl<'q, T: sqlx::Encode<'q, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>> OnSqlite<'q> for T {}
+#[cfg(not(feature = "sqlite"))]
+pub trait OnSqlite<'q> {}
+#[cfg(not(feature = "sqlite"))]
+impl<T> OnSqlite<'_> for T {}
+
+/// A row read on PostgreSQL.
+#[cfg(feature = "postgres")]
+pub trait RowOnPostgres: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> {}
+#[cfg(feature = "postgres")]
+impl<T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>> RowOnPostgres for T {}
+#[cfg(not(feature = "postgres"))]
+pub trait RowOnPostgres {}
+#[cfg(not(feature = "postgres"))]
+impl<T> RowOnPostgres for T {}
+
+/// A row read on SQLite.
+#[cfg(feature = "sqlite")]
+pub trait RowOnSqlite: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> {}
+#[cfg(feature = "sqlite")]
+impl<T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>> RowOnSqlite for T {}
+#[cfg(not(feature = "sqlite"))]
+pub trait RowOnSqlite {}
+#[cfg(not(feature = "sqlite"))]
+impl<T> RowOnSqlite for T {}
+
+/// A value a statement binds, through its own `sqlx::Type` on every driver; owned, or borrowed for `'q`.
+pub trait Param<'q>: Send + 'q {
+    #[cfg(feature = "postgres")]
+    fn add_postgres(self: Box<Self>, arguments: &mut sqlx::postgres::PgArguments) -> Result<(), BoxDynError>;
+    #[cfg(feature = "sqlite")]
+    fn add_sqlite(self: Box<Self>, arguments: &mut sqlx::sqlite::SqliteArguments<'q>) -> Result<(), BoxDynError>;
+}
+
+impl<'q, T: OnPostgres<'q> + OnSqlite<'q> + Send + 'q> Param<'q> for T {
+    #[cfg(feature = "postgres")]
+    fn add_postgres(self: Box<Self>, arguments: &mut sqlx::postgres::PgArguments) -> Result<(), BoxDynError> {
+        sqlx::Arguments::add(arguments, *self)
+    }
+    #[cfg(feature = "sqlite")]
+    fn add_sqlite(self: Box<Self>, arguments: &mut sqlx::sqlite::SqliteArguments<'q>) -> Result<(), BoxDynError> {
+        sqlx::Arguments::add(arguments, *self)
+    }
+}
+
+/// An owned value, kept apart from its statement (an entity's fields, a condition's values).
+pub type Value = Box<dyn Param<'static>>;
+
+/// A row a statement reads, through `sqlx::FromRow` on every driver: an entity, or a tuple such as `(i64,)`.
+pub trait Record: RowOnPostgres + RowOnSqlite + Send + Unpin {}
+
+impl<T: RowOnPostgres + RowOnSqlite + Send + Unpin> Record for T {}
+
+/// Where statements run: a pool, or a transaction. `&Db` and `&mut Tx` turn into it.
+pub enum On<'a> {
+    Db(&'a Db),
+    Tx(&'a mut Tx),
+}
+
+impl<'a> From<&'a Db> for On<'a> {
+    fn from(db: &'a Db) -> Self {
+        On::Db(db)
+    }
+}
+
+impl<'a> From<&'a mut Tx> for On<'a> {
+    fn from(tx: &'a mut Tx) -> Self {
+        On::Tx(tx)
+    }
+}
+
+impl<'a, 'b> From<&'a mut Scope<'b>> for On<'a> {
+    fn from(scope: &'a mut Scope<'b>) -> Self {
+        On::Tx(scope)
+    }
+}
+
+impl<'a> On<'a> {
+    /// A transaction of its own on a pool; the caller's inside a transaction.
+    pub async fn transaction(self) -> Result<Scope<'a>, sqlx::Error> {
+        match self {
+            On::Db(db) => db.begin().await.map(Scope::Own),
+            On::Tx(tx) => Ok(Scope::Within(tx)),
+        }
+    }
+}
+
+/// The text of a statement, standard and per driver where it differs, and the values bound to its placeholders.
+struct Statement<'q> {
+    standard: String,
+    postgres: Option<String>,
+    sqlite: Option<String>,
+    params: Vec<Box<dyn Param<'q> + 'q>>,
+}
+
+/// A statement run for the rows it changes: `Db::query(sql)`, as `sqlx::query`.
+pub struct Query<'q>(Statement<'q>);
+
+/// A statement whose rows are read as `T`: `Db::query_as(sql)`, as `sqlx::query_as`.
+pub struct QueryAs<'q, T>(Statement<'q>, PhantomData<fn() -> T>);
+
+/// A statement whose first column is read as `T`: `Db::query_scalar(sql)`, as `sqlx::query_scalar`.
+pub struct QueryScalar<'q, T>(Statement<'q>, PhantomData<fn() -> T>);
+
+/// What a statement run by `execute` did.
+#[derive(Debug)]
+pub struct Done(u64);
+
+impl Done {
+    pub fn rows_affected(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Db {
+    /// A statement in standard SQL, run for the rows it changes.
+    pub fn query<'q>(sql: impl Into<String>) -> Query<'q> {
+        Query(Statement::new(sql.into()))
+    }
+
+    /// A statement in standard SQL whose rows are read as `T`.
+    pub fn query_as<'q, T>(sql: impl Into<String>) -> QueryAs<'q, T> {
+        QueryAs(Statement::new(sql.into()), PhantomData)
+    }
+
+    /// A statement in standard SQL whose first column is read as `T`.
+    pub fn query_scalar<'q, T>(sql: impl Into<String>) -> QueryScalar<'q, T> {
+        QueryScalar(Statement::new(sql.into()), PhantomData)
+    }
+}
+
+impl Statement<'_> {
+    fn new(standard: String) -> Self {
+        Statement { standard, postgres: None, sqlite: None, params: vec![] }
+    }
+}
+
+/// `.postgres(sql)`, `.sqlite(sql)` and `.bind(value)` of each kind of statement.
+macro_rules! builder {
+    ($statement:ident $(<$t:ident>)?, $($wrap:tt)*) => {
+        impl<'q $(, $t)?> $statement<'q $(, $t)?> {
+            /// The text on PostgreSQL, where its SQL differs from the standard.
+            pub fn postgres(self, sql: impl Into<String>) -> Self {
+                let statement = Statement { postgres: Some(sql.into()), ..self.0 };
+                $($wrap)*(statement)
             }
 
-            impl Backend for $db {
-                fn build(statement: &impl SqlxBinder) -> Statement {
-                    let (sql, SqlxValues(Values(values))) = statement.build_sqlx(<$builder>::default());
-                    (sql, SqlxValues(Values(values.into_iter().map($bind).collect())))
-                }
+            /// The text on SQLite, where its SQL differs from the standard.
+            pub fn sqlite(self, sql: impl Into<String>) -> Self {
+                let statement = Statement { sqlite: Some(sql.into()), ..self.0 };
+                $($wrap)*(statement)
+            }
 
-                fn now() -> SimpleExpr {
-                    $now
-                }
+            /// The value of the next placeholder.
+            pub fn bind<V: Param<'q>>(self, value: V) -> Self {
+                self.bind_all(vec![Box::new(value)])
+            }
 
-                fn reset() -> SimpleExpr {
-                    $reset
-                }
-
-                fn has(list: SimpleExpr, value: Value) -> SimpleExpr {
-                    ($has)(list, value)
-                }
-
-                fn has_json(list: SimpleExpr, value: Value) -> SimpleExpr {
-                    ($has_json)(list, value)
-                }
-
-                async fn fetch(connection: &mut Self::Connection, (sql, values): Statement, columns: &[ColumnMeta]) -> Result<Vec<Vec<Value>>, sqlx::Error> {
-                    let rows = sqlx::query_with(&sql, values).fetch_all(&mut *connection).await?;
-                    rows.iter().map(|row| read(row, columns)).collect()
-                }
-
-                async fn execute(connection: &mut Self::Connection, (sql, values): Statement) -> Result<u64, sqlx::Error> {
-                    Ok(sqlx::query_with(&sql, values).execute(&mut *connection).await?.rows_affected())
-                }
-
-                async fn cascade(connection: &mut Self::Connection, table: &str) -> Result<(), sqlx::Error> {
-                    ($cascade)(connection, table).await
-                }
+            /// The values of the next placeholders.
+            pub fn bind_all(self, values: Vec<Box<dyn Param<'q> + 'q>>) -> Self {
+                let mut statement = self.0;
+                statement.params.extend(values);
+                $($wrap)*(statement)
             }
         }
     };
 }
 
-backend!(
-    postgres, Postgres,
-    builder: PostgresQueryBuilder,
-    now: Expr::current_timestamp().into(),
-    reset: Expr::cust("DEFAULT"),
-    has: |list: SimpleExpr, value: Value| Expr::cust_with_exprs("$1 = ANY($2)", [Expr::val(value).into(), list]),
-    has_json: |list: SimpleExpr, value: Value| Expr::cust_with_exprs("$1 @> $2", [list, Expr::val(Value::Json(Some(Box::new(serde_json::Value::Array(vec![json_of(value)]))))).into()]),
-    decimal: |row: &sqlx::postgres::PgRow, name: &str| row.try_get::<Option<rust_decimal::Decimal>, _>(name),
-    array: native_array,
-    bind_value: |value: Value| value,
-    cascade: pg_cascade
-);
+builder!(Query, Query);
+builder!(QueryAs<T>, (|statement| QueryAs(statement, PhantomData)));
+builder!(QueryScalar<T>, (|statement| QueryScalar(statement, PhantomData)));
 
-#[cfg(feature = "sqlite")]
-backend!(
-    sqlite, Sqlite,
-    builder: SqliteQueryBuilder,
-    now: Expr::val(Utc::now()).into(),
-    reset: Expr::cust("NULL"),
-    has: |list: SimpleExpr, value: Value| Expr::cust_with_exprs("EXISTS (SELECT 1 FROM json_each(?) WHERE value = ?)", [list, Expr::val(as_text(value)).into()]),
-    has_json: |list: SimpleExpr, value: Value| Expr::cust_with_exprs("EXISTS (SELECT 1 FROM json_each(?) WHERE value = ?)", [list, Expr::val(as_text(value)).into()]),
-    decimal: text_decimal,
-    array: json_array,
-    bind_value: array_as_json,
-    cascade: no_cascade
-);
+impl Db {
+    pub async fn get<T: Table>(&self, key: impl Into<Key>) -> ApiResult<T> {
+        crud::get(self, &key.into()).await
+    }
 
-async fn pg_cascade(connection: &mut sqlx::PgConnection, table: &str) -> Result<(), sqlx::Error> {
-    crate::soft_delete::cascade(connection, table).await
-}
+    pub async fn list<T: Table + serde::Serialize>(&self, request: &ListRequest) -> ApiResult<Page<T>> {
+        crud::list(self, request).await
+    }
 
-/// Without foreign-key catalogs to read, nothing cascades.
-#[cfg(feature = "sqlite")]
-async fn no_cascade(_: &mut sqlx::SqliteConnection, _: &str) -> Result<(), sqlx::Error> {
-    Ok(())
-}
+    pub async fn select<T: Table>(&self, filter: Where) -> ApiResult<Vec<T>> {
+        crud::select(self, filter).await
+    }
 
-/// A value as the JSON of an array element.
-fn json_of(value: Value) -> serde_json::Value {
-    match value {
-        Value::Uuid(Some(id)) => serde_json::Value::String(id.to_string()),
-        Value::String(Some(text)) => serde_json::Value::String(*text),
-        Value::BigInt(Some(number)) => number.into(),
-        Value::Bool(Some(flag)) => flag.into(),
-        Value::Double(Some(number)) => number.into(),
-        _ => serde_json::Value::Null,
+    pub async fn create<T: crud::Row>(&self, data: T) -> ApiResult<T> {
+        crud::create(self, data, None).await
+    }
+
+    pub async fn upsert<T: Table>(&self, data: T) -> ApiResult<T> {
+        crud::upsert(self, data).await
+    }
+
+    pub async fn replace<T: crud::Row>(&self, data: T) -> ApiResult<T> {
+        crud::replace(self, data, None).await
+    }
+
+    pub async fn patch<T: crud::Row>(&self, body: Changes) -> ApiResult<T> {
+        crud::patch(self, body, None).await
+    }
+
+    pub async fn delete<T: crud::Row>(&self, key: impl Into<Key>) -> ApiResult<T> {
+        crud::delete(self, &key.into(), None).await
     }
 }
 
-/// An element of a JSON list as SQLite compares it: uuids are text there.
-#[cfg(feature = "sqlite")]
-fn as_text(value: Value) -> Value {
-    match value {
-        Value::Uuid(Some(id)) => Value::from(id.to_string()),
-        other => other,
+impl Tx {
+    pub async fn get<T: Table>(&mut self, key: impl Into<Key>) -> ApiResult<T> {
+        crud::get(self, &key.into()).await
+    }
+
+    pub async fn select<T: Table>(&mut self, filter: Where) -> ApiResult<Vec<T>> {
+        crud::select(self, filter).await
+    }
+
+    pub async fn create<T: crud::Row>(&mut self, data: T) -> ApiResult<T> {
+        crud::create(self, data, None).await
+    }
+
+    pub async fn replace<T: crud::Row>(&mut self, data: T) -> ApiResult<T> {
+        crud::replace(self, data, None).await
+    }
+
+    pub async fn patch<T: crud::Row>(&mut self, body: Changes) -> ApiResult<T> {
+        crud::patch(self, body, None).await
+    }
+
+    pub async fn delete<T: crud::Row>(&mut self, key: impl Into<Key>) -> ApiResult<T> {
+        crud::delete(self, &key.into(), None).await
     }
 }
 
-/// PostgreSQL holds a list as an array.
-fn native_array(row: &sqlx::postgres::PgRow, name: &str, elem: Elem) -> Result<Value, sqlx::Error> {
-    let list = |items: Option<Vec<Value>>| Value::Array(elem.array_type(), items.map(Box::new));
-    Ok(match elem {
-        Elem::Uuid => list(row.try_get::<Option<Vec<Uuid>>, _>(name)?.map(|items| items.into_iter().map(Value::from).collect())),
-        Elem::Text => list(row.try_get::<Option<Vec<String>>, _>(name)?.map(|items| items.into_iter().map(Value::from).collect())),
-        Elem::Int => list(row.try_get::<Option<Vec<i64>>, _>(name)?.map(|items| items.into_iter().map(Value::from).collect())),
+/// Runs `$statement` on `$on` with `sqlx::$make` and `.$method`, on the driver it is for; `$then` maps the driver's
+/// result.
+macro_rules! run {
+    ($statement:expr, $on:expr, $make:ident, $method:ident, $then:expr) => {{
+        #[allow(unused_variables)]
+        let Statement { standard, postgres, sqlite, params } = $statement;
+        match $on {
+            #[cfg(feature = "postgres")]
+            On::Db(Db::Postgres(pool)) => sqlx::$make(&numbered(&postgres.unwrap_or(standard)), postgres_arguments(params)?).$method(pool).await.map($then),
+            #[cfg(feature = "postgres")]
+            On::Tx(Tx::Postgres(tx)) => sqlx::$make(&numbered(&postgres.unwrap_or(standard)), postgres_arguments(params)?).$method(&mut **tx).await.map($then),
+            #[cfg(feature = "sqlite")]
+            On::Db(Db::Sqlite(pool)) => sqlx::$make(&sqlite.unwrap_or(standard), sqlite_arguments(params)?).$method(pool).await.map($then),
+            #[cfg(feature = "sqlite")]
+            On::Tx(Tx::Sqlite(tx)) => sqlx::$make(&sqlite.unwrap_or(standard), sqlite_arguments(params)?).$method(&mut **tx).await.map($then),
+        }
+    }};
+}
+
+impl Query<'_> {
+    pub async fn execute<'a>(self, on: impl Into<On<'a>>) -> Result<Done, sqlx::Error> {
+        run!(self.0, on.into(), query_with, execute, |done| Done(done.rows_affected()))
+    }
+}
+
+impl<T: Record> QueryAs<'_, T> {
+    pub async fn fetch_all<'a>(self, on: impl Into<On<'a>>) -> Result<Vec<T>, sqlx::Error> {
+        run!(self.0, on.into(), query_as_with, fetch_all, std::convert::identity)
+    }
+
+    pub async fn fetch_one<'a>(self, on: impl Into<On<'a>>) -> Result<T, sqlx::Error> {
+        run!(self.0, on.into(), query_as_with, fetch_one, std::convert::identity)
+    }
+
+    pub async fn fetch_optional<'a>(self, on: impl Into<On<'a>>) -> Result<Option<T>, sqlx::Error> {
+        run!(self.0, on.into(), query_as_with, fetch_optional, std::convert::identity)
+    }
+}
+
+impl<T> QueryScalar<'_, T>
+where
+    (T,): Record,
+{
+    pub async fn fetch_all<'a>(self, on: impl Into<On<'a>>) -> Result<Vec<T>, sqlx::Error> {
+        let rows: Vec<(T,)> = QueryAs::<(T,)>(self.0, PhantomData).fetch_all(on).await?;
+        Ok(rows.into_iter().map(|(value,)| value).collect())
+    }
+
+    pub async fn fetch_one<'a>(self, on: impl Into<On<'a>>) -> Result<T, sqlx::Error> {
+        QueryAs::<(T,)>(self.0, PhantomData).fetch_one(on).await.map(|(value,)| value)
+    }
+
+    pub async fn fetch_optional<'a>(self, on: impl Into<On<'a>>) -> Result<Option<T>, sqlx::Error> {
+        QueryAs::<(T,)>(self.0, PhantomData).fetch_optional(on).await.map(|row| row.map(|(value,)| value))
+    }
+}
+
+/// `?` placeholders as PostgreSQL numbers them (`$1`, `$2`, …), leaving quoted text alone.
+#[cfg(feature = "postgres")]
+fn numbered(text: &str) -> String {
+    text.chars()
+        .scan((false, 0), |(quoted, count), char| {
+            Some(match (char, *quoted) {
+                ('\'', _) => {
+                    *quoted = !*quoted;
+                    char.to_string()
+                }
+                ('?', false) => {
+                    *count += 1;
+                    format!("${count}")
+                }
+                _ => char.to_string(),
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "postgres")]
+fn postgres_arguments<'q>(params: Vec<Box<dyn Param<'q> + 'q>>) -> Result<sqlx::postgres::PgArguments, sqlx::Error> {
+    params.into_iter().try_fold(Default::default(), |mut arguments, param| {
+        param.add_postgres(&mut arguments).map_err(sqlx::Error::Encode)?;
+        Ok(arguments)
     })
 }
 
 #[cfg(feature = "sqlite")]
-/// SQLite holds a list as JSON text.
-fn json_array(row: &sqlx::sqlite::SqliteRow, name: &str, elem: Elem) -> Result<Value, sqlx::Error> {
-    let decode = |error: String| sqlx::Error::Decode(error.into());
-    let items = row.try_get::<Option<Json<Vec<serde_json::Value>>>, _>(name)?;
-    let item = |json: serde_json::Value| match (elem, json) {
-        (Elem::Uuid, serde_json::Value::String(text)) => text.parse::<Uuid>().map(Value::from).map_err(|error| decode(error.to_string())),
-        (Elem::Text, serde_json::Value::String(text)) => Ok(Value::from(text)),
-        (Elem::Int, serde_json::Value::Number(number)) => number.as_i64().map(Value::from).ok_or_else(|| decode("not an integer".into())),
-        (_, other) => Err(decode(format!("{other} is not a list item"))),
-    };
-    let items = items.map(|Json(items)| items.into_iter().map(item).collect::<Result<Vec<_>, _>>()).transpose()?;
-    Ok(Value::Array(elem.array_type(), items.map(Box::new)))
-}
-
-#[cfg(feature = "sqlite")]
-/// SQLite holds a decimal as text.
-fn text_decimal(row: &sqlx::sqlite::SqliteRow, name: &str) -> Result<Option<rust_decimal::Decimal>, sqlx::Error> {
-    let text = row.try_get::<Option<String>, _>(name)?;
-    text.map(|text| text.parse().map_err(|error| sqlx::Error::Decode(Box::new(error)))).transpose()
-}
-
-#[cfg(feature = "sqlite")]
-fn array_as_json(value: Value) -> Value {
-    match value {
-        Value::Array(_, items) => Value::Json(items.map(|items| Box::new(items.into_iter().map(json_of).collect()))),
-        other => other,
-    }
+fn sqlite_arguments<'q>(params: Vec<Box<dyn Param<'q> + 'q>>) -> Result<sqlx::sqlite::SqliteArguments<'q>, sqlx::Error> {
+    params.into_iter().try_fold(Default::default(), |mut arguments, param| {
+        param.add_sqlite(&mut arguments).map_err(sqlx::Error::Encode)?;
+        Ok(arguments)
+    })
 }

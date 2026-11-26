@@ -18,9 +18,11 @@ pub struct Member {
     pub invited_by: Option<Uuid>,
 }
 
-#[cfg(feature = "postgres")]
-impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Member {
-    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+/// Read on each driver: `grants` is the text of a JSON array.
+macro_rules! member_row {
+    ($row:ty) => {
+impl<'r> sqlx::FromRow<'r, $row> for Member {
+    fn from_row(row: &'r $row) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
         let grants: Option<String> = row.try_get("grants")?;
         let grants = grants
@@ -37,6 +39,13 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Member {
         })
     }
 }
+    };
+}
+
+#[cfg(feature = "postgres")]
+member_row!(sqlx::postgres::PgRow);
+#[cfg(feature = "sqlite")]
+member_row!(sqlx::sqlite::SqliteRow);
 
 impl Member {
     /// Returns true if any of the member's grants implies the required grant.

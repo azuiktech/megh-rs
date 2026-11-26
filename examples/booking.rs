@@ -12,7 +12,6 @@ use megh::auth::client_credentials::token_router;
 use megh::auth::http::basic_login_router;
 use megh::auth::{csrf_unless_bearer, jwt_session, JwtSession};
 use megh::{auth_router, authorizer, MeghAuthState};
-use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tower::Layer;
 use tower_http::csrf::CsrfLayer;
@@ -25,9 +24,10 @@ use utoipa_scalar::{Scalar, Servable};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-    megh::migrate(&pool).await?;
-    let sessions = PostgresStore::new(pool.clone());
+    let sessions_pool = sqlx::PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
+    let pool = megh::Db::Postgres(sessions_pool.clone());
+    pool.migrate().await?;
+    let sessions = PostgresStore::new(sessions_pool);
     sessions.migrate().await?;
     let jwt = JwtSession::new(std::env::var("JWT_SECRET")?.as_bytes(), Duration::from_secs(15 * 60), pool.clone());
     let auth = MeghAuthState::new(pool.clone());

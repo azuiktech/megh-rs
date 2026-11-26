@@ -6,7 +6,7 @@ use rmcp::transport::auth::{
     AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore, InMemoryCredentialStore,
     OAuthClientConfig, StateStore, StoredCredentials,
 };
-use sqlx::PgPool;
+use crate::Db;
 use uuid::Uuid;
 
 use super::connections::ConnectionError;
@@ -63,7 +63,7 @@ fn failed(error: AuthError) -> ConnectionError {
 /// rmcp's credentials of a site connection, kept encrypted in its row; a save also keeps the access token current.
 #[derive(Clone)]
 pub struct StoredGrant {
-    pub pool: PgPool,
+    pub pool: Db,
     pub encryptor: Option<Encryptor>,
     pub id: Uuid,
 }
@@ -91,7 +91,7 @@ fn store_error(reason: impl Into<String>) -> AuthError {
 #[async_trait::async_trait]
 impl CredentialStore for StoredGrant {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        let stored: Option<Option<String>> = sqlx::query_scalar("SELECT oauth FROM connected_accounts WHERE id = $1")
+        let stored: Option<Option<String>> = Db::query_scalar("SELECT oauth FROM connected_accounts WHERE id = $1")
             .bind(self.id)
             .fetch_optional(&self.pool)
             .await
@@ -104,7 +104,7 @@ impl CredentialStore for StoredGrant {
         let json = serde_json::to_string(&credentials).map_err(|error| store_error(error.to_string()))?;
         let access = credentials.token_response.as_ref().map(|token| oauth2::TokenResponse::access_token(token).secret().clone());
         let access = access.map(|token| self.seal(&token)).transpose()?;
-        sqlx::query("UPDATE connected_accounts SET oauth = $2, access_token = COALESCE($3, access_token), updated_at = NOW() WHERE id = $1")
+        Db::query("UPDATE connected_accounts SET oauth = $2, access_token = COALESCE($3, access_token), updated_at = NOW() WHERE id = $1").sqlite("UPDATE connected_accounts SET oauth = $2, access_token = COALESCE($3, access_token), updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') WHERE id = $1")
             .bind(self.id)
             .bind(self.seal(&json)?)
             .bind(access)
@@ -115,7 +115,7 @@ impl CredentialStore for StoredGrant {
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
-        sqlx::query("UPDATE connected_accounts SET oauth = NULL, updated_at = NOW() WHERE id = $1")
+        Db::query("UPDATE connected_accounts SET oauth = NULL, updated_at = NOW() WHERE id = $1").sqlite("UPDATE connected_accounts SET oauth = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00') WHERE id = $1")
             .bind(self.id)
             .execute(&self.pool)
             .await

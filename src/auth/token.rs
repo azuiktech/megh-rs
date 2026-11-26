@@ -14,7 +14,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use axum_extra::headers::{authorization::Bearer, Authorization, HeaderMapExt};
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{decode, encode, get_current_timestamp, Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use sqlx::PgPool;
+use crate::Db;
 use tower::{Layer, ServiceExt};
 use tower_http::csrf::CsrfLayer;
 use tower_sessions::Session;
@@ -61,11 +61,11 @@ pub struct JwtSession {
     validation: Validation,
     ttl: Duration,
     tenants: Tenants,
-    pool: PgPool,
+    pool: Db,
 }
 
 impl JwtSession {
-    pub fn new(secret: &[u8], ttl: Duration, pool: PgPool) -> Self {
+    pub fn new(secret: &[u8], ttl: Duration, pool: Db) -> Self {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_issuer(&[ISSUER]);
         validation.validate_aud = false;

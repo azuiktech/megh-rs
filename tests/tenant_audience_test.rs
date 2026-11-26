@@ -1,6 +1,9 @@
 //! Issue #213 (#6 of the code review, RFC 9068 §4): an access token is for one tenant, its `aud`. A route of another
 //! tenant refuses it whatever its grants, and so does a route of another tenant for a member.
 
+#[macro_use]
+mod common;
+
 use std::time::Duration;
 
 use axum::body::Body;
@@ -11,7 +14,7 @@ use axum::{Extension, Router};
 use chrono::Utc;
 use megh::auth::{jwt_session, JwtSession};
 use megh::{authorizer, Member};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
 use uuid::Uuid;
@@ -44,8 +47,8 @@ async fn status(app: &Router, tenant: Uuid, bearer: Option<&str>) -> StatusCode 
     app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap().status()
 }
 
-#[sqlx::test]
-async fn a_token_is_refused_on_another_tenants_route(pool: PgPool) {
+dual!(a_token_is_refused_on_another_tenants_route);
+async fn a_token_is_refused_on_another_tenants_route(pool: Db) {
     let (mine, other) = (Uuid::now_v7(), Uuid::now_v7());
     let jwt = JwtSession::new(SECRET, Duration::from_secs(300), pool);
     let issued = jwt.issue(&member(mine), &[]).unwrap();

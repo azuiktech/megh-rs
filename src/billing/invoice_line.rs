@@ -2,11 +2,13 @@
 
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
-use sqlx::PgConnection;
+use crate::Tx;
 use utoipa::ToSchema;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 use uuid::Uuid;
+
+use crate::Array;
 use validator::{Validate, ValidationError};
 
 use super::draft::{ensure_draft, ensure_line_draft, refuse_changes, Line, Lock};
@@ -36,6 +38,7 @@ pub struct InvoiceLine {
     #[serde(default)]
     pub discount: Percent,
     #[serde(default)]
+    #[sqlx(try_from = "Array<Uuid>")]
     pub tax_ids: Vec<Uuid>,
     #[serde(default)]
     pub sub_total: Micros,
@@ -55,7 +58,7 @@ fn names_one_target(line: &InvoiceLine) -> Result<(), ValidationError> {
 }
 
 /// The line's invoice must be an invoice of the tenant (a bad request if not) and still a draft (a conflict if not).
-async fn in_draft_invoice(connection: &mut PgConnection, line: &InvoiceLine) -> ApiResult<()> {
+async fn in_draft_invoice(connection: &mut Tx, line: &InvoiceLine) -> ApiResult<()> {
     match ensure_draft::<Invoice>(connection, line.tenant_id, line.invoice_id, Lock::Share).await {
         Err(ApiError::NotFound) => Err(ApiError::BadRequest("invoice_id is not an invoice of the tenant".into())),
         other => other,
@@ -106,7 +109,7 @@ async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult
 async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceLine>) -> ApiResult<InvoiceLine> {
     let mut transaction = ctx.pool.begin().await?;
     in_draft_invoice(&mut transaction, &data).await?;
-    let created = crud::create(&mut *transaction, data, None).await?;
+    let created = crud::create(&mut transaction, data, None).await?;
     transaction.commit().await?;
     Ok(created)
 }
@@ -122,11 +125,11 @@ async fn create(State(ctx): State<AppContext>, Input(data): Input<InvoiceLine>) 
 async fn replace(State(ctx): State<AppContext>, Input(body): Input<InvoiceLine>) -> ApiResult<InvoiceLine> {
     let mut transaction = ctx.pool.begin().await?;
     ensure_line_draft::<InvoiceLine>(&mut transaction, body.tenant_id, body.id).await?;
-    let current = crud::get::<InvoiceLine, _>(&mut *transaction, &Key { tenant_id: body.tenant_id, id: body.id }).await?;
+    let current = crud::get::<InvoiceLine>(&mut transaction, &Key { tenant_id: body.tenant_id, id: body.id }).await?;
     (current.invoice_id == body.invoice_id)
         .then_some(())
         .ok_or_else(|| ApiError::BadRequest("invoice_id cannot be changed".into()))?;
-    let replaced = crud::replace(&mut *transaction, body, None).await?;
+    let replaced = crud::replace(&mut transaction, body, None).await?;
     transaction.commit().await?;
     Ok(replaced)
 }
@@ -144,7 +147,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     let mut transaction = ctx.pool.begin().await?;
     ensure_line_draft::<InvoiceLine>(&mut transaction, body.key.tenant_id, body.key.id).await?;
     refuse_changes(&body, &["invoice_id"])?;
-    let patched = crud::patch(&mut *transaction, body, None).await?;
+    let patched = crud::patch(&mut transaction, body, None).await?;
     transaction.commit().await?;
     Ok(patched)
 }
@@ -159,7 +162,7 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<InvoiceLine> {
     let mut transaction = ctx.pool.begin().await?;
     ensure_line_draft::<InvoiceLine>(&mut transaction, key.tenant_id, key.id).await?;
-    let deleted = crud::delete(&mut *transaction, &key, None).await?;
+    let deleted = crud::delete(&mut transaction, &key, None).await?;
     transaction.commit().await?;
     Ok(deleted)
 }

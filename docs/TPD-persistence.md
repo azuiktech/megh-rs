@@ -1,111 +1,69 @@
-# TPD — Multi-database persistence (sea-query + sqlx)
+# TPD — Persistence on PostgreSQL and SQLite (sqlx)
 
-**Status:** built; every entity of megh is on it (issue #261). Supersedes the SeaORM draft and the `Entity<ID, T>` / `TableEntity` / `#[derive(Table)]` / trigger-audit code.
-**Modules:** `megh-derive` (`#[entity]`, `#[derive(Column)]`), `src/auth/column.rs`, `src/auth/db.rs`, `src/auth/crud.rs`, `src/auth/filter.rs`, `src/auth/audit.rs`, `src/auth/entity.rs`, `src/soft_delete.rs`.
+**Status:** built; every feature of megh runs on PostgreSQL and on SQLite, the database chosen at start-up from its URL (PRD feature 4).
+**Modules:** `src/auth/db.rs`, `src/auth/entity.rs`, `src/auth/crud.rs`, `src/auth/filter.rs`, `src/auth/audit.rs`, `src/soft_delete.rs`, `megh-derive` (`#[entity]`, `sqlx_type!`), `migrations/postgres`, `migrations/sqlite`.
 
 ---
 
 ## Scope
 
-Generic create, read, list, replace, patch and delete for an entity written as one struct, on PostgreSQL and SQLite, on `sea-query` and `sqlx` (no SeaORM).
+Statements and generic CRUD for an entity written as one struct, on PostgreSQL and SQLite, on `sqlx`.
 
 Non-negotiable:
 
-1. The database structure does not change (migrations, composite key `(tenant_id, id)`).
-2. The type structure does not change (`pub contact: Contact` stays flattened; `Name`, `Gender`, `Address`, `Attributes` stay).
-3. The macro works with the sqlx annotations (`json`, `try_from`, `flatten`, `rename`, `skip`, `rename_all`, `type_name`) and generates the metadata, including the primary key.
-4. `soft_delete` is optional: the macro adds `deleted_at`; reads, updates and deletes use `deleted_at IS NULL`; delete sets `deleted_at` and `updated_at`. Without it, delete is `DELETE FROM <table> WHERE <key>`.
-5. `timestamps` is optional: the macro adds `created_at` and `updated_at`. The macro never adds `id`: key fields are declared and named in `keys`.
-6. Common CRUD, with AIP-158 pagination and AIP-160 filtering on list.
-7. Patch is `UPDATE <table> SET <the columns the request names> WHERE <key>`: no read first, each column replaced whole, nothing inside a column value merged.
-8. CRUD works on the entity directly over axum, with validation (`validator`). One struct per entity.
-9. The code that runs a statement, reads a row and builds a query is written once; databases differ only in a few converters (below). No `FromRow<PgRow>`-style bound on entities.
-10. Audit per table or in one shared table, in the write's transaction.
-11. Fields convert to and from `sea_query::Value` directly; the struct is never serialized to JSON to be written or read.
-12. A new type needs one `impl Column` (or `text_column!`, `newtype_column!`, `#[derive(Column)]`); no other logic changes, and the macro matches no type names.
-13. The system decides: `create` generates the last key (UUIDv7); `created_at`, `updated_at`, `deleted_at` are set by the system when writing. What an entity, a request body or a patch carries in them is discarded.
-14. Enums follow the sqlx annotations: `#[sqlx(rename_all = "...")]`, `#[sqlx(rename = "...")]`, `#[sqlx(type_name = "...")]`.
+1. The driver is chosen at runtime from the URL; nothing in megh assumes one.
+2. Statements are built as sqlx builds them; only the names change (`sqlx::query_as` → `Db::query_as`). Standard SQL is written once; a driver whose SQL differs gets its own text (`.postgres(…)`, `.sqlite(…)`), and only there.
+3. Every feature of each driver can be used (vendor texts); no lowest common denominator.
+4. Values are bound and rows read through each type's own `sqlx::Type`; a type stored differently per driver says so with `sqlx_type!` or an annotation. Entity field types do not change.
+5. The PostgreSQL database structure does not change (migrations, composite key `(tenant_id, id)`).
+6. `soft_delete` and `timestamps` are optional; `create` generates the last key (UUIDv7); `created_at`, `updated_at`, `deleted_at` are set by the system.
+7. Common CRUD, with AIP-158 pagination and AIP-160 filtering on list. Patch is `UPDATE <table> SET <the columns named> WHERE <key>`; `null` is the column's default.
+8. Audit per table or in one shared table, in the write's transaction.
 
 ---
 
 ## Built
 
-### Type mapping (`src/auth/column.rs`)
+### Database (`src/auth/db.rs`)
 
 ```rust
-pub enum Kind { Text, Uuid, Date, Time, Timestamp, Bool, Int, Float, Decimal, Bytes, Json, Array(Elem) }   // Elem: Text, Uuid, Int
-
-pub trait Column: Sized {
-    const KIND: Kind;
-    const TYPE_NAME: Option<&'static str> = None;      // a database enum type, written cast to it
-    fn to_value(&self) -> sea_query::Value;
-    fn from_value(value: sea_query::Value) -> Result<Self, ColumnError>;
-}
+let db = Db::connect(&env::var("DATABASE_URL")?).await?;   // postgres://… or sqlite:…
+db.migrate().await?;                                          // migrations/postgres or migrations/sqlite
+let user = Db::query_as::<User>("SELECT * FROM users WHERE email = $1::citext AND deleted_at IS NULL")
+    .sqlite("SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL")
+    .bind(email)
+    .fetch_optional(&db)
+    .await?;
+let mut tx = db.begin().await?;
+Db::query("UPDATE … ").bind(id).execute(&mut tx).await?.rows_affected();
+tx.commit().await?;
 ```
 
-- Implemented for `String`, `bool`, `i32`, `i64`, `f64`, `Decimal`, `Uuid`, `NaiveDate`, `NaiveTime`, `DateTime<Utc>`, `Vec<u8>`, `Option<T>`, and `Vec<T>` of text, uuids or integers (a native array on PostgreSQL, JSON text on SQLite); `JsonText<T>` (a JSON document in a text column).
-- Newtypes: `text_column!(Name, Phone, Email, Currency)` (`TryFrom<String>` + `AsRef<str>`), `newtype_column!(Micros: i64, Percent: Decimal, Capacity: i32)` (`TryFrom` + `Into` of the inner type).
-- Enums: `#[derive(crate::Column)]` stored as text, named by the sqlx annotations on the enum (`Gender`, `PaymentStatus`, …).
-- `#[sqlx(json)]` fields convert that one column value with serde. Nothing else is serialized.
-- `Table::from_json(column, json)` (generated) converts a patch or filter value by the field's own type, so a custom type validates or encrypts a patched value the same way as a written one.
-- A new database primitive is a `Kind` variant and one arm in the row reader; a new domain type is one `impl`.
+- `Db { Postgres(PgPool), Sqlite(SqlitePool) }` (each behind its feature, `postgres` (default) or `sqlite`; the drivers are megh's only features, at least one is needed), `Tx` the same for a transaction; `connect`, `migrate`, `begin`, `close`; `Tx::commit`, `Tx::rollback`. On SQLite a transaction starts `BEGIN IMMEDIATE`, so it holds the write lock where PostgreSQL locks rows (`FOR UPDATE`).
+- `Db::query`, `Db::query_as::<T>`, `Db::query_scalar::<T>` as sqlx's: `.bind(v)` (owned or borrowed), `.postgres(sql)`, `.sqlite(sql)`, `.fetch_one/fetch_optional/fetch_all(on)`, `.execute(on)`. `on` is `&Db`, `&mut Tx` (anything `Into<On>`). Placeholders are `$n` (both drivers) or `?` (numbered for PostgreSQL). A SQLite text may hold several statements.
+- A bound value is `Param<'q>`: `sqlx::Type` + `Encode` on every enabled driver. A read row is `Record`: `sqlx::FromRow` on every enabled driver.
+- `sqlite_now!()`: the current time in SQLite SQL, written as sqlx writes a `DateTime<Utc>`.
+- CRUD on `Db` and `Tx`: `get`, `list`, `select`, `create`, `upsert`, `replace`, `patch`, `delete` (`crud::*` with an actor for audit).
 
 ### Table and `#[entity]` (`src/auth/entity.rs`, `megh-derive/src/entity_attr.rs`)
 
-`Table`: `TABLE_NAME`, `PRIMARY_KEY`, `COLUMNS: &[ColumnMeta { name, kind, type_name, is_primary_key }]`, `SOFT_DELETE`, `AUDIT`, `values()`, `from_values()`, `from_json()`, all generated.
+`Table`: `TABLE_NAME`, `PRIMARY_KEY`, `COLUMNS` (names), `LISTS` (columns stored as `Array`), `SOFT_DELETE`, `AUDIT`, `params(self)` (each field bound through its type), `param(column, json)` (a patch or filter value through the field's type). `#[entity]` adds `#[derive(sqlx::FromRow)]` when missing and the timestamps.
 
-`#[entity(table = "clients", keys = ["tenant_id", "id"], timestamps, soft_delete, audit = shared)]` above the derives:
+- `#[sqlx(try_from = "S")]` on a field: read as `S`, written as `S::from(field)`. `Array<T>` is a PostgreSQL array and the text of a JSON array on SQLite: `#[sqlx(try_from = "Array<Uuid>")] pub service_ids: Vec<Uuid>`.
+- `#[sqlx(json)]`: JSON on every driver; a patched value must be the field's type.
+- `JsonText<T>`: a JSON document in a text column (megh-go's), read with `try_from = "Option<String>"`.
+- Decimals (`Quantity`, `Percent`) are `numeric` on PostgreSQL and text on SQLite (`sqlx_type!`).
 
-- injects `created_at: DateTime<Utc>` (serde default: now), `updated_at` and `deleted_at: Option<DateTime<Utc>>` (serde default: none), with `#[schema(read_only)]` when the struct derives `ToSchema`;
-- removes the `#[sqlx(...)]` attributes unless the struct derives `sqlx::FromRow` itself (then they stay; those written `cfg_attr(…, sqlx(…))` are read too);
-- emits `IntoResponse` (JSON) for a struct that derives `Serialize` and has keys, when the crate's `axum` feature is on;
-- `table` defaults to the snake-cased name, `keys` to `["id"]`, `keys = []` for a fragment flattened into other entities (`Contact`); `audit` is `shared`, `per_table`, or a table name in quotes.
+### CRUD, filter, audit, soft delete
 
-### Databases (`src/auth/db.rs`)
+- `crud` (`src/auth/crud.rs`) writes SQL text with placeholders; one statement per write with `RETURNING`; the key is `(tenant, id)` or the id alone; pagination forward by the last key (a uuid). Patch `null`: `DEFAULT` on PostgreSQL, `NULL` on SQLite, where `NOT NULL ON CONFLICT REPLACE` columns take their default.
+- `filter` (`src/auth/filter.rs`): AIP-160 to a `Where` with each driver's text; a number compares numerically on SQLite (`CAST(… AS NUMERIC)`); `field:value` on a `LISTS` column (array / `json_each`) or a JSON array under `attributes`.
+- `audit` (`src/auth/audit.rs`): one insert per change in the change's transaction.
+- `soft_delete` (`src/soft_delete.rs`): the `ON DELETE CASCADE` keys from PostgreSQL's catalogs or SQLite's `pragma_foreign_key_list`, children marked with the parent's `deleted_at`.
 
-`Backend` is implemented for `sqlx::Postgres` and `sqlx::Sqlite` by one macro (`backend!`): the query builder, how to run a statement and read a row (written once, by `Kind`), and the converters that differ:
+### Migrations
 
-| | PostgreSQL | SQLite |
-|---|---|---|
-| time of a write | `CURRENT_TIMESTAMP` (what the soft-delete cascade matches) | the clock |
-| patch `null` | `DEFAULT` (the column's default) | `NULL` |
-| a list | native array | JSON text |
-| a decimal | `numeric` | text |
-| `field:value` on a list | `value = ANY(list)` | `EXISTS (… json_each …)` |
-| soft-delete cascade | `ON DELETE CASCADE` keys from the catalogs (`src/soft_delete.rs`) | none |
-
-Everything in `crud` and `filter` is generic over `DB: Backend`; a pool, a transaction or a connection is accepted (`impl Acquire<'c, Database = DB>`). `AppContext` keeps its `PgPool`; a SQLite pool is passed the same way.
-
-### CRUD (`src/auth/crud.rs`)
-
-```rust
-pub async fn get<'c, T, DB>(db: impl Acquire<'c, Database = DB>, key: &Key) -> ApiResult<T>;
-pub async fn list<'c, T, DB>(db: …, request: &ListRequest) -> ApiResult<Page<T>>;
-pub async fn select<'c, T, DB>(db: …, build: impl FnOnce(&mut SelectStatement)) -> ApiResult<Vec<T>>;
-pub async fn create<'c, T, DB>(db: …, data: T, actor: Option<&str>) -> ApiResult<T>;
-pub async fn upsert<'c, T, DB>(db: …, data: T) -> ApiResult<T>;       // a row whose id the caller decides; a deleted row is not revived
-pub async fn replace<'c, T, DB>(db: …, data: T, actor: Option<&str>) -> ApiResult<T>;
-pub async fn patch<'c, T, DB>(db: …, body: Changes, actor: Option<&str>) -> ApiResult<T>;
-pub async fn delete<'c, T, DB>(db: …, key: &Key, actor: Option<&str>) -> ApiResult<T>;
-```
-
-- Each write is one statement with `RETURNING`; a row is read first only when the entity is audited.
-- The key is `(tenant, id)`, or the id alone for a table keyed by it. Pagination orders by the last key column, which must be a uuid; the cursor is forward-only.
-- Patch: unknown field → 400; `created_at`, `updated_at`, `deleted_at` are ignored; each value is converted by the field's type; `null` is `DB::reset()`; the returned row is validated and the transaction rolled back (400) if it is not valid.
-- A check or not-null violation is 400; other database errors are `ApiError::Database`.
-- `crud::Row` is `Table + Validate + Serialize + Send + Sync`, for code generic over entities (`booking::price::Priced`).
-
-### Filter (`src/auth/filter.rs`)
-
-AIP-160 to `sea_query::Condition`. A name in `COLUMNS` compares with the value converted by the column's type (a database enum is cast to its type). Any other name compares `attributes -> '<key>'` with the JSON value, the key a bound parameter. `field:value` is membership of a list column or of a JSON array in `attributes`; on another column it is a 400.
-
-### Audit (`src/auth/audit.rs`)
-
-`AuditPolicy { Disabled, Shared, PerTable, Dedicated(&'static str) }` per entity. `crud` writes the row (`id` v7, `table_name`, `record_id`, `action`, `actor_id`, `old_data`, `new_data`, `created_at`; migration 0002's shape) in the change's transaction; a failed audit write fails the change. The migration's trigger functions stay in the database, unused.
-
-### Ported
-
-All tenant entities (`Client`, `Resource`, `Provider`, `Service`, `Schedule`, `Blockout`, `Appointment`, `Product`, `Stock`, `Price`, `Tax`, `Invoice`, `InvoiceLine`, `Payment`), `User`, the billing plans (`Plan`, `PlanPrice`, `AddOn`, `PlanAddOn`, `Subscription`, `SubscriptionItem`) and `ConnectedAccount` are `#[entity]` structs: no `XData`, no `Entity<ID, T>`, no `Keyed<T>`. Raw PostgreSQL SQL that needs locks (`FOR UPDATE`, reservations, stock) stays as SQL and reads the same structs through `sqlx::FromRow`.
+`migrations/postgres`: unchanged. `migrations/sqlite`: the same tables, keys and columns; uuid is a 16-byte BLOB with a v7 default made in SQL, a time RFC 3339 text, jsonb / decimals / arrays text, citext `COLLATE NOCASE`; columns added by later PostgreSQL migrations are in their `CREATE TABLE` (every script runs again on each start). `reservations` keeps `starts_at`/`ends_at` where PostgreSQL keeps the `during` range.
 
 ### `sqlx_type!` (`megh-derive/src/sqlx_type.rs`, `src/lib.rs`)
 
@@ -135,23 +93,17 @@ let found: MyUuid = sqlx::query_scalar("SELECT referrer FROM clients WHERE refer
 
 ### Tests
 
-`tests/column_test.rs` (mapping and macro metadata); `tests/client_crud_dual_db_test.rs` (every scenario on SQLite and PostgreSQL: create, get, replace, patch, soft and hard delete, validation, composite keys, generated id and system timestamps, uuid / decimal / float / int / bool / date / time / timestamp / list columns, a database enum named by sqlx annotations, a custom `Secret` stored encrypted, AIP-160 filter and `:`, pagination, `select`, audit policies and rollback, a caller's transaction); `tests/soft_delete_test.rs` (cascade, PostgreSQL); `tests/bytea_test.rs`; `tests/sqlx_type_test.rs` (`_` arm on SQLite: type, write, read, read error; a named `Sqlite` arm; the `Postgres` arm; `Vec<T>` as a PostgreSQL array).
-
----
+Every test that touches a database runs on SQLite (a database file of its own) and on PostgreSQL: `dual!(name)` in `tests/common`. Five run on PostgreSQL only (`postgres!(name)`): they read PostgreSQL's catalogs or replay megh-go's data and older PostgreSQL schemas. `tests/client_crud_dual_db_test.rs` covers CRUD, patch, soft and hard delete, validation, composite keys, common types, a database enum, a custom type stored encrypted (`sqlx_type!`), lists (`Array`), AIP-160 filters and `:`, pagination, audit and a caller's transaction; `tests/column_test.rs` the metadata `#[entity]` generates; `tests/sqlx_type_test.rs` the macro.
 
 ## Decided
 
 - `create` generates the id; `upsert` writes the id given.
-- Patch replaces whole columns; `null` resets to the database default where the database can say so (PostgreSQL), else `NULL`.
-- Struct literals of an entity list `created_at`, `updated_at`, `deleted_at` (deserializing fills them in); `updated_at` and `deleted_at` are `Option`, `created_at` is not.
-- `Tx`-style per-database code is replaced by the `Backend` macro; adding a database is one `backend!` call and its converters.
-- SQLite stores uuids as BLOB (the form sqlx decodes), timestamps, dates, times and decimals as TEXT.
+- Patch replaces whole columns; `null` is the column's default (PostgreSQL `DEFAULT`; SQLite `NOT NULL ON CONFLICT REPLACE`).
+- Statements keep sqlx's shape; the PostgreSQL text of each statement is the one megh had; SQLite texts are added beside it.
+- A list field keeps its `Vec<T>` type and is annotated `#[sqlx(try_from = "Array<T>")]`.
 
 ## Open
 
-- `crud` assumes a uuid last key and a tenant-first key for `list`.
-- A `Vec<T>` column holds text, uuids or integers only; a list of another type needs a new `Elem`.
-- Reads open a transaction (`begin`) because `Acquire::acquire` makes handler futures fail the `Send` check when called with `&mut Transaction`; a lighter read path needs sqlx to fix that.
-- `sea-query` 1.0 needs `sea-query-binder` 0.8 (release candidate only): stay on 0.32 / 0.7 (AGENTS.md).
-- Backward pagination is not planned.
-- The first-draft interface names (`Db`, `Tx`, `Kind::value_of`, `AuditPolicy` in `entity.rs`) are gone.
+- `crud` assumes a uuid last key and a tenant-first key for `list`; backward pagination is not planned.
+- An `Option<T>` field cannot be stored through `try_from` (sqlx reads NULL before the conversion); none exists.
+- On SQLite, decimal arithmetic in SQL (stock, totals) goes through `REAL`.

@@ -72,7 +72,7 @@ async fn list(
     State(ctx): State<AppContext>,
     Input(request): Input<ListRequest>,
 ) -> ApiResult<Page<Client>> {
-    crud::list::<Client, _>(&ctx.pool, &request).await
+    crud::list::<Client>(&ctx.pool, &request).await
 }
 
 #[utoipa::path(
@@ -83,7 +83,7 @@ async fn list(
     responses((status = 200, body = inline(Client)), (status = 404)),
 )]
 async fn get(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Client> {
-    crud::get::<Client, _>(&ctx.pool, &key).await
+    crud::get::<Client>(&ctx.pool, &key).await
 }
 
 #[utoipa::path(
@@ -126,7 +126,7 @@ async fn replace(
     responses((status = 200, body = inline(Client)), (status = 404)),
 )]
 async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> ApiResult<Client> {
-    crud::patch::<Client, _>(&ctx.pool, body, None).await
+    crud::patch::<Client>(&ctx.pool, body, None).await
 }
 
 #[utoipa::path(
@@ -137,5 +137,5 @@ async fn patch(State(ctx): State<AppContext>, Input(body): Input<Changes>) -> Ap
     responses((status = 200, body = inline(Client)), (status = 404)),
 )]
 async fn delete(State(ctx): State<AppContext>, Input(key): Input<Key>) -> ApiResult<Client> {
-    crud::delete::<Client, _>(&ctx.pool, &key, None).await
+    crud::delete::<Client>(&ctx.pool, &key, None).await
 }

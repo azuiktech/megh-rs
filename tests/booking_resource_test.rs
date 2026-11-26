@@ -1,5 +1,8 @@
 //! B3 (docs/TPD-booking.md): Resource CRUD over HTTP, scoped to the tenant in the path and checked by `authorizer`.
 
+#[macro_use]
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::middleware::from_fn;
@@ -7,15 +10,15 @@ use axum::{Extension, Router};
 use megh::auth::rest::AppContext;
 use megh::{authorizer, Grant};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Clinic') RETURNING id").fetch_one(pool).await.unwrap()
 }
 
-fn app(pool: PgPool, grants: &[String]) -> Router {
+fn app(pool: Db, grants: &[String]) -> Router {
     let (api, _) = megh::booking::router().split_for_parts();
     Router::new()
         .nest("/api/v1", api.layer(from_fn(authorizer)))
@@ -39,9 +42,8 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
-#[sqlx::test(migrations = false)]
-async fn create_takes_the_tenant_from_the_path_and_fills_defaults(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(create_takes_the_tenant_from_the_path_and_fills_defaults);
+async fn create_takes_the_tenant_from_the_path_and_fills_defaults(pool: Db) {
     let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let app = app(pool, &grants(mine));
 
@@ -58,9 +60,8 @@ async fn create_takes_the_tenant_from_the_path_and_fills_defaults(pool: PgPool) 
     }
 }
 
-#[sqlx::test(migrations = false)]
-async fn get_put_patch_delete_one_resource(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(get_put_patch_delete_one_resource);
+async fn get_put_patch_delete_one_resource(pool: Db) {
     let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let app = app(pool.clone(), &grants(mine));
     let collection = format!("/api/v1/tenants/{mine}/resources");
@@ -102,13 +103,12 @@ async fn get_put_patch_delete_one_resource(pool: PgPool) {
     assert_eq!(call(&app, "DELETE", &format!("{collection}/{their_id}"), Value::Null).await.0, StatusCode::NOT_FOUND);
 }
 
-fn app_for(pool: PgPool, tenant: Uuid) -> Router {
+fn app_for(pool: Db, tenant: Uuid) -> Router {
     app(pool, &grants(tenant))
 }
 
-#[sqlx::test(migrations = false)]
-async fn list_filters_and_pages_with_a_cursor(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(list_filters_and_pages_with_a_cursor);
+async fn list_filters_and_pages_with_a_cursor(pool: Db) {
     let mine = tenant(&pool).await;
     let app = app(pool, &grants(mine));
     let collection = format!("/api/v1/tenants/{mine}/resources");
@@ -134,9 +134,8 @@ async fn list_filters_and_pages_with_a_cursor(pool: PgPool) {
     assert_eq!(call(&app, "GET", &format!("{collection}?filter=capacity%20%3E"), Value::Null).await.0, StatusCode::BAD_REQUEST);
 }
 
-#[sqlx::test(migrations = false)]
-async fn authorizer_guards_every_route(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(authorizer_guards_every_route);
+async fn authorizer_guards_every_route(pool: Db) {
     let (mine, other) = (tenant(&pool).await, tenant(&pool).await);
     let read_only = app(pool.clone(), &[format!("tenants:read:{mine}"), "resources:read".into()]);
     assert_eq!(call(&read_only, "GET", &format!("/api/v1/tenants/{mine}/resources"), Value::Null).await.0, StatusCode::OK);
@@ -145,9 +144,8 @@ async fn authorizer_guards_every_route(pool: PgPool) {
     assert_eq!(call(&mine_only, "GET", &format!("/api/v1/tenants/{other}/resources"), Value::Null).await.0, StatusCode::FORBIDDEN);
 }
 
-#[sqlx::test(migrations = false)]
-async fn the_has_filter_on_a_column_that_is_not_a_list_is_a_bad_request(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(the_has_filter_on_a_column_that_is_not_a_list_is_a_bad_request);
+async fn the_has_filter_on_a_column_that_is_not_a_list_is_a_bad_request(pool: Db) {
     let tenant = tenant(&pool).await;
     let app = app(pool, &grants(tenant));
 

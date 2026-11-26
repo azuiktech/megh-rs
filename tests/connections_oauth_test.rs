@@ -10,6 +10,9 @@
 //! - `Connections::secret` answers the token, refreshed at the site when it expires.
 //! - As megh reads a path, the routes need the `oauth` and `callback` grants beside `connections`.
 
+#[macro_use]
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
@@ -21,7 +24,7 @@ use axum::{Extension, Json, Router};
 use megh::account::{Connections, Secret};
 use megh::{authorizer, connections_router, Encryptor, Grant, MeghAuthState};
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use megh::Db;
 use std::collections::HashMap;
 use tower::ServiceExt;
 use tower_sessions::{MemoryStore, SessionManagerLayer};
@@ -92,11 +95,11 @@ async fn site(expires_in: u64) -> Site {
     site
 }
 
-async fn tenant(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("INSERT INTO tenants (name) VALUES ('Shop') RETURNING id").fetch_one(pool).await.unwrap()
+async fn tenant(pool: &Db) -> Uuid {
+    Db::query_scalar("INSERT INTO tenants (name) VALUES ('Shop') RETURNING id").fetch_one(pool).await.unwrap()
 }
 
-fn app(pool: &PgPool, tenant: Uuid) -> Router {
+fn app(pool: &Db, tenant: Uuid) -> Router {
     let state = MeghAuthState::new(pool.clone()).with_token_encryptor(Encryptor::new(&KEY)).with_app_origin("http://api.test");
     let grants: Vec<Grant> = ["connections:*", "oauth:*", "callback:*"].iter().map(|grant| grant.to_string()).chain([format!("tenants:read:{tenant}")]).map(Grant::new).collect();
     Router::new()
@@ -127,9 +130,8 @@ async fn connect(app: &Router, tenant: Uuid, site: &Site) -> (Response<Body>, Ha
     (get_page(app, &callback, &cookie).await, sent)
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_site_is_found_registered_with_and_connected_by_oauth(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_site_is_found_registered_with_and_connected_by_oauth);
+async fn a_site_is_found_registered_with_and_connected_by_oauth(pool: Db) {
     let mine = tenant(&pool).await;
     let site = site(3600).await;
     let app = app(&pool, mine);
@@ -151,9 +153,8 @@ async fn a_site_is_found_registered_with_and_connected_by_oauth(pool: PgPool) {
     assert_eq!(secret, Secret::Bearer("first".into()));
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_expiring_token_is_refreshed_at_the_site(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_expiring_token_is_refreshed_at_the_site);
+async fn an_expiring_token_is_refreshed_at_the_site(pool: Db) {
     let mine = tenant(&pool).await;
     let site = site(10).await;
     let app = app(&pool, mine);
@@ -166,9 +167,8 @@ async fn an_expiring_token_is_refreshed_at_the_site(pool: PgPool) {
     assert_eq!(connections.secret(mine, id).await.unwrap(), Secret::Bearer("refreshed".into()));
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_callback_this_session_did_not_start_connects_nothing(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_callback_this_session_did_not_start_connects_nothing);
+async fn a_callback_this_session_did_not_start_connects_nothing(pool: Db) {
     let mine = tenant(&pool).await;
     let site = site(3600).await;
     let app = app(&pool, mine);
@@ -182,9 +182,8 @@ async fn a_callback_this_session_did_not_start_connects_nothing(pool: PgPool) {
     assert!(listed.is_empty(), "{listed:?}");
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_site_that_offers_no_oauth_is_refused(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_site_that_offers_no_oauth_is_refused);
+async fn a_site_that_offers_no_oauth_is_refused(pool: Db) {
     let mine = tenant(&pool).await;
     let plain = serve(Router::new().route("/", get(|| async { "no oauth here" }))).await;
     let app = app(&pool, mine);
@@ -194,9 +193,8 @@ async fn a_site_that_offers_no_oauth_is_refused(pool: PgPool) {
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_disconnected_oauth_card_is_connected_again_not_added(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_disconnected_oauth_card_is_connected_again_not_added);
+async fn a_disconnected_oauth_card_is_connected_again_not_added(pool: Db) {
     let mine = tenant(&pool).await;
     let site = site(3600).await;
     let app = app(&pool, mine);
@@ -216,9 +214,8 @@ async fn a_disconnected_oauth_card_is_connected_again_not_added(pool: PgPool) {
     assert_eq!(connections.secret(mine, id).await.unwrap(), Secret::Bearer("first".into()));
 }
 
-#[sqlx::test(migrations = false)]
-async fn a_site_connected_by_oauth_keeps_its_spec_url(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(a_site_connected_by_oauth_keeps_its_spec_url);
+async fn a_site_connected_by_oauth_keeps_its_spec_url(pool: Db) {
     let mine = tenant(&pool).await;
     let site = site(3600).await;
     let app = app(&pool, mine);
@@ -233,9 +230,8 @@ async fn a_site_connected_by_oauth_keeps_its_spec_url(pool: PgPool) {
     assert_eq!(listed[0].spec_url.as_deref(), Some(spec.as_str()));
 }
 
-#[sqlx::test(migrations = false)]
-async fn an_oauth_start_with_a_spec_url_that_is_not_http_is_refused(pool: PgPool) {
-    megh::migrate(&pool).await.unwrap();
+dual!(an_oauth_start_with_a_spec_url_that_is_not_http_is_refused);
+async fn an_oauth_start_with_a_spec_url_that_is_not_http_is_refused(pool: Db) {
     let mine = tenant(&pool).await;
     let site = site(3600).await;
     let app = app(&pool, mine);

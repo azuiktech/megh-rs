@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Url;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use crate::Db;
 use uuid::Uuid;
 
 use oauth2::TokenResponse;
@@ -21,7 +21,6 @@ use super::encryption::Encryptor;
 use crate::auth::OAuthProviderConfig;
 
 /// How a connection signs its requests.
-#[derive(crate::Column)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "text", rename_all = "snake_case")]
@@ -145,14 +144,14 @@ impl Credentials {
 /// tokens are refreshed, and the client icons are read with.
 #[derive(Clone)]
 pub struct Connections {
-    pool: PgPool,
+    pool: Db,
     encryptor: Option<Encryptor>,
     providers: Arc<HashMap<String, OAuthProviderConfig>>,
     http: reqwest::Client,
 }
 
 impl Connections {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: Db) -> Self {
         let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build().expect("static HTTP client configuration");
         Self { pool, encryptor: None, providers: Arc::default(), http }
     }
@@ -166,7 +165,7 @@ impl Connections {
     /// The tenant's connections, connected or not; deleted ones are gone.
     pub async fn list(&self, tenant_id: Uuid) -> Result<Vec<Connection>, ConnectionError> {
         let sql = format!("SELECT {COLUMNS} FROM connected_accounts WHERE tenant_id = $1 AND deleted_at IS NULL ORDER BY created_at, id");
-        Ok(sqlx::query_as(&sql).bind(tenant_id).fetch_all(&self.pool).await?)
+        Ok(Db::query_as(&sql).bind(tenant_id).fetch_all(&self.pool).await?)
     }
 
     /// The known providers whose expired OAuth tokens are refreshed.
@@ -178,7 +177,7 @@ impl Connections {
     /// What a request to the tenant's connected connection `id` carries.
     pub async fn secret(&self, tenant_id: Uuid, id: Uuid) -> Result<Secret, ConnectionError> {
         let sql = format!("SELECT provider, account_id, url, access_token, auth, key_header, disconnected_at IS NULL AS connected FROM connected_accounts WHERE {OF_TENANT}");
-        let row: Option<SecretRow> = sqlx::query_as(&sql).bind(tenant_id).bind(id).fetch_optional(&self.pool).await?;
+        let row: Option<SecretRow> = Db::query_as(&sql).bind(tenant_id).bind(id).fetch_optional(&self.pool).await?;
         let row = row.ok_or(ConnectionError::NotFound)?;
         if !row.connected {
             return Err(ConnectionError::Disconnected);
@@ -202,7 +201,7 @@ impl Connections {
             "INSERT INTO connected_accounts (id, account_id, provider, access_token, tenant_id, url, icon_url, auth, key_header, spec_url) \
              VALUES ($2, $3, 'url', $4, $1, $5, $6, $7, $8, $9) RETURNING {COLUMNS}"
         );
-        let query = sqlx::query_as(&sql).bind(tenant_id).bind(id).bind(id.to_string()).bind(self.encrypt(&token)?);
+        let query = Db::query_as(&sql).bind(tenant_id).bind(id).bind(id.to_string()).bind(self.encrypt(&token)?);
         Ok(query.bind(&new.url).bind(icon.as_str()).bind(auth).bind(header).bind(&new.spec_url).fetch_one(&self.pool).await?)
     }
 
@@ -217,7 +216,7 @@ impl Connections {
             "INSERT INTO connected_accounts (id, account_id, provider, access_token, tenant_id, url, icon_url, auth, oauth, spec_url) \
              VALUES ($2, $3, 'url', $4, $1, $5, $6, 'oauth', $7, $8) RETURNING {COLUMNS}"
         );
-        let query = sqlx::query_as(&sql).bind(tenant_id).bind(id).bind(id.to_string()).bind(self.encrypt(&access)?);
+        let query = Db::query_as(&sql).bind(tenant_id).bind(id).bind(id.to_string()).bind(self.encrypt(&access)?);
         Ok(query.bind(url).bind(icon.as_str()).bind(self.encrypt(&grant)?).bind(spec_url).fetch_one(&self.pool).await?)
     }
 
@@ -229,7 +228,7 @@ impl Connections {
             "UPDATE connected_accounts SET access_token = $3, oauth = $4, auth = 'oauth', key_header = NULL, disconnected_at = NULL, updated_at = NOW() \
              WHERE {OF_TENANT} AND provider = '{SITE}' RETURNING {COLUMNS}"
         );
-        let query = sqlx::query_as(&sql).bind(tenant_id).bind(id).bind(self.encrypt(&access)?).bind(self.encrypt(&grant)?);
+        let query = Db::query_as(&sql).sqlite(sql.replace("NOW()", crate::sqlite_now!())).bind(tenant_id).bind(id).bind(self.encrypt(&access)?).bind(self.encrypt(&grant)?);
         query.fetch_optional(&self.pool).await?.ok_or(ConnectionError::NotFound)
     }
 
@@ -240,20 +239,20 @@ impl Connections {
             "UPDATE connected_accounts SET access_token = $3, auth = $4, key_header = $5, disconnected_at = NULL, updated_at = NOW() \
              WHERE {OF_TENANT} AND provider = 'url' RETURNING {COLUMNS}"
         );
-        let query = sqlx::query_as(&sql).bind(tenant_id).bind(id).bind(self.encrypt(&token)?).bind(auth).bind(header);
+        let query = Db::query_as(&sql).sqlite(sql.replace("NOW()", crate::sqlite_now!())).bind(tenant_id).bind(id).bind(self.encrypt(&token)?).bind(auth).bind(header);
         query.fetch_optional(&self.pool).await?.ok_or(ConnectionError::NotFound)
     }
 
     /// Disconnects the tenant's connection `id`; its card stays.
     pub async fn disconnect(&self, tenant_id: Uuid, id: Uuid) -> Result<Connection, ConnectionError> {
         let sql = format!("UPDATE connected_accounts SET disconnected_at = NOW(), updated_at = NOW() WHERE {OF_TENANT} RETURNING {COLUMNS}");
-        sqlx::query_as(&sql).bind(tenant_id).bind(id).fetch_optional(&self.pool).await?.ok_or(ConnectionError::NotFound)
+        Db::query_as(&sql).sqlite(sql.replace("NOW()", crate::sqlite_now!())).bind(tenant_id).bind(id).fetch_optional(&self.pool).await?.ok_or(ConnectionError::NotFound)
     }
 
     /// Disconnects and deletes the tenant's connection `id`, card and all.
     pub async fn delete(&self, tenant_id: Uuid, id: Uuid) -> Result<(), ConnectionError> {
         let sql = format!("UPDATE connected_accounts SET disconnected_at = COALESCE(disconnected_at, NOW()), deleted_at = NOW(), updated_at = NOW() WHERE {OF_TENANT}");
-        let deleted = sqlx::query(&sql).bind(tenant_id).bind(id).execute(&self.pool).await?;
+        let deleted = Db::query(&sql).sqlite(sql.replace("NOW()", crate::sqlite_now!())).bind(tenant_id).bind(id).execute(&self.pool).await?;
         (deleted.rows_affected() > 0).then_some(()).ok_or(ConnectionError::NotFound)
     }
 
@@ -303,10 +302,8 @@ fn linked_icon(page: &str) -> Option<String> {
     Html::parse_document(page).select(&links).next().and_then(|link| link.attr("href")).map(str::to_string)
 }
 
-#[cfg(feature = "axum")]
 pub use routes::connections_router;
 
-#[cfg(feature = "axum")]
 mod routes {
     use axum::extract::{FromRef, OriginalUri, Path, Query, State};
     use axum::http::StatusCode;
